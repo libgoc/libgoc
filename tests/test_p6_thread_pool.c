@@ -564,13 +564,24 @@ static void test_p6_5(void) {
     }
 
     /*
-     * Spin until every fiber has incremented the counter (all are between
-     * the atomic_fetch_add and goc_alts Phase 6 completion), then sleep
-     * 5 ms to allow Phase 6 to finish across all fibers before the prize
-     * is sent.  5 ms >> actual Phase 6 duration (~nanoseconds).
+     * Yield-spin until every fiber has incremented the counter (all are
+     * between the atomic_fetch_add and goc_alts Phase 6 completion), then
+     * sleep 5 ms to allow Phase 6 to finish across all fibers before the
+     * prize is sent.  5 ms >> actual Phase 6 duration (~nanoseconds).
+     *
+     * A plain busy-wait is avoided here: on machines with few cores the
+     * spinning main thread can starve pool workers, preventing fibers from
+     * running and incrementing the counter, causing an infinite loop.  A
+     * 100 µs nanosleep inside the loop releases the main thread's CPU slice
+     * on each iteration so pool threads can be scheduled.
      */
-    while (atomic_load_explicit(&g_p6_5_ready, memory_order_acquire)
-           < P6_5_COMPETITOR_COUNT) { /* busy-wait */ }
+    {
+        struct timespec yield_sleep = { .tv_sec = 0, .tv_nsec = 100000L /* 100 µs */ };
+        while (atomic_load_explicit(&g_p6_5_ready, memory_order_acquire)
+               < P6_5_COMPETITOR_COUNT) {
+            nanosleep(&yield_sleep, NULL);
+        }
+    }
     struct timespec park_wait = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
     nanosleep(&park_wait, NULL);
 
