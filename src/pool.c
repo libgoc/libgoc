@@ -59,11 +59,11 @@ struct goc_pool {
     size_t          active_count; /* fibers currently queued or executing; decremented
                                      unconditionally after every mco_resume (yield or exit).
                                      Used only for internal scheduling accounting. */
-    size_t          live_count;   /* fibers still alive on this pool; incremented at
-                                     post_to_run_queue, decremented only when
-                                     mco_status == MCO_DEAD.  This is the correct drain
-                                     signal: a parked fiber still has live_count > 0 even
-                                     though active_count has already been decremented. */
+    size_t          live_count;   /* fibers still alive on this pool; incremented exactly
+                                     once per fiber at birth (pool_fiber_born), decremented
+                                     only when mco_status == MCO_DEAD.  This is the correct
+                                     drain signal: a parked fiber still has live_count > 0
+                                     even though active_count has already been decremented. */
 };
 
 /* -------------------------------------------------------------------------
@@ -204,15 +204,15 @@ static void* pool_worker_fn(void* arg) {
 
         GC_remove_roots(&entry, &entry + 1);
 
-        /* Decrement active_count unconditionally (fiber yielded or exited).
-         *
-         * Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
+        /* Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
          * be re-posted to a run queue via post_to_run_queue(), which increments
          * active_count before the next resume.  If a fiber yields without being
          * re-queued (a bug in the channel / alts layer), active_count will reach
          * zero prematurely and goc_pool_destroy will return with live coroutines.
          * The canary check above and the assert(winner != NULL) in alts.c are the
-         * primary guards against this happening silently. */
+         * primary guards against this happening silently.
+         * Note: live_count is NOT touched here — it is managed by pool_fiber_born
+         * (increment) and the MCO_DEAD branch below (decrement). */
         pthread_mutex_lock(&pool->drain_mutex);
         pool->active_count--;
         pthread_mutex_unlock(&pool->drain_mutex);
@@ -243,11 +243,31 @@ static void* pool_worker_fn(void* arg) {
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
     pthread_mutex_lock(&pool->drain_mutex);
     pool->active_count++;
-    pool->live_count++;
+    /* live_count is NOT incremented here.  It is incremented exactly once per
+     * fiber, at birth, by pool_fiber_born() (called from goc_go_on in fiber.c).
+     * Re-queuing a parked fiber via wake() must not inflate live_count, because
+     * live_count is the drain signal: it reaches zero only when every fiber has
+     * run to MCO_DEAD.  Incrementing it on every re-queue caused it to grow
+     * unboundedly and goc_pool_destroy to block forever. */
     pthread_mutex_unlock(&pool->drain_mutex);
 
     runq_push(&pool->runq, entry);
     uv_sem_post(&pool->work_sem);
+}
+
+/* -------------------------------------------------------------------------
+ * pool_fiber_born — increment live_count exactly once per new fiber
+ *
+ * Called from goc_go_on (fiber.c) before post_to_run_queue, so that
+ * live_count tracks the number of fibers alive on the pool rather than
+ * the number of scheduler events.  This is the only correct drain signal:
+ * a parked fiber must still count as live even while active_count is zero.
+ * ---------------------------------------------------------------------- */
+
+void pool_fiber_born(goc_pool* pool) {
+    pthread_mutex_lock(&pool->drain_mutex);
+    pool->live_count++;
+    pthread_mutex_unlock(&pool->drain_mutex);
 }
 
 /* -------------------------------------------------------------------------
