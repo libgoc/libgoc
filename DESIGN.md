@@ -293,8 +293,9 @@ typedef struct goc_entry {
     /* GOC_FIBER */
     mco_coro*         coro;         /* minicoro coroutine handle */
     uint32_t*         stack_canary_ptr; /* points at the lowest word of the fiber stack;
-                                           written once on creation, checked before every
-                                           mco_resume — abort() on mismatch */
+                                           set at launch (goc_go) AND in the goc_take / goc_put
+                                           slow paths; checked before every mco_resume —
+                                           abort() on mismatch */
     void**            result_slot;  /* points at a void* local on the suspended fiber's stack */
     void            (*fn)(void*);   /* fiber entry function; on GC heap, safe if caller returns early */
     void*             fn_arg;
@@ -447,6 +448,7 @@ if closed:
 else:
     allocate goc_entry (FIBER)
     /* current_pool = ((goc_entry*)mco_get_user_data(mco_running()))->pool */
+    entry.stack_canary_ptr = mco_running()->stack_base   /* required: pool worker checks this on re-resume */
     push onto ch->takers
     GC_add_roots(stack)
     uv_mutex_unlock
@@ -457,7 +459,7 @@ else:
     return {*result_slot, entry->ok}
 ```
 
-`goc_put` is the exact mirror, with the same fiber-context assert and the same GC root registration (`GC_add_roots` / `GC_remove_roots`) in its slow path. The `current_pool` retrieval is identical. Do not omit GC root registration from `goc_put` — the fiber's stack must remain a GC root for the entire duration it is parked.
+`goc_put` is the exact mirror, with the same fiber-context assert, the same `stack_canary_ptr` initialization, and the same GC root registration (`GC_add_roots` / `GC_remove_roots`) in its slow path. The `current_pool` retrieval is identical. Do not omit either `stack_canary_ptr` or GC root registration from `goc_put` — the pool worker dereferences `stack_canary_ptr` on every resume (including re-resumes after a channel wake), and the fiber's stack must remain a GC root for the entire duration it is parked.
 
 ### `goc_take_cb(ch, cb, ud)` — any context
 
