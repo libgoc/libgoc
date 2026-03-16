@@ -106,9 +106,20 @@ static bool fork_expect_sigabrt(child_fn_t child_fn, void* arg) {
          * because the background threads were not forked.  A fresh goc_init()
          * in the child is required before any goc_* call.
          *
-         * The crash handler from the parent is NOT installed here — the child
-         * must exit via abort() called by the runtime.
+         * Reset SIGABRT to SIG_DFL.  The parent installed a crash handler
+         * (install_crash_handler) that catches SIGABRT, prints a backtrace,
+         * and re-raises with raise().  The child inherits that handler via
+         * fork().  When abort() fires on a pool worker thread it blocks
+         * SIGABRT internally before raising it; the inherited crash handler's
+         * subsequent raise(SIGABRT) then interacts with that signal mask and
+         * can cause the process to hang instead of terminating.  Restoring
+         * SIG_DFL ensures abort() kills the child immediately so waitpid
+         * sees WIFSIGNALED(...SIGABRT).
          */
+        struct sigaction sa_dfl = { .sa_handler = SIG_DFL };
+        sigemptyset(&sa_dfl.sa_mask);
+        sigaction(SIGABRT, &sa_dfl, NULL);
+
         goc_init();
         child_fn(arg);
         /* Should never reach here — if we do, exit with a distinctive code
