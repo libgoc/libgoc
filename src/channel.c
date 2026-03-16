@@ -219,11 +219,12 @@ goc_val_t goc_take(goc_chan* ch)
     void* local_result = NULL;
 
     goc_entry e = { 0 };
-    e.kind       = GOC_FIBER;
-    e.coro       = mco_running();
-    e.pool       = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
-    e.result_slot = &local_result;
-    e.ok         = GOC_CLOSED;   /* default; overwritten by wake on success */
+    e.kind             = GOC_FIBER;
+    e.coro             = mco_running();
+    e.pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
+    e.result_slot      = &local_result;
+    e.ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
+    e.stack_canary_ptr = (uint32_t*)e.coro->stack_base;
 
     /* Append to takers list */
     goc_entry** pp = &ch->takers;
@@ -281,11 +282,12 @@ goc_status_t goc_put(goc_chan* ch, void* val)
 
     /* Slow path: park on this channel */
     goc_entry e = { 0 };
-    e.kind    = GOC_FIBER;
-    e.coro    = mco_running();
-    e.pool    = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
-    e.put_val = val;
-    e.ok      = GOC_CLOSED;   /* default; overwritten by wake on success */
+    e.kind             = GOC_FIBER;
+    e.coro             = mco_running();
+    e.pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
+    e.put_val          = val;
+    e.ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
+    e.stack_canary_ptr = (uint32_t*)e.coro->stack_base;
 
     /* Append to putters list */
     goc_entry** pp = &ch->putters;
