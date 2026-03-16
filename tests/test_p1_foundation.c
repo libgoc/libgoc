@@ -36,73 +36,13 @@
  *     ASSERT.  This keeps cleanup deterministic even when assertions fire.
  */
 
-#define _GNU_SOURCE
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include "test_harness.h"
 #include "goc.h"
-
-/* =========================================================================
- * Minimal test harness
- *
- * Three module-level counters track overall results.  Each test function
- * uses four macros:
- *
- *   TEST_BEGIN(name)   — registers the test and prints its name.
- *   ASSERT(cond)       — on failure, prints a diagnostic, increments
- *                         g_tests_failed, and jumps to `done:`.
- *   TEST_PASS()        — increments g_tests_passed and jumps to `done:`.
- *   TEST_FAIL(msg)     — prints msg, increments g_tests_failed, jumps to
- *                         `done:`.
- *
- * Every test function must contain exactly one `done:` label as its last
- * statement (a bare semicolon is sufficient: `done:;`).
- * ====================================================================== */
-
-static int g_tests_run    = 0;
-static int g_tests_passed = 0;
-static int g_tests_failed = 0;
-
-/* TEST_BEGIN — start a test case; print its name left-justified in a 50-char
- * column so that the trailing "pass" / "FAIL" tokens are aligned. */
-#define TEST_BEGIN(name)                                    \
-    do {                                                    \
-        g_tests_run++;                                      \
-        printf("  %-50s ", (name));                         \
-        fflush(stdout);                                     \
-    } while (0)
-
-/* ASSERT — verify a condition; jump to `done:` on failure. */
-#define ASSERT(cond)                                        \
-    do {                                                    \
-        if (!(cond)) {                                      \
-            printf("FAIL\n    Assertion failed: %s\n"       \
-                   "    %s:%d\n", #cond, __FILE__, __LINE__);\
-            g_tests_failed++;                               \
-            goto done;                                      \
-        }                                                   \
-    } while (0)
-
-/* TEST_PASS — mark the current test as passed and exit the test function. */
-#define TEST_PASS()                                         \
-    do {                                                    \
-        printf("pass\n");                                   \
-        g_tests_passed++;                                   \
-        goto done;                                          \
-    } while (0)
-
-/* TEST_FAIL — mark the current test as failed with a custom message. */
-#define TEST_FAIL(msg)                                      \
-    do {                                                    \
-        printf("FAIL\n    %s\n    %s:%d\n",                 \
-               (msg), __FILE__, __LINE__);                  \
-        g_tests_failed++;                                   \
-        goto done;                                          \
-    } while (0)
 
 /* =========================================================================
  * Phase 1 — Foundation
@@ -189,6 +129,8 @@ done:;
  * ====================================================================== */
 
 int main(void) {
+    install_crash_handler();
+
     printf("libgoc test suite — Phase 1: Foundation\n");
     printf("=========================================\n\n");
 
