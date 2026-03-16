@@ -21,6 +21,7 @@
 #include <uv.h>
 #include <gc.h>
 #include "../include/goc.h"
+#include "minicoro.h"
 #include "internal.h"
 
 /* -------------------------------------------------------------------------
