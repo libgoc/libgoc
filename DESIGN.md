@@ -90,16 +90,19 @@ minicoro is a single-header library vendored under `vendor/minicoro/`. It requir
 
 ## Build System Setup
 
-The project uses CMake (≥ 3.20). `CMakeLists.txt` defines two primary targets:
+The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primary targets:
 
 | Target | Type | Description |
 |---|---|---|
-| `goc` | static library | All `src/*.c` modules |
-| `test_p1_foundation` … `test_p8_safety` | executables | one per phase (`tests/test_p1_*.c` … `tests/test_p8_*.c`), each linked against `goc` + Boehm GC |
+| `goc` | static library | All `src/*.c` modules; always built |
+| `goc_shared` | shared library | Same sources as `goc`; built only with `-DLIBGOC_SHARED=ON`; output name `libgoc.so` / `.dylib` / `.dll` |
+| `test_p1_foundation` … `test_p8_safety` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
+
+A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
-> **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. Pool worker threads are created after `GC_INIT()` and `GC_allow_register_threads()` using `GC_pthread_create`, so the GC pthread wrapper handles their registration automatically. Pool workers must **not** call `GC_register_my_thread` / `GC_unregister_my_thread` manually — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4). The uv loop thread is an exception: it is spawned with plain `pthread_create` and therefore calls `GC_register_my_thread` / `GC_unregister_my_thread` manually.
+> **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. Pool worker threads and the uv loop thread are all created using `GC_pthread_create` after `GC_INIT()` and `GC_allow_register_threads()`, so the GC pthread wrapper handles their registration automatically. **No thread created by libgoc calls `GC_register_my_thread` / `GC_unregister_my_thread` manually** — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4).
 
 > **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
 
@@ -109,15 +112,18 @@ Named constants defined in `config.h`:
 - `GOC_DEAD_COUNT_THRESHOLD 8`
 - `GOC_ALTS_STACK_THRESHOLD 8` (maximum number of `goc_alts` arms for which the channel-pointer scratch buffer is stack-allocated rather than `malloc`-allocated; avoids a heap allocation for the common case of a small select)
 
-Optional opt-in targets, each requiring a **separate build directory**:
+Optional opt-in flags, each requiring a **separate build directory**:
 
 | CMake flag | Extra target(s) | Notes |
 |---|---|---|
-| `-DLIBGOC_ASAN=ON` | `test_libgoc_asan`, `goc_asan` | AddressSanitizer; mutually exclusive with TSAN |
-| `-DLIBGOC_TSAN=ON` | `test_libgoc_tsan`, `goc_tsan` | ThreadSanitizer; mutually exclusive with ASAN |
-| `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` and `test_libgoc`; produces `coverage_html/index.html`; incompatible with Release optimisation levels |
+| `-DLIBGOC_SHARED=ON` | `goc_shared` | Shared library variant; installed by `install(TARGETS goc_shared …)` |
+| `-DLIBGOC_ASAN=ON` | `goc_asan` | AddressSanitizer; per-phase test executables link against `goc_asan`; mutually exclusive with TSAN and COVERAGE |
+| `-DLIBGOC_TSAN=ON` | `goc_tsan` | ThreadSanitizer; per-phase test executables link against `goc_tsan`; mutually exclusive with ASAN and COVERAGE |
+| `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` with `--coverage`; runs ctest then produces `coverage_html/index.html`; mutually exclusive with ASAN and TSAN |
 
-ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. Configuring both in the same directory is a CMake error.
+ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. When either sanitizer flag is active the per-phase test executables link against the instrumented variant instead of `goc`. Configuring ASAN and TSAN together, or either sanitizer with COVERAGE, in the same directory is a CMake fatal error.
+
+**Install rules** (`cmake --install`): `libgoc.a` is installed to `${CMAKE_INSTALL_LIBDIR}`, `include/goc.h` to `${CMAKE_INSTALL_INCLUDEDIR}`, and (when `-DLIBGOC_SHARED=ON`) the shared library to `${CMAKE_INSTALL_LIBDIR}` / `${CMAKE_INSTALL_BINDIR}`. A `pkg-config` file is generated from `libgoc.pc.in` at configure time and installed to `${CMAKE_INSTALL_LIBDIR}/pkgconfig/libgoc.pc`.
 
 > **Static archive link order:** On Linux, `ld` processes archives in a single left-to-right pass and only extracts an object file when it resolves a symbol already pending. Within `libgoc.a` there are upward cross-references: `gc.c.o` calls into `pool.c.o`, and `channel.c.o` / `fiber.c.o` call `post_to_run_queue` in `pool.c.o`. To resolve these regardless of object file ordering, every test executable links against `libgoc.a` wrapped in `-Wl,--start-group … -Wl,--end-group`, which instructs `ld` to rescan the enclosed archives until all cross-references are satisfied. `cmake_path` (required by the test discovery loop) sets the effective minimum at CMake 3.20; the `$<LINK_GROUP:RESCAN,...>` generator expression (CMake ≥ 3.24) is not used to preserve compatibility with the stated minimum.
 
