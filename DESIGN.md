@@ -1095,7 +1095,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 - **Isolation**: `goc_init()` and `goc_shutdown()` bracket the entire test binary — called once each in the `main()` of **each phase's test binary** before and after all tests in that phase run. Individual test functions do not call them.
 - **Synchronisation**: a `done_t` helper (a plain POSIX `sem_t` — `done_signal` calls `sem_post`, `done_wait` calls `sem_wait`) lets the main thread block until fibers finish without relying on `sleep` or a `goc_chan`.
 - **GC integration**: Boehm GC is linked automatically; no hook table setup is required in tests.
-- **Crash tests**: tests that expect `abort()` (e.g. canary violation) use `fork` + `waitpid` in the test function itself. The child inherits the full runtime state after `fork` and launches the offending fiber directly — it must **not** call `goc_shutdown()` or `goc_init()`, as calling any `libgoc` function after `goc_shutdown` is undefined behaviour, and calling `goc_init` more than once is likewise undefined behaviour. After launching the fiber the child calls `pause()`. The parent calls `waitpid` and asserts `WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT`.
+- **Crash tests**: tests that expect `abort()` (e.g. canary violation) use `fork` + `waitpid` in the test function itself. Each test forks a child, which calls `goc_init()` from scratch (the forked address space inherits the parent's memory image but libuv handles, mutexes, and the GC's internal thread table are all in an inconsistent state because background threads were not forked). The child performs the unsafe operation and should never return — the runtime calls `abort()` before that is possible. If the child exits normally it uses `_exit(2)` so the parent can distinguish this from an abort. The parent calls `waitpid` and asserts `WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT`. The child never calls `goc_shutdown()`.
 
 ### Coverage
 
@@ -1177,22 +1177,9 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P6.2 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_OK` when all fibers finish before the deadline |
 | P6.3 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_TIMEOUT` when fibers are still running at deadline; pool remains valid — verified by dispatching a new short-lived fiber via `goc_go_on` to the same pool and confirming it runs to completion before `goc_pool_destroy` is called |
 | P6.4 | `goc_malloc` end-to-end: fiber builds GC-heap linked list, main traverses after join |
-| P6.5 | `compact_dead_entries` sweep: see [P6.5 in depth](#p65-compact_dead_entries-sweep) below. |
-| P6.6 | `goc_alts` with `n > GOC_ALTS_STACK_THRESHOLD` (8) arms exercises the `malloc` path in `alts_dedup_sort_channels`; correct arm fires, no memory error (run under ASAN to catch heap misuse) |
+| P6.5 | `goc_alts` with `n > GOC_ALTS_STACK_THRESHOLD` (8) arms exercises the `malloc` path in `alts_dedup_sort_channels`; correct arm fires, no memory error (run under ASAN to catch heap misuse) |
 
-#### P6.5 — `compact_dead_entries` sweep
-
-**What is being tested.** When many fibers race on the same channel via `goc_alts`, every loser leaves a stale (dead) entry on the channel's taker list. `compact_dead_entries` is the amortised sweep that removes these entries; it runs at the top of `goc_take` and `goc_put` (fiber context, under the channel lock) whenever `dead_count >= GOC_DEAD_COUNT_THRESHOLD`. P6.5 verifies that the sweep fires correctly and that the channel remains well-formed afterwards.
-
-**Setup.** 12 competitor fibers are launched via `goc_go`. Each fiber calls `goc_alts` with two take arms: `target_ch` (unbuffered, the prize channel) and `decoy_ch` (unbuffered, never receives data). Because `decoy_ch` is always empty, every fiber is guaranteed to reach Phase 6 of the alts protocol and park on both channels — ensuring stale entries accumulate on `target_ch`'s taker list rather than firing immediately on a decoy value.
-
-**The race.** The main thread puts a single value onto `target_ch` via `goc_put_sync`. Exactly one fiber wins the `woken` CAS inside `wake()`; the remaining 11 lose and have `dead_count` incremented for each. After the race, `target_ch->dead_count == 11`, which exceeds `GOC_DEAD_COUNT_THRESHOLD` (8).
-
-**Sweep verification.** A probe fiber calls `goc_take(target_ch)` — fiber context, the only path that checks the threshold. On entry it acquires the channel lock, sees `dead_count >= 8`, and calls `compact_dead_entries` before doing anything else. The sweep walks the taker list, unlinks all 11 cancelled entries, and resets `dead_count` to 0. The probe then parks (the channel is empty), the main thread puts a sentinel value, and the probe receives it. A crash or hang in the probe indicates the taker list was left corrupt by the sweep.
-
-**Synchronisation.** Each competitor fiber increments a shared `_Atomic int g_p6_5_ready` immediately before calling `goc_alts`. The main thread spins on this counter reaching 12, then sleeps 5 ms before putting the prize value. The spin uses a 100 µs `nanosleep` per iteration so the main thread yields its CPU slice each time around the loop, keeping pool worker threads schedulable on low-core-count machines. The 5 ms sleep that follows covers the window between a fiber incrementing the counter and completing Phase 6 of the alts protocol (acquiring channel locks, appending entries, releasing locks); 5 ms is orders of magnitude larger than that critical section in practice.
-
-**Final consistency check.** After the probe exits, `target_ch` is closed and `goc_take_sync` on it must return `GOC_CLOSED` immediately, confirming the channel is still well-formed after the sweep.
+> **Not yet tested:** `compact_dead_entries` sweep — verifying that the amortised dead-entry sweep fires correctly when `dead_count >= GOC_DEAD_COUNT_THRESHOLD` after many fibers race on the same channel via `goc_alts`. The sweep logic exists and is exercised indirectly by the integration tests, but a dedicated test that asserts the sweep threshold, entry unlinking, and channel consistency after the sweep has not yet been written.
 
 **Phase 7 — Integration**
 
@@ -1208,7 +1195,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 
 | Test | Description |
 |---|---|
-| P8.1 | Stack overflow: fiber that exhausts its 64 KB stack overwrites the canary → pool worker calls `abort()` before the next `mco_resume`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.1 | Stack overflow: fiber directly corrupts its canary word (simulating a stack overflow reaching the bottom of the stack region) → pool worker calls `abort()` before the next `mco_resume`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.2 | `goc_take` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.3 | `goc_put` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 
