@@ -3,7 +3,7 @@
 
 **libgoc** is a runtime library for language implementations that want a Go-style CSP concurrency system backed by a managed memory environment. It is written in plain C for maximum reach and portability.
 
-The library provides stackful coroutines ("fibers"), typed channels, a select primitive (`goc_alts`), timeout channels, and a managed thread pool. Boehm GC is a required dependency and is wired in automatically.
+The library provides stackful coroutines ("fibers"), channels, a select primitive (`goc_alts`), timeout channels, and a managed thread pool. Boehm GC is a required dependency and is wired in automatically.
 
 > **Boehm GC must be compiled with thread support.** libgoc calls `GC_allow_register_threads()` and marks pool-worker stacks via `GC_register_my_thread` / `GC_unregister_my_thread`. A non-threaded build of the GC (i.e. one built without `--enable-threads`) is missing these symbols and will crash at runtime. See the per-platform instructions in [Building and Testing](#building-and-testing) for how to satisfy this requirement on each OS.
 
