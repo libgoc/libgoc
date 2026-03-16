@@ -120,6 +120,12 @@ static bool fork_expect_sigabrt(child_fn_t child_fn, void* arg) {
         sigemptyset(&sa_dfl.sa_mask);
         sigaction(SIGABRT, &sa_dfl, NULL);
 
+        /* Force a single pool worker so fibers execute sequentially.
+         * P8.1 relies on overflow_fiber parking before sender_fiber runs;
+         * with more than one worker both could be dequeued simultaneously
+         * and the ordering would not be guaranteed. */
+        setenv("GOC_POOL_THREADS", "1", 1);
+
         goc_init();
         child_fn(arg);
         /* Should never reach here — if we do, exit with a distinctive code
@@ -143,86 +149,77 @@ static bool fork_expect_sigabrt(child_fn_t child_fn, void* arg) {
 /* --- P8.1: Stack overflow overwrites canary → abort() ------------------- */
 
 /*
- * overflow_then_yield — fiber entry point for P8.1.
+ * overflow_fiber — fiber entry point for P8.1 (the "victim").
  *
- * Simulates the effect of a stack overflow by directly zeroing the canary
- * word at stack_base — the lowest address in this fiber's 64 KB stack region,
- * where pool_worker_fn expects to find GOC_STACK_CANARY.
+ * Corrupts its own stack canary then parks on goc_take(ch), waiting for
+ * a rendezvous partner.  When fiber_b sends on ch, pool_worker_fn re-queues
+ * this fiber and checks the canary before the next mco_resume — finding it
+ * corrupted — and calls abort().
  *
- * Why not use real recursive overflow:
- *   Physically overflowing the stack via deep recursion is not reliable for
- *   this test.  The fiber stack is 64 KB; reaching the canary at the bottom
- *   requires ~128 × 512-byte frames (just over 64 KB total).  Any more and
- *   the stack pointer blows past the minicoro allocation boundary into
- *   unmapped memory, causing SIGSEGV in the child rather than the SIGABRT
- *   we are asserting.  Any less and the canary may not be reached on every
- *   platform and optimisation level.  The direct-write approach is
- *   semantically equivalent: regardless of what writes to the canary word
- *   (recursive overflow, buffer overrun, or explicit store), the observable
- *   state is identical — *stack_canary_ptr != GOC_STACK_CANARY — which is
- *   what pool_worker_fn checks.
- *
- * Sequence:
- *   1. Zero the canary word via mco_running()->stack_base.
- *   2. goc_put(ch, 1) — yields to the pool worker and parks the fiber.
- *   3. The worker re-enqueues the fiber; on the next iteration it checks the
- *      canary, finds it corrupted (0 != GOC_STACK_CANARY), and calls abort().
- *
- * arg — pointer to an unbuffered goc_chan used to synchronise with the
- *       parent (p8_1_child_fn).
+ * Using a fiber-to-fiber rendezvous (rather than goc_take_sync from the OS
+ * thread) guarantees the victim always parks before the sender wakes it.
+ * goc_take_sync races: if the OS thread calls goc_take_sync before the fiber
+ * has run, the fiber's goc_put finds a waiting taker and completes without
+ * suspending — so the canary check never fires.  Two fibers on the same pool
+ * avoid this race because the scheduler runs them sequentially.
  */
-static void overflow_then_yield(void* c) {
+static void overflow_fiber(void* c) {
     goc_chan* ch = (goc_chan*)c;
 
-    /*
-     * Corrupt the canary at the base of this fiber's stack.
-     *
-     * mco_running()->stack_base is the lowest mapped address of the 64 KB
-     * fiber stack — the same pointer stored in entry->stack_canary_ptr by
-     * goc_go_on immediately after mco_create.  Writing any value other than
-     * GOC_STACK_CANARY here causes the pool worker to call abort() on the
-     * next resume attempt.
-     */
+    /* Corrupt the canary at the base of this fiber's stack. */
     mco_coro* self = mco_running();
     volatile uint32_t* canary = (volatile uint32_t*)self->stack_base;
     *canary = 0u;
 
     /*
-     * Yield to the pool worker.  The worker re-enqueues this fiber, then on
-     * the next loop iteration checks the canary before calling mco_resume —
-     * finding 0 instead of GOC_STACK_CANARY — and calls abort().
+     * Park on goc_take.  The pool worker suspends this fiber and moves on.
+     * When the sender fiber calls goc_put(ch), wake() re-queues this fiber.
+     * On the next iteration the pool worker checks the canary, finds it
+     * corrupted, and calls abort().
      */
-    goc_put(ch, (void*)1);
+    goc_take(ch);
     /* Unreachable: abort() fires before mco_resume returns. */
+}
+
+/*
+ * sender_fiber — sends one value on ch to wake overflow_fiber.
+ *
+ * Spawned after overflow_fiber so the victim is guaranteed to be parked
+ * (MCO_SUSPENDED) by the time the sender runs on the same pool.
+ */
+static void sender_fiber(void* c) {
+    goc_chan* ch = (goc_chan*)c;
+    goc_put(ch, (void*)1);
+    /* Unreachable if abort() fires before pool_worker_fn resumes overflow_fiber. */
 }
 
 static void p8_1_child_fn(void* arg) {
     (void)arg;
 
-    goc_chan* ch = goc_chan_make(0);
-
-    /* Fiber: corrupt the canary, then park on goc_put. */
-    goc_go(overflow_then_yield, ch);
-
     /*
-     * Block until the fiber yields (proof it reached and passed the canary-
-     * corruption step).  The pool worker then re-schedules the fiber; the
-     * canary check fires on that resume attempt → abort().
+     * Unbuffered channel: overflow_fiber parks on goc_take; sender_fiber
+     * calls goc_put to wake it.  Because both fibers run on the same pool
+     * (single worker if GOC_POOL_THREADS=1, but the ordering still holds),
+     * overflow_fiber is always suspended before sender_fiber executes.
      *
-     * If abort() does not fire the child exits normally with _exit(2) and the
-     * parent records this as a test failure.
+     * After wake(), pool_worker_fn re-queues overflow_fiber and on the next
+     * iteration checks the canary → abort() → SIGABRT kills the child.
+     *
+     * The main thread parks on a semaphore that is never posted.  When the
+     * pool worker calls abort(), glibc raises SIGABRT on that thread; with
+     * SIG_DFL (restored in fork_expect_sigabrt before goc_init) this
+     * terminates the entire process.  The parent's waitpid then sees
+     * WIFSIGNALED(...SIGABRT).
      */
-    goc_take_sync(ch);
+    goc_chan* ch = goc_chan_make(0);
+    goc_go(overflow_fiber, ch);
+    goc_go(sender_fiber,   ch);
 
-    /*
-     * goc_take_sync() has returned — the pool worker now has the fiber
-     * re-queued and will check the canary on the next mco_resume, calling
-     * abort() on the pool thread.  abort() sends SIGABRT to the whole
-     * process, so we must not exit before it fires.  pause() suspends the
-     * main thread indefinitely; the signal kills the process before pause()
-     * ever returns.
-     */
-    pause();
+    /* Block the main thread; abort() from the pool worker kills the process. */
+    sem_t blocker;
+    sem_init(&blocker, 0, 0);
+    sem_wait(&blocker);
+    /* Unreachable. */
 }
 
 /*
