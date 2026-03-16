@@ -1177,7 +1177,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P6.2 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_OK` when all fibers finish before the deadline |
 | P6.3 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_TIMEOUT` when fibers are still running at deadline; pool remains valid — verified by dispatching a new short-lived fiber via `goc_go_on` to the same pool and confirming it runs to completion before `goc_pool_destroy` is called |
 | P6.4 | `goc_malloc` end-to-end: fiber builds GC-heap linked list, main traverses after join |
-| P6.5 | `compact_dead_entries` fires correctly: cancel at least `GOC_DEAD_COUNT_THRESHOLD` (8) `goc_alts` entries on a single channel by losing the CAS race in a multi-arm select; verify the list is swept and subsequent `goc_take_sync` on the same channel completes without crash or hang |
+| P6.5 | `compact_dead_entries` fires correctly: 12 fibers race on `target_ch` via `goc_alts`; 11 lose the woken CAS and accumulate as dead entries (`dead_count` == 11 > `GOC_DEAD_COUNT_THRESHOLD` == 8); a probe fiber calls `goc_take` on the same channel (fiber-context — the only path that checks the threshold), triggering `compact_dead_entries`; probe receives the sentinel value without crash or hang. Synchronisation uses an atomic counter + 5 ms `nanosleep` rather than `done_signal`-before-`goc_alts` (the previous approach had a race between the signal and Phase 6 enqueue completion). |
 | P6.6 | `goc_alts` with `n > GOC_ALTS_STACK_THRESHOLD` (8) arms exercises the `malloc` path in `alts_dedup_sort_channels`; correct arm fires, no memory error (run under ASAN to catch heap misuse) |
 
 **Phase 7 — Integration**
