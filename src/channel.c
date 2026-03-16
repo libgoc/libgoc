@@ -37,6 +37,10 @@
  *
  * NOTE: goc_close does NOT call wake. It iterates the lists directly and
  * sets e->ok = GOC_CLOSED after winning the CAS (see goc_close below).
+ * Like wake(), goc_close must skip any entry where e->cancelled == 1.
+ * Cancelled entries belong to goc_alts losers whose coroutine is already
+ * MCO_DEAD; calling post_to_run_queue on them would resume a dead coroutine
+ * and produce a SIGSEGV.
  * -------------------------------------------------------------------------- */
 void wake(goc_chan* ch, goc_entry* e, void* value)
 {
@@ -144,6 +148,11 @@ void goc_close(goc_chan* ch)
 
     /* Wake all parked takers with GOC_CLOSED */
     for (goc_entry* e = ch->takers; e != NULL; e = e->next) {
+        /* Skip cancelled entries (goc_alts losers): their coroutine is already
+         * dead; calling post_to_run_queue on it would resume a MCO_DEAD coro
+         * and crash.  This mirrors the same guard in wake(). */
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+            continue;
         int exp = 0;
         if (atomic_compare_exchange_strong_explicit(
                 &e->woken, &exp, 1,
@@ -159,6 +168,9 @@ void goc_close(goc_chan* ch)
 
     /* Wake all parked putters with GOC_CLOSED */
     for (goc_entry* e = ch->putters; e != NULL; e = e->next) {
+        /* Same cancelled guard as the takers loop above. */
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+            continue;
         int exp = 0;
         if (atomic_compare_exchange_strong_explicit(
                 &e->woken, &exp, 1,
