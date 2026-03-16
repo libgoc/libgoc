@@ -56,7 +56,14 @@ struct goc_pool {
     _Atomic int     shutdown;
     pthread_mutex_t drain_mutex;
     pthread_cond_t  drain_cond;
-    size_t          active_count;
+    size_t          active_count; /* fibers currently queued or executing; decremented
+                                     unconditionally after every mco_resume (yield or exit).
+                                     Used only for internal scheduling accounting. */
+    size_t          live_count;   /* fibers still alive on this pool; incremented at
+                                     post_to_run_queue, decremented only when
+                                     mco_status == MCO_DEAD.  This is the correct drain
+                                     signal: a parked fiber still has live_count > 0 even
+                                     though active_count has already been decremented. */
 };
 
 /* -------------------------------------------------------------------------
@@ -210,11 +217,17 @@ static void* pool_worker_fn(void* arg) {
         pool->active_count--;
         pthread_mutex_unlock(&pool->drain_mutex);
 
-        /* Check for fiber completion *after* the decrement has landed. */
+        /* Decrement live_count and broadcast only when the fiber has actually
+         * exited.  A parked fiber (MCO_SUSPENDED) still counts as live — it will
+         * be re-enqueued by wake() when a channel operation resumes it.
+         * Broadcasting on every yield would let goc_pool_destroy_timeout see
+         * live_count == 0 while fibers are merely parked, causing a premature
+         * GOC_DRAIN_OK return and pool teardown. */
         if (mco_status(coro) == MCO_DEAD) {
             mco_destroy(coro);
 
             pthread_mutex_lock(&pool->drain_mutex);
+            pool->live_count--;
             pthread_cond_broadcast(&pool->drain_cond);
             pthread_mutex_unlock(&pool->drain_mutex);
         }
@@ -230,6 +243,7 @@ static void* pool_worker_fn(void* arg) {
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
     pthread_mutex_lock(&pool->drain_mutex);
     pool->active_count++;
+    pool->live_count++;
     pthread_mutex_unlock(&pool->drain_mutex);
 
     runq_push(&pool->runq, entry);
@@ -259,6 +273,7 @@ goc_pool* goc_pool_make(size_t threads) {
     pthread_cond_init(&pool->drain_cond, NULL);
 
     pool->active_count = 0;
+    pool->live_count   = 0;
     atomic_store(&pool->shutdown, 0);
 
     pool->thread_count = threads;
@@ -278,9 +293,12 @@ goc_pool* goc_pool_make(size_t threads) {
  * ---------------------------------------------------------------------- */
 
 void goc_pool_destroy(goc_pool* pool) {
-    /* 1. Wait for all active fibers to yield or complete. */
+    /* 1. Wait for all live fibers to exit (live_count reaches zero).
+     *    Parked fibers (MCO_SUSPENDED) still count as live even though
+     *    active_count may already be zero; using live_count here prevents a
+     *    premature return while fibers are merely blocked on a channel. */
     pthread_mutex_lock(&pool->drain_mutex);
-    while (pool->active_count > 0) {
+    while (pool->live_count > 0) {
         pthread_cond_wait(&pool->drain_cond, &pool->drain_mutex);
     }
     pthread_mutex_unlock(&pool->drain_mutex);
@@ -341,7 +359,7 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
 
     pthread_mutex_lock(&pool->drain_mutex);
     int timed_out = 0;
-    while (pool->active_count > 0 && !timed_out) {
+    while (pool->live_count > 0 && !timed_out) {
         int rc = pthread_cond_timedwait(&pool->drain_cond,
                                         &pool->drain_mutex,
                                         &deadline);
@@ -351,7 +369,7 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     }
     pthread_mutex_unlock(&pool->drain_mutex);
 
-    if (timed_out && pool->active_count > 0) {
+    if (timed_out && pool->live_count > 0) {
         /* Pool stays valid and running — do not tear it down. */
         return GOC_DRAIN_TIMEOUT;
     }
