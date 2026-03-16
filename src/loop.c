@@ -168,7 +168,7 @@ static void *loop_thread_fn(void *arg)
 {
     (void)arg;
 
-    GC_stack_base sb;
+    struct GC_stack_base sb;
     GC_get_stack_base(&sb);
     GC_register_my_thread(&sb);
 
