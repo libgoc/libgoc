@@ -38,9 +38,7 @@
 |---|---|
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, timers, cross-thread signalling |
-| `pthreads` | thread pool workers (POSIX) |
-| `pthreads4w` | thread pool workers (Windows only) |
-| Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init` |
+| Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init`; owns thread pool worker creation via `GC_pthread_create` / `GC_pthread_join` |
 
 ---
 
@@ -99,11 +97,11 @@ The project uses CMake (≥ 3.16). `CMakeLists.txt` defines two primary targets:
 | `goc` | static library | All `src/*.c` modules |
 | `test_p1_foundation` … `test_p8_safety` | executables | one per phase (`tests/test_p1_*.c` … `tests/test_p8_*.c`), each linked against `goc` + Boehm GC |
 
-Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent) and CMake's `find_package` (pthreads / pthreads4w on Windows). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
+Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
 > **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. Pool worker threads are created after `GC_INIT()` and `GC_allow_register_threads()`, so the GC pthread wrapper handles their registration automatically. Pool workers must **not** call `GC_register_my_thread` / `GC_unregister_my_thread` manually — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4). Manual registration is only appropriate for threads created before `GC_INIT()` or outside the GC's pthread wrapper, which does not apply to any thread in libgoc.
 
-> **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`, `GC_register_my_thread()`, and `GC_unregister_my_thread()` on every pool worker. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
+> **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
 
 Named constants defined in `config.h`:
 - `GOC_PAGE_SIZE`
