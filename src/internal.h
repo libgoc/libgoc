@@ -16,7 +16,6 @@
 #include <semaphore.h>
 #include <uv.h>
 #include <gc.h>
-#include "minicoro.h"
 #include "../include/goc.h"
 #include "config.h"
 #include "chan_type.h"
