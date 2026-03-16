@@ -230,8 +230,8 @@ goc_val_t goc_take(goc_chan* ch)
     while (*pp) pp = &(*pp)->next;
     *pp = &e;
 
-    void* stack_base = mco_get_stack_base(e.coro);
-    void* stack_top  = (char*)stack_base + mco_get_stack_size(e.coro);
+    void* stack_base = e.coro->stack_base;
+    void* stack_top  = (char*)stack_base + e.coro->stack_size;
     GC_add_roots(stack_base, stack_top);
 
     uv_mutex_unlock(ch->lock);
@@ -292,8 +292,8 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     while (*pp) pp = &(*pp)->next;
     *pp = &e;
 
-    void* stack_base = mco_get_stack_base(e.coro);
-    void* stack_top  = (char*)stack_base + mco_get_stack_size(e.coro);
+    void* stack_base = e.coro->stack_base;
+    void* stack_top  = (char*)stack_base + e.coro->stack_size;
     GC_add_roots(stack_base, stack_top);
 
     uv_mutex_unlock(ch->lock);
