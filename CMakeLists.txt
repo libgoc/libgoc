@@ -70,9 +70,11 @@ function(configure_goc_target target_name extra_flags)
         vendor/minicoro
     )
     target_compile_definitions(${target_name} PUBLIC
-        # Required for Boehm GC multi-thread support:
-        # exposes GC_register_my_thread / GC_unregister_my_thread /
-        # GC_allow_register_threads in gc.h.
+        # Required for Boehm GC multi-thread support: activates the GC's
+        # pthread wrapper (GC_pthread_create / GC_pthread_join) so that pool
+        # worker threads are automatically registered with the collector, and
+        # exposes GC_allow_register_threads / GC_add_roots / GC_remove_roots
+        # in gc.h.
         GC_THREADS
         # Required for POSIX extensions (pthread_rwlock_t et al.) when
         # compiling with -std=c11, which disables _POSIX_SOURCE by default.
