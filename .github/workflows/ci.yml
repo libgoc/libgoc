@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'vendor/**'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'vendor/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    env:
+      BDWGC_VERSION: "8.2.6"
+      BDWGC_PREFIX: "${{ github.workspace }}/.local/bdwgc"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install apt dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y libuv1-dev pkg-config build-essential \
+            libatomic-ops-dev
+
+      - name: Cache Boehm GC
+        id: cache-bdwgc
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BDWGC_PREFIX }}
+          key: bdwgc-${{ env.BDWGC_VERSION }}-ubuntu-latest
+
+      - name: Build Boehm GC from source
+        if: steps.cache-bdwgc.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/ivmai/bdwgc/releases/download/v${{ env.BDWGC_VERSION }}/gc-${{ env.BDWGC_VERSION }}.tar.gz
+          tar xf gc-${{ env.BDWGC_VERSION }}.tar.gz
+          cd gc-${{ env.BDWGC_VERSION }}
+          ./configure --enable-threads=posix --enable-thread-local-alloc \
+                      --enable-shared --prefix=${{ env.BDWGC_PREFIX }}
+          make -j$(nproc)
+          make install
+          # Alias so pkg-config finds bdw-gc-threaded; baked into the cached
+          # prefix so nothing needs to touch the cache dir after restore.
+          cp ${{ env.BDWGC_PREFIX }}/lib/pkgconfig/bdw-gc.pc \
+             ${{ env.BDWGC_PREFIX }}/lib/pkgconfig/bdw-gc-threaded.pc
+
+      - name: Configure Boehm GC
+        run: |
+          # Register the library path so ldconfig picks it up.
+          echo "${{ env.BDWGC_PREFIX }}/lib" | sudo tee /etc/ld.so.conf.d/bdwgc.conf
+          sudo ldconfig
+
+      - name: Verify dependencies
+        env:
+          PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+        run: |
+          pkg-config --modversion libuv
+          pkg-config --modversion bdw-gc-threaded
+
+      - name: Configure & Build
+        run: |
+          set -x
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --parallel $(nproc)
+        timeout-minutes: 10
+        env:
+          PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+        env:
+          LD_LIBRARY_PATH: ${{ env.BDWGC_PREFIX }}/lib
