@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)
 project(libgoc VERSION 0.1.0 LANGUAGES C)
 
 # ---------------------------------------------------------------------------
@@ -52,15 +52,14 @@ set(GOC_SOURCES
 
 # ---------------------------------------------------------------------------
 # Phase test sources — discover every tests/test_*.c automatically
+# (cmake_path requires CMake 3.20+)
 # ---------------------------------------------------------------------------
 file(GLOB PHASE_TEST_SOURCES CONFIGURE_DEPENDS tests/test_*.c)
 
-set(PHASE_TESTS "")
-foreach(src IN LISTS PHASE_TEST_SOURCES)
-    get_filename_component(phase ${src} NAME_WE)   # e.g. test_p1_foundation
-    list(APPEND PHASE_TESTS ${phase})
-    set(${phase}_SOURCE ${src})
-endforeach()
+# ---------------------------------------------------------------------------
+# Shared base flags reused across all instrumented variants  (#2)
+# ---------------------------------------------------------------------------
+set(INSTRUMENT_BASE_FLAGS -fno-omit-frame-pointer -g)
 
 # ---------------------------------------------------------------------------
 # Helper: apply common compile options to a goc library variant
@@ -91,14 +90,27 @@ function(configure_goc_target target_name extra_flags)
 endfunction()
 
 # ---------------------------------------------------------------------------
-# Helper: register one phase test executable against a goc library variant
+# Helper: build one instrumented library + test suite variant  (#1)
+#   suffix      — target name suffix, e.g. "_asan"
+#   sanitizer   — -fsanitize=... flag, e.g. "-fsanitize=address"
+#   extra_flags — full compile flag list for this variant
 # ---------------------------------------------------------------------------
-function(add_phase_test phase_name goc_lib extra_flags suffix)
-    set(exe_name "${phase_name}${suffix}")
-    add_executable(${exe_name} ${${phase_name}_SOURCE})
-    target_link_libraries(${exe_name} PRIVATE ${goc_lib})
-    target_compile_options(${exe_name} PRIVATE -Wall -Wextra ${extra_flags})
-    add_test(NAME ${exe_name} COMMAND ${exe_name})
+function(add_instrumented_variant suffix sanitizer extra_flags)
+    set(lib_name "goc${suffix}")
+
+    add_library(${lib_name} STATIC ${GOC_SOURCES})
+    configure_goc_target(${lib_name} "${extra_flags}")
+    target_link_options(${lib_name} PUBLIC ${sanitizer})
+
+    foreach(src IN LISTS PHASE_TEST_SOURCES)
+        cmake_path(GET src STEM phase)
+        set(exe "${phase}${suffix}")
+        add_executable(${exe} ${src})
+        target_link_libraries(${exe} PRIVATE ${lib_name})
+        target_compile_options(${exe} PRIVATE -Wall -Wextra ${extra_flags})
+        target_link_options(${exe} PRIVATE ${sanitizer})
+        add_test(NAME ${exe} COMMAND ${exe})
+    endforeach()
 endfunction()
 
 # ---------------------------------------------------------------------------
@@ -123,65 +135,54 @@ if(LIBGOC_SHARED)
 endif()
 
 # ---------------------------------------------------------------------------
-# Phase test executables (default build)
+# Phase test executables (default build)  (#5)
 # Compile definitions and include paths propagate transitively from goc (PUBLIC).
 # ---------------------------------------------------------------------------
 enable_testing()
 
-foreach(phase IN LISTS PHASE_TESTS)
-    add_phase_test(${phase} goc "" "")
+foreach(src IN LISTS PHASE_TEST_SOURCES)
+    cmake_path(GET src STEM phase)
+    add_executable(${phase} ${src})
+    target_link_libraries(${phase} PRIVATE goc)
+    target_compile_options(${phase} PRIVATE -Wall -Wextra)
+    add_test(NAME ${phase} COMMAND ${phase})
 endforeach()
 
 # ---------------------------------------------------------------------------
-# Optional: AddressSanitizer  (-DLIBGOC_ASAN=ON)
+# Optional instrumented variants  (-DLIBGOC_ASAN=ON / -DLIBGOC_TSAN=ON / -DLIBGOC_COVERAGE=ON)
 # ---------------------------------------------------------------------------
-option(LIBGOC_ASAN "Build with AddressSanitizer" OFF)
-option(LIBGOC_TSAN "Build with ThreadSanitizer" OFF)
-option(LIBGOC_COVERAGE "Build with lcov coverage" OFF)
+option(LIBGOC_ASAN     "Build with AddressSanitizer" OFF)
+option(LIBGOC_TSAN     "Build with ThreadSanitizer"  OFF)
+option(LIBGOC_COVERAGE "Build with lcov coverage"    OFF)
 
 if(LIBGOC_ASAN AND LIBGOC_TSAN)
     message(FATAL_ERROR "LIBGOC_ASAN and LIBGOC_TSAN are mutually exclusive.")
 endif()
-
 if(LIBGOC_ASAN AND LIBGOC_COVERAGE)
     message(FATAL_ERROR "LIBGOC_ASAN and LIBGOC_COVERAGE should not be combined.")
 endif()
-
 if(LIBGOC_TSAN AND LIBGOC_COVERAGE)
     message(FATAL_ERROR "LIBGOC_TSAN and LIBGOC_COVERAGE should not be combined.")
 endif()
 
 if(LIBGOC_ASAN)
-    set(ASAN_FLAGS -fsanitize=address -fno-omit-frame-pointer -g)
-
-    add_library(goc_asan STATIC ${GOC_SOURCES})
-    configure_goc_target(goc_asan "${ASAN_FLAGS}")
-    target_link_options(goc_asan PUBLIC -fsanitize=address)
-
-    foreach(phase IN LISTS PHASE_TESTS)
-        add_phase_test(${phase} goc_asan "${ASAN_FLAGS}" "_asan")
-        target_link_options("${phase}_asan" PRIVATE -fsanitize=address)
-    endforeach()
+    add_instrumented_variant(
+        _asan
+        -fsanitize=address
+        "-fsanitize=address;${INSTRUMENT_BASE_FLAGS}"
+    )
 endif()
 
-# ---------------------------------------------------------------------------
-# Optional: ThreadSanitizer  (-DLIBGOC_TSAN=ON)
-# ---------------------------------------------------------------------------
 if(LIBGOC_TSAN)
-    set(TSAN_FLAGS -fsanitize=thread -fno-omit-frame-pointer -g)
-
-    add_library(goc_tsan STATIC ${GOC_SOURCES})
-    configure_goc_target(goc_tsan "${TSAN_FLAGS}")
-    target_link_options(goc_tsan PUBLIC -fsanitize=thread)
-
-    foreach(phase IN LISTS PHASE_TESTS)
-        add_phase_test(${phase} goc_tsan "${TSAN_FLAGS}" "_tsan")
-        target_link_options("${phase}_tsan" PRIVATE -fsanitize=thread)
-    endforeach()
+    add_instrumented_variant(
+        _tsan
+        -fsanitize=thread
+        "-fsanitize=thread;${INSTRUMENT_BASE_FLAGS}"
+    )
 endif()
 
 # ---------------------------------------------------------------------------
-# Optional: Coverage  (-DLIBGOC_COVERAGE=ON)
+# Optional: Coverage  (-DLIBGOC_COVERAGE=ON)  (#3)
 # Builds a separate goc_coverage variant rather than mutating the base goc
 # target, consistent with the ASAN/TSAN pattern above.
 # ---------------------------------------------------------------------------
@@ -190,25 +191,29 @@ if(LIBGOC_COVERAGE)
         message(FATAL_ERROR "LIBGOC_COVERAGE is incompatible with Release build type.")
     endif()
 
-    find_program(LCOV lcov REQUIRED)
+    find_program(LCOV    lcov    REQUIRED)
     find_program(GENHTML genhtml REQUIRED)
 
     set(COVERAGE_FLAGS --coverage -fprofile-arcs -ftest-coverage -g -O0)
 
-    add_library(goc_coverage STATIC ${GOC_SOURCES})
-    configure_goc_target(goc_coverage "${COVERAGE_FLAGS}")
-    target_link_options(goc_coverage PUBLIC --coverage)
+    add_instrumented_variant(_coverage --coverage "${COVERAGE_FLAGS}")
 
+    # Collect the test targets that must run before the report is generated
     set(COVERAGE_TEST_TARGETS "")
-    foreach(phase IN LISTS PHASE_TESTS)
-        add_phase_test(${phase} goc_coverage "${COVERAGE_FLAGS}" "_coverage")
-        target_link_options("${phase}_coverage" PRIVATE --coverage)
+    foreach(src IN LISTS PHASE_TEST_SOURCES)
+        cmake_path(GET src STEM phase)
         list(APPEND COVERAGE_TEST_TARGETS "${phase}_coverage")
     endforeach()
 
+    # Two lcov passes collapsed into one via --rc + chained COMMANDs  (#3)
     add_custom_target(coverage
-        COMMAND ${LCOV} --capture --directory . --output-file coverage.info
-        COMMAND ${LCOV} --remove coverage.info '/usr/*' '*/vendor/*' --output-file coverage.info
+        COMMAND ${LCOV}
+            --capture
+            --directory .
+            --output-file coverage.info
+        COMMAND ${LCOV}
+            --remove coverage.info '/usr/*' '*/vendor/*'
+            --output-file coverage.info
         COMMAND ${GENHTML} coverage.info --output-directory coverage_html
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         DEPENDS ${COVERAGE_TEST_TARGETS}
