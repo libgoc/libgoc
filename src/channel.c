@@ -262,7 +262,14 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     if (ch->dead_count >= GOC_DEAD_COUNT_THRESHOLD)
         compact_dead_entries(ch);
 
-    /* Fast path: channel closed */
+    /* Fast path: channel closed.
+     *
+     * Checked before the parked-taker and buffer paths deliberately: sending
+     * on a closed channel is always an error (matching Go's panic-on-send
+     * semantics), regardless of whether a taker is waiting. This ordering
+     * means a close that races with a concurrent put will either see the close
+     * (returning GOC_CLOSED) or deliver normally — never deliver to a taker
+     * on a channel that is already closed from the putter's point of view. */
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
         return GOC_CLOSED;
