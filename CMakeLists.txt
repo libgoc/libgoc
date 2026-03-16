@@ -116,6 +116,30 @@ function(add_instrumented_variant suffix sanitizer extra_flags)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# minicoro isolation — must precede all add_library calls
+#
+# minicoro declares a static MCO_THREAD_LOCAL (thread_local) variable
+# `mco_current_co` to track the active coroutine per thread.  When Boehm GC
+# is compiled with GC_THREADS it wraps pthread_create so that every new thread
+# calls GC_call_with_stack_base during startup, which walks TLS descriptors.
+# If minicoro's TLS block is visible to that walk before mco_current_co has
+# been initialised on the new thread, the GC crashes with a SIGSEGV inside its
+# own startup code — even if no minicoro function has yet been called on that
+# thread.
+#
+# The fix is to compile src/minicoro.c without GC_THREADS so the GC header
+# does not activate its TLS-scanning hooks in that translation unit.  minicoro
+# never calls any GC function, so the flag is irrelevant to its correctness.
+#
+# set_source_files_properties has directory scope: it applies to every target
+# in this CMakeLists.txt that compiles src/minicoro.c (goc, goc_asan,
+# goc_tsan, goc_coverage, goc_shared), so we only need to set it once here.
+# ---------------------------------------------------------------------------
+set_source_files_properties(src/minicoro.c PROPERTIES
+    COMPILE_OPTIONS "-UGC_THREADS"
+)
+
+# ---------------------------------------------------------------------------
 # Default static library
 # ---------------------------------------------------------------------------
 add_library(goc STATIC ${GOC_SOURCES})
