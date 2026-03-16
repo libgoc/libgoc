@@ -110,6 +110,7 @@ function(add_instrumented_variant suffix sanitizer extra_flags)
         target_compile_options(${exe} PRIVATE -Wall -Wextra ${extra_flags})
         target_link_options(${exe} PRIVATE ${sanitizer})
         add_test(NAME ${exe} COMMAND ${exe})
+        set_tests_properties(${exe} PROPERTIES RUN_SERIAL TRUE)
     endforeach()
 endfunction()
 
@@ -146,6 +147,7 @@ foreach(src IN LISTS PHASE_TEST_SOURCES)
     target_link_libraries(${phase} PRIVATE goc)
     target_compile_options(${phase} PRIVATE -Wall -Wextra)
     add_test(NAME ${phase} COMMAND ${phase})
+    set_tests_properties(${phase} PROPERTIES RUN_SERIAL TRUE)
 endforeach()
 
 # ---------------------------------------------------------------------------
