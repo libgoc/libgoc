@@ -86,6 +86,8 @@ libgoc/
 
 minicoro is a single-header library vendored under `vendor/minicoro/`. It requires exactly one translation unit to instantiate its implementation: `src/minicoro.c` defines `MINICORO_IMPL` before including `minicoro.h`. All other files include `minicoro.h` without defining `MINICORO_IMPL`.
 
+`src/minicoro.c` is compiled **without** `-DGC_THREADS` (the flag is explicitly undefined via `-UGC_THREADS` in `CMakeLists.txt`). This isolates minicoro's `thread_local mco_current_co` TLS variable from Boehm GC's thread-startup instrumentation — see [minicoro Limitations](#minicoro-limitations) for the full rationale.
+
 ---
 
 ## Build System Setup
@@ -98,6 +100,8 @@ The project uses CMake (≥ 3.16). `CMakeLists.txt` defines two primary targets:
 | `test_p1_foundation` … `test_p8_safety` | executables | one per phase (`tests/test_p1_*.c` … `tests/test_p8_*.c`), each linked against `goc` + Boehm GC |
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent) and CMake's `find_package` (pthreads / pthreads4w on Windows). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
+
+> **`minicoro.c` and `-DGC_THREADS`:** `src/minicoro.c` is compiled with `-UGC_THREADS` via `set_source_files_properties` in `CMakeLists.txt`, explicitly removing the `GC_THREADS` definition that is otherwise applied to every other source file. This is required because Boehm GC compiled with `GC_THREADS` wraps `pthread_create` and calls `GC_call_with_stack_base` during thread startup. If minicoro's `static MCO_THREAD_LOCAL mco_current_co` TLS variable is initialised in the same GC-instrumented context, the GC's TLS walk can fault before that variable is set up, producing a SIGSEGV inside `GC_call_with_stack_base` (observed as a crash during `goc_in_fiber()` in P1.4). Compiling minicoro in an isolated, GC-unaware TU eliminates this hazard. minicoro never calls any GC function, so `-DGC_THREADS` is meaningless to it regardless.
 
 > **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`, `GC_register_my_thread()`, and `GC_unregister_my_thread()` on every pool worker. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
 
@@ -420,11 +424,13 @@ GC_remove_roots(stack_base, stack_base + stack_size);
 
 ## minicoro Limitations
 
-libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switching. Two hard constraints apply to all fiber entry functions and must be understood by library embedders:
+libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switching. Three hard constraints apply to all fiber entry functions and must be understood by library embedders:
 
 **C++ exceptions are not supported.** The C++ exception mechanism maintains internal unwinding state that is not preserved across a coroutine context switch. Throwing an exception that propagates across a `mco_yield` / `mco_resume` boundary is undefined behaviour and will typically corrupt the exception handler chain or crash. In mixed C/C++ codebases all fiber entry functions must be declared `extern "C"` and must not allow any C++ exception to escape them.
 
 **Stack overflow aborts the process.** libgoc writes a canary value at the low end of each fiber stack on creation and validates it on every resume. If the canary has been overwritten, the runtime calls `abort()` immediately with a diagnostic message. This turns silent heap corruption into a deterministic, debuggable crash. Stack overflow is still a programming error — avoid large stack-allocated buffers and deep recursion inside fibers. If a fiber is known to need more stack space, restructure the work to use `goc_malloc`-allocated buffers on the GC heap instead.
+
+**`src/minicoro.c` must be compiled without `-DGC_THREADS`.** minicoro declares a `static MCO_THREAD_LOCAL mco_current_co` variable (a `thread_local` TLS slot) to track the running coroutine per thread. When Boehm GC is compiled with `GC_THREADS` it wraps `pthread_create` and invokes `GC_call_with_stack_base` during thread startup, which walks TLS descriptors. If minicoro's TLS block is visible to that walk before `mco_current_co` is initialised on a new thread, the GC faults with a SIGSEGV inside its own startup code — even if no minicoro function has yet been called. The fix is to compile `src/minicoro.c` in its own isolated translation unit with `-UGC_THREADS`, which `CMakeLists.txt` enforces via `set_source_files_properties`. minicoro never calls any GC function, so the flag is irrelevant to its correctness regardless.
 
 ---
 
