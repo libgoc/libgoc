@@ -147,40 +147,57 @@ void goc_close(goc_chan* ch)
     ch->closed = 1;
 
     /* Wake all parked takers with GOC_CLOSED */
-    for (goc_entry* e = ch->takers; e != NULL; e = e->next) {
-        /* Skip cancelled entries (goc_alts losers): their coroutine is already
-         * dead; calling post_to_run_queue on it would resume a MCO_DEAD coro
-         * and crash.  This mirrors the same guard in wake(). */
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
-            continue;
-        int exp = 0;
-        if (atomic_compare_exchange_strong_explicit(
-                &e->woken, &exp, 1,
-                memory_order_acq_rel, memory_order_acquire)) {
-            e->ok = GOC_CLOSED;
-            switch (e->kind) {
-            case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
-            case GOC_CALLBACK: post_callback(e, NULL);        break;
-            case GOC_SYNC:     sem_post(e->sync_sem_ptr);     break;
+    {
+        goc_entry* e = ch->takers;
+        while (e != NULL) {
+            /* Snapshot next before any dispatch: for GOC_FIBER entries,
+             * post_to_run_queue may allow a pool thread to resume the fiber
+             * immediately, which can cause the entry to be freed (if it was
+             * stack-allocated in goc_take) or collected (if GC-heap allocated
+             * in goc_alts).  Reading e->next after dispatch is use-after-free.
+             * This mirrors the same fix in chan_put_to_taker. */
+            goc_entry* next = e->next;
+            /* Skip cancelled entries (goc_alts losers): their coroutine is
+             * already dead; calling post_to_run_queue on it would resume a
+             * MCO_DEAD coro and crash.  This mirrors the same guard in wake(). */
+            if (!atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
+                int exp = 0;
+                if (atomic_compare_exchange_strong_explicit(
+                        &e->woken, &exp, 1,
+                        memory_order_acq_rel, memory_order_acquire)) {
+                    e->ok = GOC_CLOSED;
+                    switch (e->kind) {
+                    case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
+                    case GOC_CALLBACK: post_callback(e, NULL);        break;
+                    case GOC_SYNC:     sem_post(e->sync_sem_ptr);     break;
+                    }
+                }
             }
+            e = next;
         }
     }
 
     /* Wake all parked putters with GOC_CLOSED */
-    for (goc_entry* e = ch->putters; e != NULL; e = e->next) {
-        /* Same cancelled guard as the takers loop above. */
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
-            continue;
-        int exp = 0;
-        if (atomic_compare_exchange_strong_explicit(
-                &e->woken, &exp, 1,
-                memory_order_acq_rel, memory_order_acquire)) {
-            e->ok = GOC_CLOSED;
-            switch (e->kind) {
-            case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
-            case GOC_CALLBACK: post_callback(e, NULL);        break;
-            case GOC_SYNC:     sem_post(e->sync_sem_ptr);     break;
+    {
+        goc_entry* e = ch->putters;
+        while (e != NULL) {
+            /* Same next-snapshot fix as the takers loop above. */
+            goc_entry* next = e->next;
+            /* Same cancelled guard as the takers loop above. */
+            if (!atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
+                int exp = 0;
+                if (atomic_compare_exchange_strong_explicit(
+                        &e->woken, &exp, 1,
+                        memory_order_acq_rel, memory_order_acquire)) {
+                    e->ok = GOC_CLOSED;
+                    switch (e->kind) {
+                    case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
+                    case GOC_CALLBACK: post_callback(e, NULL);        break;
+                    case GOC_SYNC:     sem_post(e->sync_sem_ptr);     break;
+                    }
+                }
             }
+            e = next;
         }
     }
 
