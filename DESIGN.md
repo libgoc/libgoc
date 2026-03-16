@@ -84,13 +84,13 @@ libgoc/
 
 minicoro is a single-header library vendored under `vendor/minicoro/`. It requires exactly one translation unit to instantiate its implementation: `src/minicoro.c` defines `MINICORO_IMPL` before including `minicoro.h`. All other files include `minicoro.h` without defining `MINICORO_IMPL`.
 
-`src/minicoro.c` has no special compile flags. minicoro never calls any GC function, and no GC-specific treatment of its translation unit is required.
+`src/minicoro.c` **must be compiled without `-DGC_THREADS`** (see [minicoro Limitations](#minicoro-limitations)). `CMakeLists.txt` enforces this via `set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS")`.
 
 ---
 
 ## Build System Setup
 
-The project uses CMake (≥ 3.16). `CMakeLists.txt` defines two primary targets:
+The project uses CMake (≥ 3.20). `CMakeLists.txt` defines two primary targets:
 
 | Target | Type | Description |
 |---|---|---|
@@ -99,7 +99,7 @@ The project uses CMake (≥ 3.16). `CMakeLists.txt` defines two primary targets:
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
-> **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. **All** libgoc threads — both pool workers and the uv loop thread — are created with `GC_pthread_create` and joined with `GC_pthread_join`. The GC wrapper handles registration and deregistration automatically. No thread in libgoc calls `GC_register_my_thread` / `GC_unregister_my_thread` manually. Doing so would double-register the thread, corrupt the GC's internal thread table, and produce a SIGSEGV inside `GC_call_with_stack_base` on thread startup. Previously the loop thread used plain `pthread_create` with manual registration, which introduced a race window between thread creation and the in-thread `GC_register_my_thread` call; this was observed as a SIGSEGV during P1.4.
+> **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. Pool worker threads are created after `GC_INIT()` and `GC_allow_register_threads()` using `GC_pthread_create`, so the GC pthread wrapper handles their registration automatically. Pool workers must **not** call `GC_register_my_thread` / `GC_unregister_my_thread` manually — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4). The uv loop thread is an exception: it is spawned with plain `pthread_create` and therefore calls `GC_register_my_thread` / `GC_unregister_my_thread` manually.
 
 > **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
 
@@ -118,6 +118,8 @@ Optional opt-in targets, each requiring a **separate build directory**:
 | `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` and `test_libgoc`; produces `coverage_html/index.html`; incompatible with Release optimisation levels |
 
 ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. Configuring both in the same directory is a CMake error.
+
+> **Static archive link order:** On Linux, `ld` processes archives in a single left-to-right pass and only extracts an object file when it resolves a symbol already pending. Within `libgoc.a` there are upward cross-references: `gc.c.o` calls into `pool.c.o`, and `channel.c.o` / `fiber.c.o` call `post_to_run_queue` in `pool.c.o`. To resolve these regardless of object file ordering, every test executable links against `libgoc.a` wrapped in `-Wl,--start-group … -Wl,--end-group`, which instructs `ld` to rescan the enclosed archives until all cross-references are satisfied. `cmake_path` (required by the test discovery loop) sets the effective minimum at CMake 3.20; the `$<LINK_GROUP:RESCAN,...>` generator expression (CMake ≥ 3.24) is not used to preserve compatibility with the stated minimum.
 
 ---
 
