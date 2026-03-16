@@ -102,9 +102,7 @@ A CMake function `goc_configure_target(<target>)` centralises the options shared
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
-> **Boehm GC thread registration:** When compiled with `-DGC_THREADS`, Boehm GC wraps `pthread_create` so that every new thread is automatically registered via `GC_call_with_stack_base`. Pool worker threads and the uv loop thread are all created using `GC_pthread_create` after `GC_INIT()` and `GC_allow_register_threads()`, so the GC pthread wrapper handles their registration automatically. **No thread created by libgoc calls `GC_register_my_thread` / `GC_unregister_my_thread` manually** — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4).
-
-> **Why `bdw-gc-threaded` is required:** libgoc compiles with `-DGC_THREADS` and calls `GC_allow_register_threads()`. These symbols are only present in a Boehm GC build compiled with `--enable-threads`. Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime. The `bdw-gc-threaded` pkg-config module is the explicitly thread-safe variant and is the only acceptable dependency. If it is not present, CMake will fail at configure time with a clear error. See `README.md` for per-platform Boehm GC installation instructions.
+> **Boehm GC thread registration:** libgoc compiles with `-DGC_THREADS` and requires a Boehm GC built with `--enable-threads` (the `bdw-gc-threaded` pkg-config module). Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime; CMake will fail at configure time if the threaded variant is absent. See `README.md` for per-platform installation instructions. At runtime, all threads — pool workers and the uv loop thread — are created via `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector. **No thread created by libgoc calls `GC_register_my_thread` / `GC_unregister_my_thread` manually** — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on thread startup (observed as a crash during P1.4).
 
 Named constants defined in `config.h`:
 - `GOC_PAGE_SIZE`
@@ -223,7 +221,7 @@ Boehm GC (bdw-gc) is a **required link-time dependency**. It is not optional and
 
 `goc_init` must be **the first call in `main()`**, before any other library or application code that could trigger GC allocation. It calls `GC_INIT()` unconditionally as its very first operation, followed immediately by `GC_allow_register_threads()` — `GC_INIT()` performs all one-time GC setup, and `GC_allow_register_threads()` enables multi-thread stack registration. **Callers must not call these functions themselves.**
 
-Pool worker threads are created via `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so that each worker is automatically registered with the collector before its body executes. Workers must **not** call `GC_register_my_thread` / `GC_unregister_my_thread` manually — doing so double-registers the thread, corrupts the GC's internal thread table, and produces a SIGSEGV inside `GC_call_with_stack_base` on startup. The uv loop thread is spawned with plain `pthread_create` (outside the GC wrapper) and therefore **does** call `GC_register_my_thread` / `GC_unregister_my_thread` manually to ensure its stack is scanned during stop-the-world collection.
+All threads — pool workers and the uv loop thread — are created via `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector before its body executes. No thread must call `GC_register_my_thread` / `GC_unregister_my_thread` manually — doing so double-registers the thread and corrupts the GC's internal thread table.
 
 **`goc_init` must be called exactly once, as the very first call in `main()`, before any other library or application code that could trigger GC allocation. Calling it more than once is undefined behaviour.**
 
@@ -288,7 +286,7 @@ struct goc_chan {
 
    When iterating takers and putters, `goc_close` must skip any entry where `e->cancelled == 1` **before** attempting the `woken` CAS. Cancelled entries belong to `goc_alts` losers whose coroutine is already `MCO_DEAD`; winning the CAS on such an entry and calling `post_to_run_queue` would call `mco_resume` on a dead coroutine, producing a SIGSEGV. This is the same guard applied by `wake()` and must be kept consistent with it.
 
-   **`e->next` must be snapshotted before dispatching** in both the takers and putters loops. For `GOC_FIBER` entries, `post_to_run_queue` makes the fiber immediately eligible to run on a pool thread. That fiber can resume, complete, and cause the `goc_entry` (GC-heap allocated inside `goc_alts`) to be collected before the loop advances to `e->next`. Reading `e->next` after `post_to_run_queue` is therefore a use-after-free and will SIGSEGV. The fix is the same pattern used in `chan_put_to_taker`: snapshot `next = e->next` **before** any dispatch call, then advance using the snapshot. The loops must be written as `while (e != NULL) { goc_entry* next = e->next; ..dispatch..; e = next; }` — a `for` loop with `e = e->next` in the step expression is incorrect because the step is evaluated after the body, at which point `e` may be freed.
+   See [Unified Wakeup](#unified-wakeup) for the `e->next` snapshot requirement.
 
 > **Why not destroy the mutex inline?** After `goc_close` wakes parked fibers, those fibers are re-enqueued on pool threads and will resume shortly. A resumed fiber may call `goc_take` or `goc_put` on the same channel pointer — the first thing those functions do is `uv_mutex_lock(ch->lock)`. If `goc_close` had already freed the mutex, that call would crash. The mutex must remain valid until the pool is fully drained and all workers are joined (Step 2). Only at that point is it guaranteed that no fiber can reach the channel's lock again.
 
@@ -658,11 +656,7 @@ while not shutdown:
        goc_pool_destroy_timeout will not see a spurious drain-complete. */
 ```
 
-> **Why `coro` is snapshotted before `mco_resume`.** When a fiber suspends inside `goc_take`, it stack-allocates a `goc_entry` (the parking entry) on its own coroutine stack and parks. The pool worker's `entry` pointer therefore points into the fiber's stack for the duration of that park. If the fiber is immediately re-scheduled on the same resume call (i.e. it runs to completion without yielding again), minicoro recycles the stack — and the memory `entry` pointed at is gone by the time `mco_resume` returns. Reading `entry->coro` after the resume is therefore a use-after-free and a potential segfault. The `mco_coro` object itself is minicoro heap-allocated and remains valid until `mco_destroy`, so snapshotting `coro = entry->coro` *before* the resume is always safe and eliminates the hazard entirely. The same class of use-after-free applies to `chan_put_to_taker` and `chan_take_from_putter`: both must snapshot `e->next` before calling `wake()` — see the note in [Unified Wakeup](#unified-wakeup).
-
-`active_count` tracks fiber entries currently queued in the run queue or executing on a worker thread. It does **not** count fibers parked on a channel — those have already been decremented and are invisible to the pool until `wake()` re-enqueues them. `active_count` is an internal scheduling counter only.
-
-`live_count` tracks all fibers that are alive on the pool, whether running, queued, or parked. It is the correct drain signal. A fiber that yields and parks on a channel has `active_count` decremented but `live_count` unchanged — it is still alive and will be re-enqueued when woken.
+> **Why `coro` is snapshotted before `mco_resume`.** When a fiber suspends inside `goc_take`, it stack-allocates a `goc_entry` (the parking entry) on its own coroutine stack and parks. The pool worker's `entry` pointer therefore points into the fiber's stack for the duration of that park. If the fiber is immediately re-scheduled on the same resume call (i.e. it runs to completion without yielding again), minicoro recycles the stack — and the memory `entry` pointed at is gone by the time `mco_resume` returns. Reading `entry->coro` after the resume is therefore a use-after-free and a potential segfault. The `mco_coro` object itself is minicoro heap-allocated and remains valid until `mco_destroy`, so snapshotting `coro = entry->coro` *before* the resume is always safe and eliminates the hazard entirely. See [Unified Wakeup](#unified-wakeup) for the analogous `e->next` snapshot requirement in `chan_put_to_taker` and `chan_take_from_putter`.
 
 The invariant is:
 
@@ -716,9 +710,7 @@ runq_pop(q) → goc_entry* or NULL:
     return entry
 ```
 
-Workers register themselves with Boehm GC on start (`GC_register_my_thread`) and unregister on exit (`GC_unregister_my_thread`).
-
-> **GC registration is not limited to pool workers.** The dedicated uv loop thread also calls `GC_register_my_thread` (passing its approximate stack base) when it starts, and `GC_unregister_my_thread` before it exits. This is required so that the GC can scan the loop thread's stack during stop-the-world collection.
+All threads — pool workers and the uv loop thread — are created via `GC_pthread_create` and are automatically registered with Boehm GC. No thread calls `GC_register_my_thread` / `GC_unregister_my_thread` manually.
 
 ---
 
@@ -1056,7 +1048,7 @@ uv_tcp_init(goc_scheduler(), server);
 
 **Step 1 — Drain all in-flight fibers.**
 
-`goc_shutdown` iterates the global pool registry and calls `goc_pool_destroy` on every pool that has not already been destroyed — this includes the default pool and any user-created pools made with `goc_pool_make`. `goc_pool_destroy` waits on `drain_cond` (under `drain_mutex`) until `active_count` reaches zero — meaning every fiber has run to completion. Fibers are expected to finish naturally; `goc_shutdown` does not forcibly close channels or inject `ok==GOC_CLOSED` wakeups.
+`goc_shutdown` iterates the global pool registry and calls `goc_pool_destroy` on every pool that has not already been destroyed — this includes the default pool and any user-created pools made with `goc_pool_make`. `goc_pool_destroy` waits on `drain_cond` (under `drain_mutex`) until `live_count` reaches zero — meaning every fiber has run to completion. Fibers are expected to finish naturally; `goc_shutdown` does not forcibly close channels or inject `ok==GOC_CLOSED` wakeups.
 
 Once the drain-wait completes, `goc_pool_destroy`:
 1. Logs a diagnostic if the run queue is somehow still non-empty.
