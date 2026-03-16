@@ -1177,8 +1177,22 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P6.2 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_OK` when all fibers finish before the deadline |
 | P6.3 | `goc_pool_destroy_timeout` returns `GOC_DRAIN_TIMEOUT` when fibers are still running at deadline; pool remains valid — verified by dispatching a new short-lived fiber via `goc_go_on` to the same pool and confirming it runs to completion before `goc_pool_destroy` is called |
 | P6.4 | `goc_malloc` end-to-end: fiber builds GC-heap linked list, main traverses after join |
-| P6.5 | `compact_dead_entries` fires correctly: 12 fibers race on `target_ch` via `goc_alts`; 11 lose the woken CAS and accumulate as dead entries (`dead_count` == 11 > `GOC_DEAD_COUNT_THRESHOLD` == 8); a probe fiber calls `goc_take` on the same channel (fiber-context — the only path that checks the threshold), triggering `compact_dead_entries`; probe receives the sentinel value without crash or hang. Synchronisation uses an atomic counter + 5 ms `nanosleep` rather than `done_signal`-before-`goc_alts` (the previous approach had a race between the signal and Phase 6 enqueue completion). |
+| P6.5 | `compact_dead_entries` sweep: see [P6.5 in depth](#p65-compact_dead_entries-sweep) below. |
 | P6.6 | `goc_alts` with `n > GOC_ALTS_STACK_THRESHOLD` (8) arms exercises the `malloc` path in `alts_dedup_sort_channels`; correct arm fires, no memory error (run under ASAN to catch heap misuse) |
+
+#### P6.5 — `compact_dead_entries` sweep
+
+**What is being tested.** When many fibers race on the same channel via `goc_alts`, every loser leaves a stale (dead) entry on the channel's taker list. `compact_dead_entries` is the amortised sweep that removes these entries; it runs at the top of `goc_take` and `goc_put` (fiber context, under the channel lock) whenever `dead_count >= GOC_DEAD_COUNT_THRESHOLD`. P6.5 verifies that the sweep fires correctly and that the channel remains well-formed afterwards.
+
+**Setup.** 12 competitor fibers are launched via `goc_go`. Each fiber calls `goc_alts` with two take arms: `target_ch` (unbuffered, the prize channel) and `decoy_ch` (unbuffered, never receives data). Because `decoy_ch` is always empty, every fiber is guaranteed to reach Phase 6 of the alts protocol and park on both channels — ensuring stale entries accumulate on `target_ch`'s taker list rather than firing immediately on a decoy value.
+
+**The race.** The main thread puts a single value onto `target_ch` via `goc_put_sync`. Exactly one fiber wins the `woken` CAS inside `wake()`; the remaining 11 lose and have `dead_count` incremented for each. After the race, `target_ch->dead_count == 11`, which exceeds `GOC_DEAD_COUNT_THRESHOLD` (8).
+
+**Sweep verification.** A probe fiber calls `goc_take(target_ch)` — fiber context, the only path that checks the threshold. On entry it acquires the channel lock, sees `dead_count >= 8`, and calls `compact_dead_entries` before doing anything else. The sweep walks the taker list, unlinks all 11 cancelled entries, and resets `dead_count` to 0. The probe then parks (the channel is empty), the main thread puts a sentinel value, and the probe receives it. A crash or hang in the probe indicates the taker list was left corrupt by the sweep.
+
+**Synchronisation.** Each competitor fiber increments a shared `_Atomic int g_p6_5_ready` immediately before calling `goc_alts`. The main thread spins on this counter reaching 12, then sleeps 5 ms before putting the prize value. The spin uses a 100 µs `nanosleep` per iteration so the main thread yields its CPU slice each time around the loop, keeping pool worker threads schedulable on low-core-count machines. The 5 ms sleep that follows covers the window between a fiber incrementing the counter and completing Phase 6 of the alts protocol (acquiring channel locks, appending entries, releasing locks); 5 ms is orders of magnitude larger than that critical section in practice.
+
+**Final consistency check.** After the probe exits, `target_ch` is closed and `goc_take_sync` on it must return `GOC_CLOSED` immediately, confirming the channel is still well-formed after the sweep.
 
 **Phase 7 — Integration**
 
