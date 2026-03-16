@@ -1,218 +1,390 @@
-/* src/loop.c
+/*
+ * src/pool.c
  *
- * Owns the libuv event loop (g_loop) and its thread.
- * Owns the cross-thread wakeup handle (g_wakeup) and shutdown handle
- * (g_shutdown_async).
- * Owns the MPSC callback queue (g_cb_queue) and its drain logic (on_wakeup).
- * Exposes: goc_scheduler(), loop_init(), loop_shutdown(), post_callback().
+ * Thread pool workers, run queue, pool registry, and drain logic.
+ * Defines goc_pool and all pool operations.
+ *
+ * Internal symbols exposed via internal.h:
+ *   pool_registry_init()
+ *   pool_registry_destroy_all()
+ *   post_to_run_queue()
+ *
+ * Public API implemented here:
+ *   goc_pool_make()
+ *   goc_pool_destroy()
+ *   goc_pool_destroy_timeout()
  */
 
 #include <stdlib.h>
-#include <assert.h>
+#include <string.h>
 #include <pthread.h>
 #include <uv.h>
 #include <gc.h>
 #include "../include/goc.h"
+#include "minicoro.h"
 #include "internal.h"
 
-/* --------------------------------------------------------------------------
- * MPSC queue (Vyukov-style intrusive lock-free queue)
- * Nodes are GC-allocated so the GC can trace the goc_entry* inside.
- * -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+ * Run-queue node (GC-heap so the entry pointer is visible to the collector)
+ * ---------------------------------------------------------------------- */
 
-typedef struct mpsc_node {
-    _Atomic(struct mpsc_node *) next;
-    goc_entry                  *entry;
-} mpsc_node;
+typedef struct goc_runq_node {
+    goc_entry*             entry;
+    struct goc_runq_node*  next;
+} goc_runq_node;
+
+/* -------------------------------------------------------------------------
+ * Two-lock MPMC run queue (Michael & Scott style)
+ * ---------------------------------------------------------------------- */
 
 typedef struct {
-    _Atomic(mpsc_node *) head;  /* producers exchange here */
-    mpsc_node           *tail;  /* consumer-only */
-} mpsc_queue_t;
+    goc_runq_node* head;
+    goc_runq_node* tail;
+    uv_mutex_t     head_lock;
+    uv_mutex_t     tail_lock;
+} goc_runq;
 
-/* --------------------------------------------------------------------------
- * Global state (exported via extern in internal.h)
- * -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+ * goc_pool — full definition (opaque outside pool.c)
+ * ---------------------------------------------------------------------- */
 
-uv_loop_t            *g_loop           = NULL;
-_Atomic(uv_async_t *) g_wakeup;                 /* exported */
+struct goc_pool {
+    pthread_t*      threads;
+    size_t          thread_count;
+    goc_runq        runq;
+    uv_sem_t        work_sem;
+    _Atomic int     shutdown;
+    pthread_mutex_t drain_mutex;
+    pthread_cond_t  drain_cond;
+    size_t          active_count;
+};
 
-static uv_async_t    *g_wakeup_raw     = NULL;  /* raw pointer behind g_wakeup */
-static uv_async_t    *g_shutdown_async = NULL;
-static pthread_t      g_loop_thread;
-static mpsc_queue_t   g_cb_queue;
+/* -------------------------------------------------------------------------
+ * Pool registry (file-scope; owned entirely by pool.c)
+ * ---------------------------------------------------------------------- */
 
-/* --------------------------------------------------------------------------
- * MPSC queue implementation
- * -------------------------------------------------------------------------- */
+static goc_pool**  g_pool_registry     = NULL;
+static size_t      g_pool_registry_len = 0;
+static size_t      g_pool_registry_cap = 0;
+static uv_mutex_t  g_pool_registry_mutex;
 
-static void cb_queue_init(void)
-{
-    mpsc_node *sentinel = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
-    atomic_store_explicit(&sentinel->next, NULL, memory_order_relaxed);
-    sentinel->entry = NULL;
-    atomic_store_explicit(&g_cb_queue.head, sentinel, memory_order_relaxed);
-    g_cb_queue.tail = sentinel;
+/* -------------------------------------------------------------------------
+ * pool_registry_init — allocates registry + mutex; called from gc.c:goc_init
+ * ---------------------------------------------------------------------- */
+
+void pool_registry_init(void) {
+    g_pool_registry_cap = 8;
+    g_pool_registry     = malloc(g_pool_registry_cap * sizeof(goc_pool*));
+    g_pool_registry_len = 0;
+    uv_mutex_init(&g_pool_registry_mutex);
 }
 
-/* Enqueue an entry onto g_cb_queue (producer — any thread). */
-static void cb_queue_push(mpsc_node *node)
-{
-    atomic_store_explicit(&node->next, NULL, memory_order_relaxed);
-    /* Vyukov: exchange head and link previous head's next to this node. */
-    mpsc_node *prev = atomic_exchange_explicit(&g_cb_queue.head, node,
-                                               memory_order_acq_rel);
-    atomic_store_explicit(&prev->next, node, memory_order_release);
+/* -------------------------------------------------------------------------
+ * pool_registry_destroy_all — called from gc.c:goc_shutdown (B.1)
+ * ---------------------------------------------------------------------- */
+
+void pool_registry_destroy_all(void) {
+    uv_mutex_lock(&g_pool_registry_mutex);
+    /* Snapshot the list before destroying, since goc_pool_destroy will
+     * attempt to unregister itself and take the same lock.  We clear
+     * the registry now so that unregister finds nothing to do. */
+    size_t    len   = g_pool_registry_len;
+    goc_pool** snap = malloc(len * sizeof(goc_pool*));
+    memcpy(snap, g_pool_registry, len * sizeof(goc_pool*));
+    g_pool_registry_len = 0;
+    uv_mutex_unlock(&g_pool_registry_mutex);
+
+    for (size_t i = 0; i < len; i++) {
+        goc_pool_destroy(snap[i]);
+    }
+    free(snap);
+
+    uv_mutex_destroy(&g_pool_registry_mutex);
+    free(g_pool_registry);
+    g_pool_registry = NULL;
 }
 
-/* Dequeue from g_cb_queue (consumer — loop thread only).
- * Returns the entry or NULL if the queue is empty. */
-static goc_entry *cb_queue_pop(void)
-{
-    mpsc_node *tail = g_cb_queue.tail;
-    mpsc_node *next = atomic_load_explicit(&tail->next, memory_order_acquire);
-    if (!next)
-        return NULL;                /* queue is empty */
-    g_cb_queue.tail = next;         /* advance tail past sentinel */
-    goc_entry *e = next->entry;
-    /* Old tail (sentinel) is now garbage — GC will collect it. */
-    return e;
+/* -------------------------------------------------------------------------
+ * registry_add / registry_remove (static helpers)
+ * ---------------------------------------------------------------------- */
+
+static void registry_add(goc_pool* pool) {
+    uv_mutex_lock(&g_pool_registry_mutex);
+    if (g_pool_registry_len == g_pool_registry_cap) {
+        g_pool_registry_cap *= 2;
+        g_pool_registry = realloc(g_pool_registry,
+                                  g_pool_registry_cap * sizeof(goc_pool*));
+    }
+    g_pool_registry[g_pool_registry_len++] = pool;
+    uv_mutex_unlock(&g_pool_registry_mutex);
 }
 
-/* --------------------------------------------------------------------------
- * post_callback — called from any thread (pool workers, loop thread)
- * -------------------------------------------------------------------------- */
-
-void post_callback(goc_entry *entry, void *value)
-{
-    /* For take callbacks: store the delivered value. */
-    entry->cb_result = value;
-
-    mpsc_node *node = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
-    node->entry = entry;
-    cb_queue_push(node);
-
-    uv_async_t *w = atomic_load_explicit(&g_wakeup, memory_order_acquire);
-    if (w)
-        uv_async_send(w);
-}
-
-/* --------------------------------------------------------------------------
- * goc_scheduler — public
- * -------------------------------------------------------------------------- */
-
-uv_loop_t *goc_scheduler(void)
-{
-    return g_loop;
-}
-
-/* --------------------------------------------------------------------------
- * Loop thread callbacks
- * -------------------------------------------------------------------------- */
-
-static void free_handle_cb(uv_handle_t *h)
-{
-    free(h);
-}
-
-static void on_wakeup_closed(uv_handle_t *h)
-{
-    /* Set g_wakeup to NULL only once libuv guarantees no further callbacks
-     * will fire for this handle, preventing a race with post_callback. */
-    atomic_store_explicit(&g_wakeup, NULL, memory_order_release);
-    free(h);
-}
-
-/* Drain the callback queue and fire pending callbacks (loop thread). */
-static void drain_cb_queue(void)
-{
-    goc_entry *e;
-    while ((e = cb_queue_pop()) != NULL) {
-        if (e->kind == GOC_CALLBACK) {
-            if (e->cb)
-                e->cb(e->cb_result, e->ok, e->ud);
-            else if (e->put_cb)
-                e->put_cb(e->ok, e->ud);
+static void registry_remove(goc_pool* pool) {
+    uv_mutex_lock(&g_pool_registry_mutex);
+    for (size_t i = 0; i < g_pool_registry_len; i++) {
+        if (g_pool_registry[i] == pool) {
+            g_pool_registry[i] = g_pool_registry[--g_pool_registry_len];
+            break;
         }
     }
+    uv_mutex_unlock(&g_pool_registry_mutex);
 }
 
-/* on_wakeup — loop thread; drains g_cb_queue and fires callbacks. */
-static void on_wakeup(uv_async_t *h)
-{
-    (void)h;
-    drain_cb_queue();
+/* -------------------------------------------------------------------------
+ * runq_push / runq_pop — two-lock MPMC operations
+ * ---------------------------------------------------------------------- */
+
+static void runq_push(goc_runq* q, goc_entry* entry) {
+    goc_runq_node* node = goc_malloc(sizeof(goc_runq_node));
+    node->entry = entry;
+    node->next  = NULL;
+
+    uv_mutex_lock(&q->tail_lock);
+    q->tail->next = node;
+    q->tail       = node;
+    uv_mutex_unlock(&q->tail_lock);
 }
 
-/* on_shutdown_signal — loop thread; fires remaining callbacks, then closes
- * both async handles.  Closing all handles causes uv_run to exit. */
-static void on_shutdown_signal(uv_async_t *h)
-{
-    (void)h;
-
-    /* Fire any remaining pending callbacks before closing. */
-    drain_cb_queue();
-
-    /* Close wakeup handle; on_wakeup_closed will NULL g_wakeup and free. */
-    uv_close((uv_handle_t *)g_wakeup_raw, on_wakeup_closed);
-
-    /* Close the shutdown async handle itself. */
-    uv_close((uv_handle_t *)g_shutdown_async, free_handle_cb);
+static goc_entry* runq_pop(goc_runq* q) {
+    uv_mutex_lock(&q->head_lock);
+    goc_runq_node* sentinel = q->head;
+    goc_runq_node* next     = sentinel->next;
+    if (next == NULL) {
+        uv_mutex_unlock(&q->head_lock);
+        return NULL;
+    }
+    goc_entry* entry = next->entry;
+    q->head          = next;
+    uv_mutex_unlock(&q->head_lock);
+    /* sentinel (old head) is now unreachable; GC will collect it */
+    return entry;
 }
 
-/* --------------------------------------------------------------------------
- * Loop thread entry point
- * -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+ * pool_worker_fn — thread entry point
+ * ---------------------------------------------------------------------- */
 
-static void *loop_thread_fn(void *arg)
-{
-    (void)arg;
-    while (uv_run(g_loop, UV_RUN_ONCE)) {}
+static void* pool_worker_fn(void* arg) {
+    goc_pool* pool = (goc_pool*)arg;
+
+    while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
+        uv_sem_wait(&pool->work_sem);
+
+        goc_entry* entry = runq_pop(&pool->runq);
+        if (entry == NULL) {
+            /* Spurious wake (e.g. shutdown signal); re-check loop condition. */
+            continue;
+        }
+
+        /* Keep the entry pointer GC-rooted for the duration of the resume. */
+        GC_add_roots(&entry, &entry + 1);
+
+        /* Canary check — abort on stack overflow before corrupting anything. */
+        if (*entry->stack_canary_ptr != GOC_STACK_CANARY) {
+            abort();
+        }
+
+        /* Save the coroutine handle before resuming.  If this is a parking
+         * entry (stack-allocated inside goc_take on the fiber's own stack),
+         * the fiber may run to completion during mco_resume — clobbering the
+         * memory where `entry` lives before control returns here.  The
+         * mco_coro object itself is minicoro heap-allocated and remains valid
+         * until mco_destroy, so `coro` is safe to dereference after the
+         * resume regardless of what happened to `entry`. */
+        mco_coro* coro = entry->coro;
+
+        mco_resume(coro);
+
+        GC_remove_roots(&entry, &entry + 1);
+
+        /* Decrement active_count unconditionally (fiber yielded or exited).
+         *
+         * Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
+         * be re-posted to a run queue via post_to_run_queue(), which increments
+         * active_count before the next resume.  If a fiber yields without being
+         * re-queued (a bug in the channel / alts layer), active_count will reach
+         * zero prematurely and goc_pool_destroy will return with live coroutines.
+         * The canary check above and the assert(winner != NULL) in alts.c are the
+         * primary guards against this happening silently. */
+        pthread_mutex_lock(&pool->drain_mutex);
+        pool->active_count--;
+        pthread_mutex_unlock(&pool->drain_mutex);
+
+        /* Check for fiber completion *after* the decrement has landed. */
+        if (mco_status(coro) == MCO_DEAD) {
+            mco_destroy(coro);
+
+            pthread_mutex_lock(&pool->drain_mutex);
+            pthread_cond_broadcast(&pool->drain_cond);
+            pthread_mutex_unlock(&pool->drain_mutex);
+        }
+    }
+
     return NULL;
 }
 
-/* --------------------------------------------------------------------------
- * loop_init / loop_shutdown — internal (declared in internal.h)
- * -------------------------------------------------------------------------- */
+/* -------------------------------------------------------------------------
+ * post_to_run_queue — internal; called from fiber.c and channel.c
+ * ---------------------------------------------------------------------- */
 
-void loop_init(void)
-{
-    /* 1. Allocate and initialise the event loop. */
-    g_loop = (uv_loop_t *)malloc(sizeof(uv_loop_t));
-    assert(g_loop);
-    uv_loop_init(g_loop);
+void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
+    pthread_mutex_lock(&pool->drain_mutex);
+    pool->active_count++;
+    pthread_mutex_unlock(&pool->drain_mutex);
 
-    /* 2. Wakeup async handle. */
-    g_wakeup_raw = (uv_async_t *)malloc(sizeof(uv_async_t));
-    assert(g_wakeup_raw);
-    uv_async_init(g_loop, g_wakeup_raw, on_wakeup);
-
-    /* 3. Publish wakeup pointer atomically. */
-    atomic_store_explicit(&g_wakeup, g_wakeup_raw, memory_order_release);
-
-    /* 4. Shutdown async handle. */
-    g_shutdown_async = (uv_async_t *)malloc(sizeof(uv_async_t));
-    assert(g_shutdown_async);
-    uv_async_init(g_loop, g_shutdown_async, on_shutdown_signal);
-
-    /* 5. Initialise the MPSC callback queue. */
-    cb_queue_init();
-
-    /* 6. Spawn the loop thread via GC_pthread_create so the GC wrapper
-     *    registers the thread automatically (consistent with pool workers). */
-    GC_pthread_create(&g_loop_thread, NULL, loop_thread_fn, NULL);
+    runq_push(&pool->runq, entry);
+    uv_sem_post(&pool->work_sem);
 }
 
-void loop_shutdown(void)
-{
-    /* Signal the loop thread to drain, close handles, and exit. */
-    uv_async_send(g_shutdown_async);
+/* -------------------------------------------------------------------------
+ * goc_pool_make
+ * ---------------------------------------------------------------------- */
 
-    /* Wait for the loop thread to finish. */
-    GC_pthread_join(g_loop_thread, NULL);
+goc_pool* goc_pool_make(size_t threads) {
+    goc_pool* pool = malloc(sizeof(goc_pool));
+    memset(pool, 0, sizeof(goc_pool));
 
-    /* All handles are closed; the loop should be idle. */
-    assert(uv_loop_close(g_loop) == 0);
-    free(g_loop);
-    g_loop = NULL;
+    /* Initialise run queue with a sentinel node (GC-heap). */
+    goc_runq_node* sentinel = goc_malloc(sizeof(goc_runq_node));
+    sentinel->entry = NULL;
+    sentinel->next  = NULL;
+    pool->runq.head = sentinel;
+    pool->runq.tail = sentinel;
+    uv_mutex_init(&pool->runq.head_lock);
+    uv_mutex_init(&pool->runq.tail_lock);
+
+    uv_sem_init(&pool->work_sem, 0);
+
+    pthread_mutex_init(&pool->drain_mutex, NULL);
+    pthread_cond_init(&pool->drain_cond, NULL);
+
+    pool->active_count = 0;
+    atomic_store(&pool->shutdown, 0);
+
+    pool->thread_count = threads;
+    pool->threads = malloc(threads * sizeof(pthread_t));
+
+    for (size_t i = 0; i < threads; i++) {
+        GC_pthread_create(&pool->threads[i], NULL, pool_worker_fn, pool);
+    }
+
+    registry_add(pool);
+
+    return pool;
+}
+
+/* -------------------------------------------------------------------------
+ * goc_pool_destroy
+ * ---------------------------------------------------------------------- */
+
+void goc_pool_destroy(goc_pool* pool) {
+    /* 1. Wait for all active fibers to yield or complete. */
+    pthread_mutex_lock(&pool->drain_mutex);
+    while (pool->active_count > 0) {
+        pthread_cond_wait(&pool->drain_cond, &pool->drain_mutex);
+    }
+    pthread_mutex_unlock(&pool->drain_mutex);
+
+    /* 2. Signal workers to exit. */
+    atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
+
+    /* 3. Unblock all waiting workers (one post per thread). */
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        uv_sem_post(&pool->work_sem);
+    }
+
+    /* 4. Reap worker threads. */
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        GC_pthread_join(pool->threads[i], NULL);
+    }
+
+    /* 5. Destroy synchronisation primitives. */
+    uv_sem_destroy(&pool->work_sem);
+    uv_mutex_destroy(&pool->runq.head_lock);
+    uv_mutex_destroy(&pool->runq.tail_lock);
+    pthread_mutex_destroy(&pool->drain_mutex);
+    pthread_cond_destroy(&pool->drain_cond);
+
+    /* 6. Drain and release any remaining runq nodes.
+     *    (Entries themselves are GC-heap; only the nodes are freed.) */
+    goc_runq_node* n = pool->runq.head;
+    while (n != NULL) {
+        goc_runq_node* next = n->next;
+        /* n is GC-heap; the GC will collect it — no explicit free needed.
+         * The sentinel and any unconsumed nodes are already unreachable. */
+        (void)n;
+        n = next;
+    }
+
+    /* 7. Remove from registry (no-op if already removed by destroy_all). */
+    registry_remove(pool);
+
+    /* 8. Free pool itself. */
+    free(pool->threads);
+    free(pool);
+}
+
+/* -------------------------------------------------------------------------
+ * goc_pool_destroy_timeout
+ * ---------------------------------------------------------------------- */
+
+goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
+    /* Build an absolute deadline. */
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec  += (time_t)(ms / 1000);
+    deadline.tv_nsec += (long)((ms % 1000) * 1000000L);
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec  += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+
+    pthread_mutex_lock(&pool->drain_mutex);
+    int timed_out = 0;
+    while (pool->active_count > 0 && !timed_out) {
+        int rc = pthread_cond_timedwait(&pool->drain_cond,
+                                        &pool->drain_mutex,
+                                        &deadline);
+        if (rc == ETIMEDOUT) {
+            timed_out = 1;
+        }
+    }
+    pthread_mutex_unlock(&pool->drain_mutex);
+
+    if (timed_out && pool->active_count > 0) {
+        /* Pool stays valid and running — do not tear it down. */
+        return GOC_DRAIN_TIMEOUT;
+    }
+
+    /* Drain completed within the deadline; perform full shutdown. */
+    atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
+
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        uv_sem_post(&pool->work_sem);
+    }
+
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        GC_pthread_join(pool->threads[i], NULL);
+    }
+
+    uv_sem_destroy(&pool->work_sem);
+    uv_mutex_destroy(&pool->runq.head_lock);
+    uv_mutex_destroy(&pool->runq.tail_lock);
+    pthread_mutex_destroy(&pool->drain_mutex);
+    pthread_cond_destroy(&pool->drain_cond);
+
+    /* Drain runq nodes (GC-heap; already unreachable after workers exit). */
+    goc_runq_node* n = pool->runq.head;
+    while (n != NULL) {
+        goc_runq_node* next = n->next;
+        (void)n;
+        n = next;
+    }
+
+    registry_remove(pool);
+
+    free(pool->threads);
+    free(pool);
+
+    return GOC_DRAIN_OK;
 }
