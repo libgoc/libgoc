@@ -51,6 +51,26 @@ set(GOC_SOURCES
 )
 
 # ---------------------------------------------------------------------------
+# minicoro TLS isolation
+#
+# minicoro defines a static MCO_THREAD_LOCAL (thread_local) variable
+# `mco_current_co` to track the running coroutine per thread.  When
+# compiled with -DGC_THREADS, Boehm GC wraps pthread_create and calls
+# GC_call_with_stack_base during thread startup.  If minicoro's TLS block
+# is initialised in the same translation unit as GC-aware code, the GC's
+# TLS walk can fault before mco_current_co is set up, producing a SIGSEGV
+# inside GC_call_with_stack_base (observed as a crash in P1.4).
+#
+# Fix: compile src/minicoro.c in its own isolated translation unit,
+# explicitly WITHOUT -DGC_THREADS.  minicoro never calls any GC function,
+# so the flag is meaningless to it; removing it prevents the GC from
+# instrumenting minicoro's TLS initialisation path.
+# ---------------------------------------------------------------------------
+set_source_files_properties(src/minicoro.c
+    PROPERTIES COMPILE_OPTIONS "-UGC_THREADS"
+)
+
+# ---------------------------------------------------------------------------
 # Phase test sources — discover every tests/test_*.c automatically
 # (cmake_path requires CMake 3.20+)
 # ---------------------------------------------------------------------------
