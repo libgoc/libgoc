@@ -51,6 +51,18 @@ set(GOC_SOURCES
 )
 
 # ---------------------------------------------------------------------------
+# Phase test sources — discover every tests/test_*.c automatically
+# ---------------------------------------------------------------------------
+file(GLOB PHASE_TEST_SOURCES CONFIGURE_DEPENDS tests/test_*.c)
+
+set(PHASE_TESTS "")
+foreach(src IN LISTS PHASE_TEST_SOURCES)
+    get_filename_component(phase ${src} NAME_WE)   # e.g. test_p1_foundation
+    list(APPEND PHASE_TESTS ${phase})
+    set(${phase}_SOURCE ${src})
+endforeach()
+
+# ---------------------------------------------------------------------------
 # Helper: apply common compile options to a goc library variant
 # ---------------------------------------------------------------------------
 function(configure_goc_target target_name extra_flags)
@@ -79,6 +91,17 @@ function(configure_goc_target target_name extra_flags)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# Helper: register one phase test executable against a goc library variant
+# ---------------------------------------------------------------------------
+function(add_phase_test phase_name goc_lib extra_flags suffix)
+    set(exe_name "${phase_name}${suffix}")
+    add_executable(${exe_name} ${${phase_name}_SOURCE})
+    target_link_libraries(${exe_name} PRIVATE ${goc_lib})
+    target_compile_options(${exe_name} PRIVATE -Wall -Wextra ${extra_flags})
+    add_test(NAME ${exe_name} COMMAND ${exe_name})
+endfunction()
+
+# ---------------------------------------------------------------------------
 # Default static library
 # ---------------------------------------------------------------------------
 add_library(goc STATIC ${GOC_SOURCES})
@@ -100,19 +123,14 @@ if(LIBGOC_SHARED)
 endif()
 
 # ---------------------------------------------------------------------------
-# Test executable
+# Phase test executables (default build)
 # Compile definitions and include paths propagate transitively from goc (PUBLIC).
 # ---------------------------------------------------------------------------
-add_executable(test_libgoc tests/test_libgoc.c)
-target_link_libraries(test_libgoc PRIVATE goc)
-target_compile_options(test_libgoc PRIVATE -Wall -Wextra)
-
-# ---------------------------------------------------------------------------
-# CTest
-# ---------------------------------------------------------------------------
 enable_testing()
-add_test(NAME libgoc_tests COMMAND test_libgoc)
-set_tests_properties(libgoc_tests PROPERTIES PASS_REGULAR_EXPRESSION "all green")
+
+foreach(phase IN LISTS PHASE_TESTS)
+    add_phase_test(${phase} goc "" "")
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Optional: AddressSanitizer  (-DLIBGOC_ASAN=ON)
@@ -140,12 +158,10 @@ if(LIBGOC_ASAN)
     configure_goc_target(goc_asan "${ASAN_FLAGS}")
     target_link_options(goc_asan PUBLIC -fsanitize=address)
 
-    add_executable(test_libgoc_asan tests/test_libgoc.c)
-    target_link_libraries(test_libgoc_asan PRIVATE goc_asan)
-    target_link_options(test_libgoc_asan PRIVATE -fsanitize=address)
-
-    add_test(NAME libgoc_asan_tests COMMAND test_libgoc_asan)
-    set_tests_properties(libgoc_asan_tests PROPERTIES PASS_REGULAR_EXPRESSION "all green")
+    foreach(phase IN LISTS PHASE_TESTS)
+        add_phase_test(${phase} goc_asan "${ASAN_FLAGS}" "_asan")
+        target_link_options("${phase}_asan" PRIVATE -fsanitize=address)
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -158,12 +174,10 @@ if(LIBGOC_TSAN)
     configure_goc_target(goc_tsan "${TSAN_FLAGS}")
     target_link_options(goc_tsan PUBLIC -fsanitize=thread)
 
-    add_executable(test_libgoc_tsan tests/test_libgoc.c)
-    target_link_libraries(test_libgoc_tsan PRIVATE goc_tsan)
-    target_link_options(test_libgoc_tsan PRIVATE -fsanitize=thread)
-
-    add_test(NAME libgoc_tsan_tests COMMAND test_libgoc_tsan)
-    set_tests_properties(libgoc_tsan_tests PROPERTIES PASS_REGULAR_EXPRESSION "all green")
+    foreach(phase IN LISTS PHASE_TESTS)
+        add_phase_test(${phase} goc_tsan "${TSAN_FLAGS}" "_tsan")
+        target_link_options("${phase}_tsan" PRIVATE -fsanitize=thread)
+    endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -185,20 +199,19 @@ if(LIBGOC_COVERAGE)
     configure_goc_target(goc_coverage "${COVERAGE_FLAGS}")
     target_link_options(goc_coverage PUBLIC --coverage)
 
-    add_executable(test_libgoc_coverage tests/test_libgoc.c)
-    target_link_libraries(test_libgoc_coverage PRIVATE goc_coverage)
-    target_compile_options(test_libgoc_coverage PRIVATE ${COVERAGE_FLAGS})
-    target_link_options(test_libgoc_coverage PRIVATE --coverage)
-
-    add_test(NAME libgoc_coverage_tests COMMAND test_libgoc_coverage)
-    set_tests_properties(libgoc_coverage_tests PROPERTIES PASS_REGULAR_EXPRESSION "all green")
+    set(COVERAGE_TEST_TARGETS "")
+    foreach(phase IN LISTS PHASE_TESTS)
+        add_phase_test(${phase} goc_coverage "${COVERAGE_FLAGS}" "_coverage")
+        target_link_options("${phase}_coverage" PRIVATE --coverage)
+        list(APPEND COVERAGE_TEST_TARGETS "${phase}_coverage")
+    endforeach()
 
     add_custom_target(coverage
         COMMAND ${LCOV} --capture --directory . --output-file coverage.info
         COMMAND ${LCOV} --remove coverage.info '/usr/*' '*/vendor/*' --output-file coverage.info
         COMMAND ${GENHTML} coverage.info --output-directory coverage_html
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        DEPENDS test_libgoc_coverage
+        DEPENDS ${COVERAGE_TEST_TARGETS}
         COMMENT "Generating HTML coverage report in coverage_html/"
     )
 endif()
