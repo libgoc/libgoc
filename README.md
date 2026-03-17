@@ -201,11 +201,12 @@ int main(void) {
     printf("sum [0, %ld) = %ld\n", RANGE, total);
 
     /*
-     * Destroy the CPU pool before goc_shutdown.
-     * Safe here because all workers have already sent their results,
-     * so we know they have returned.
+     * Destroy the CPU pool. 
+     * Optional, shown here for completeness.
+     * All undestroyed pools are automatically cleaned up by by goc_shutdown().
      */
     goc_pool_destroy(cpu_pool);
+
     goc_shutdown();
     return 0;
 }
@@ -218,8 +219,7 @@ int main(void) {
 - `goc_go_on` — pins each worker fiber to the CPU pool.
 - Fan-out / fan-in over a shared result channel — no explicit synchronisation
   primitives beyond channels.
-- `goc_pool_destroy` ordering — called only after all workers have returned
-  (guaranteed here because all results have been received), then
+- `goc_pool_destroy` blocks till all the fibers running on the pool finish, then frees resources.
   `goc_shutdown` tears down the rest of the runtime.
 
 ---
