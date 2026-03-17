@@ -82,7 +82,9 @@ typedef struct {
 /**
  * goc_init() — Initialise the runtime.
  *
+ * Must be called from the process main thread.
  * Must be called exactly once before any other goc_* function.
+ * Calling from any non-main thread prints an error to stderr and aborts.
  * Initialises Boehm GC, the libuv event loop thread, the default thread pool,
  * the live-channels registry, and the pool registry.
  */
@@ -91,6 +93,8 @@ void goc_init(void);
 /**
  * goc_shutdown() — Shut down the runtime.
  *
+ * Must be called from the same process main thread that called goc_init().
+ * Calling from any non-main thread prints an error to stderr and aborts.
  * Drains all pools, stops the event loop, destroys all live channel mutexes,
  * and releases all runtime resources. No goc_* call may be made after this
  * returns (except goc_init to re-initialise).

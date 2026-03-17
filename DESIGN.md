@@ -953,6 +953,9 @@ typedef enum {
 void          goc_init(void);
 void          goc_shutdown(void);
 
+/* Lifecycle invariant: both functions must be called from the process
+ * main thread. Non-main-thread calls print an error to stderr and abort(). */
+
 /* Memory */
 void*         goc_malloc(size_t n);
 
@@ -1217,6 +1220,8 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P8.4 | `goc_alts` called with more than one `GOC_ALT_DEFAULT` arm (from within a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. A fiber is spawned via `goc_go()` to provide fiber context. |
 | P8.5 | `goc_alts_sync` called with more than one `GOC_ALT_DEFAULT` arm → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.6 | `goc_pool_destroy` called from within the target pool's own worker thread → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.7 | `goc_init` called from a non-main pthread → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.8 | `goc_shutdown` called from a non-main pthread after main-thread `goc_init` → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 
 ### Running
 

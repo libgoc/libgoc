@@ -55,6 +55,10 @@
  *   P8.6   goc_pool_destroy() called from within the target pool's own
  *          worker thread → abort(); verified via fork + waitpid asserting
  *          SIGABRT
+ *   P8.7   goc_init() called from a non-main pthread → abort(); verified
+ *          via fork + waitpid asserting SIGABRT
+ *   P8.8   goc_shutdown() called from a non-main pthread → abort(); verified
+ *          via fork + waitpid asserting SIGABRT
  *
  * Notes:
  *   - goc_init() is called once in the parent main() before forking, but
@@ -426,6 +430,64 @@ static void test_p8_6(void) {
 done:;
 }
 
+/* --- P8.7: goc_init() from non-main thread → abort() ------------------ */
+
+static void* p8_7_non_main_init_thread(void* arg) {
+    (void)arg;
+
+    /* Must abort(): lifecycle init is main-thread only. */
+    goc_init();
+    return NULL;
+}
+
+static void p8_7_child_fn(void* arg) {
+    (void)arg;
+
+    pthread_t t;
+    pthread_create(&t, NULL, p8_7_non_main_init_thread, NULL);
+
+    /* Must not return: process should already be terminating via SIGABRT. */
+    pthread_join(t, NULL);
+}
+
+static void test_p8_7(void) {
+    TEST_BEGIN("P8.7   goc_init() from non-main pthread → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_7_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
+/* --- P8.8: goc_shutdown() from non-main thread → abort() -------------- */
+
+static void* p8_8_non_main_shutdown_thread(void* arg) {
+    (void)arg;
+
+    /* Must abort(): lifecycle shutdown is main-thread only. */
+    goc_shutdown();
+    return NULL;
+}
+
+static void p8_8_child_fn(void* arg) {
+    (void)arg;
+
+    goc_init();
+
+    pthread_t t;
+    pthread_create(&t, NULL, p8_8_non_main_shutdown_thread, NULL);
+
+    /* Must not return: process should already be terminating via SIGABRT. */
+    pthread_join(t, NULL);
+}
+
+static void test_p8_8(void) {
+    TEST_BEGIN("P8.8   goc_shutdown() from non-main pthread → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_8_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -453,6 +515,8 @@ int main(void) {
     test_p8_4();
     test_p8_5();
     test_p8_6();
+    test_p8_7();
+    test_p8_8();
 
     printf("\n");
     goc_shutdown();
