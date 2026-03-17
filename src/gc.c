@@ -9,6 +9,9 @@
 
 #include <stdlib.h>
 #include <assert.h>
+#include <stdio.h>
+#include <stdbool.h>
+#include <pthread.h>
 #include <gc.h>
 #include "../include/goc.h"
 #include "internal.h"
@@ -23,6 +26,31 @@ static goc_chan** live_channels     = NULL;
 static size_t     live_channels_len = 0;
 static size_t     live_channels_cap = 0;
 static uv_mutex_t g_live_mutex;   /* plain malloc; not GC-heap (uv constraint) */
+
+static pthread_t  g_main_thread;
+static bool       g_main_thread_set = false;
+
+__attribute__((constructor))
+static void capture_main_thread_at_load(void)
+{
+    g_main_thread = pthread_self();
+    g_main_thread_set = true;
+}
+
+static void lifecycle_abort_non_main_thread(const char* fn_name)
+{
+    if (!g_main_thread_set) {
+        g_main_thread = pthread_self();
+        g_main_thread_set = true;
+    }
+
+    if (!pthread_equal(pthread_self(), g_main_thread)) {
+        fprintf(stderr,
+                "libgoc: %s must be called from the main thread\n",
+                fn_name);
+        abort();
+    }
+}
 
 /* ---------------------------------------------------------------------------
  * goc_malloc
@@ -109,6 +137,8 @@ void chan_unregister(goc_chan* ch) {
  * ---------------------------------------------------------------------------*/
 
 void goc_init(void) {
+    lifecycle_abort_non_main_thread("goc_init");
+
     /* Step 1 — Initialise Boehm GC. */
     GC_INIT();
 
@@ -164,6 +194,8 @@ void goc_init(void) {
  * ---------------------------------------------------------------------------*/
 
 void goc_shutdown(void) {
+    lifecycle_abort_non_main_thread("goc_shutdown");
+
     /* B.1 — Drain and destroy all registered pools (including g_default_pool). */
     pool_registry_destroy_all();
 
