@@ -28,7 +28,6 @@
 17. [Initialization Sequence](#initialization-sequence)
 18. [Shutdown Sequence](#shutdown-sequence)
 19. [Testing](#testing)
-20. [Future Work](#future-work)
 
 ---
 
@@ -79,6 +78,7 @@ libgoc/
 ├── libgoc.pc.in           # pkg-config template; expanded by CMake at configure time
 ├── README.md
 ├── DESIGN.md              # This document
+├── TODO.md                # Planned future work
 └── LICENSE
 ```
 
@@ -1227,13 +1227,3 @@ cmake -B build-tsan -DLIBGOC_TSAN=ON
 cmake --build build-tsan
 ctest --test-dir build-tsan --output-on-failure
 ```
-
----
-
-## Future Work
-
-- libuv I/O function wrappers that use channels rather than callbacks
-- Fiber Local Storage
-- Sliding buffer
-- Dropping buffer
-- Telemetry
