@@ -668,7 +668,11 @@ The invariant is:
 
 `goc_pool_destroy` is a **blocking drain-and-join**. It waits in a loop on `drain_cond` (under `drain_mutex`), re-checking `live_count > 0` on each wake to guard against spurious wakeups, until `live_count` reaches zero, meaning every fiber launched on this pool has actually returned. Only then does it signal `shutdown = 1`, post the semaphore to unblock sleeping workers, and join all threads. It is safe to call `goc_pool_destroy` while fibers are still queued, running, or parked — the call is itself the synchronisation barrier.
 
+`goc_pool_destroy` must **not** be called from within one of the target pool's own worker threads (including from a fiber running on that pool). That self-destroy path would attempt to join the calling thread and deadlock; the implementation detects this and calls `abort()` with a diagnostic message.
+
 `goc_pool_destroy_timeout(pool, ms)` is the non-blocking variant. It waits on `drain_cond` with a deadline of `ms` milliseconds. If `live_count` reaches zero before the deadline it performs the same shutdown-and-join sequence as `goc_pool_destroy` and returns `GOC_DRAIN_OK`. If the deadline expires while `live_count > 0` it returns `GOC_DRAIN_TIMEOUT` immediately — **the pool is not destroyed** and remains fully valid. Worker threads continue executing. The caller may retry `goc_pool_destroy_timeout`, call `goc_pool_destroy` for an unconditional wait, or close the channels that parked fibers are blocked on to unblock them before retrying.
+
+`goc_pool_destroy_timeout` has the same self-call restriction: invoking it from a worker thread that belongs to `pool` is invalid and aborts with a diagnostic message.
 
 > **Scope:** `live_count` only tracks fibers on *this specific pool*. Fibers on other pools (including the default pool) are not counted. `goc_pool_destroy` will block indefinitely if any fiber **on this pool** is parked on a channel event that will never arrive — for example, if a fiber launched via `goc_go_on(this_pool, ...)` is waiting on a channel that nothing will ever write to.
 
@@ -1212,6 +1216,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P8.3 | `goc_put` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.4 | `goc_alts` called with more than one `GOC_ALT_DEFAULT` arm (from within a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. A fiber is spawned via `goc_go()` to provide fiber context. |
 | P8.5 | `goc_alts_sync` called with more than one `GOC_ALT_DEFAULT` arm → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.6 | `goc_pool_destroy` called from within the target pool's own worker thread → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 
 ### Running
 

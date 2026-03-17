@@ -17,6 +17,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
+#include <errno.h>
 #include <pthread.h>
 #include <uv.h>
 #include <gc.h>
@@ -271,6 +274,27 @@ void pool_fiber_born(goc_pool* pool) {
 }
 
 /* -------------------------------------------------------------------------
+ * pool_abort_if_called_from_worker
+ *
+ * Destroying a pool from one of its own worker threads is invalid: the
+ * destroy path waits on drain/join and would attempt to join the caller
+ * thread itself. Detect this explicitly and abort with a diagnostic.
+ * ---------------------------------------------------------------------- */
+
+static void pool_abort_if_called_from_worker(goc_pool* pool, const char* api_name) {
+    pthread_t self = pthread_self();
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        if (pthread_equal(self, pool->threads[i])) {
+            fprintf(stderr,
+                    "libgoc: %s called from within target pool worker thread; "
+                    "this is unsupported and would deadlock\n",
+                    api_name);
+            abort();
+        }
+    }
+}
+
+/* -------------------------------------------------------------------------
  * goc_pool_make
  * ---------------------------------------------------------------------- */
 
@@ -313,6 +337,8 @@ goc_pool* goc_pool_make(size_t threads) {
  * ---------------------------------------------------------------------- */
 
 void goc_pool_destroy(goc_pool* pool) {
+    pool_abort_if_called_from_worker(pool, "goc_pool_destroy");
+
     /* 1. Wait for all live fibers to exit (live_count reaches zero).
      *    Parked fibers (MCO_SUSPENDED) still count as live even though
      *    active_count may already be zero; using live_count here prevents a
@@ -367,9 +393,11 @@ void goc_pool_destroy(goc_pool* pool) {
  * ---------------------------------------------------------------------- */
 
 goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
+    pool_abort_if_called_from_worker(pool, "goc_pool_destroy_timeout");
+
     /* Build an absolute deadline. */
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    timespec_get(&deadline, TIME_UTC);
     deadline.tv_sec  += (time_t)(ms / 1000);
     deadline.tv_nsec += (long)((ms % 1000) * 1000000L);
     if (deadline.tv_nsec >= 1000000000L) {

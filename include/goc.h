@@ -341,6 +341,9 @@ goc_pool* goc_pool_make(size_t threads);
  * Blocks until all fibers running on pool have completed, then stops the
  * worker threads and frees pool resources.  Behavior is undefined if fibers
  * on this pool block indefinitely.
+ *
+ * Must not be called from within a worker thread that belongs to `pool`.
+ * Doing so aborts with a diagnostic message.
  */
 void goc_pool_destroy(goc_pool* pool);
 
@@ -351,6 +354,9 @@ void goc_pool_destroy(goc_pool* pool);
  * Returns GOC_DRAIN_OK if the pool was fully drained and destroyed within the
  * timeout, or GOC_DRAIN_TIMEOUT if the deadline was reached before all fibers
  * finished (pool is left running in this case).
+ *
+ * Must not be called from within a worker thread that belongs to `pool`.
+ * Doing so aborts with a diagnostic message.
  */
 goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms);
 

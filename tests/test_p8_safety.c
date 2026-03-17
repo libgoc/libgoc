@@ -52,6 +52,9 @@
  *          verified via fork + waitpid asserting SIGABRT
  *   P8.5   goc_alts_sync() with multiple default arms → abort();
  *          verified via fork + waitpid asserting SIGABRT
+ *   P8.6   goc_pool_destroy() called from within the target pool's own
+ *          worker thread → abort(); verified via fork + waitpid asserting
+ *          SIGABRT
  *
  * Notes:
  *   - goc_init() is called once in the parent main() before forking, but
@@ -392,6 +395,37 @@ static void test_p8_5(void) {
 done:;
 }
 
+/* --- P8.6: goc_pool_destroy() from pool worker thread → abort() -------- */
+
+static void p8_6_destroy_self_fiber(void* arg) {
+    goc_pool* pool = (goc_pool*)arg;
+
+    /* Must abort(): self-destroy from a worker thread is invalid. */
+    goc_pool_destroy(pool);
+    /* Unreachable. */
+}
+
+static void p8_6_child_fn(void* arg) {
+    (void)arg;
+
+    goc_pool* pool = goc_pool_make(1);
+    goc_go_on(pool, p8_6_destroy_self_fiber, pool);
+
+    /* Block main thread; abort() from worker should kill the process. */
+    sem_t blocker;
+    sem_init(&blocker, 0, 0);
+    sem_wait(&blocker);
+    /* Unreachable. */
+}
+
+static void test_p8_6(void) {
+    TEST_BEGIN("P8.6   goc_pool_destroy() from own pool worker → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_6_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -418,6 +452,7 @@ int main(void) {
     test_p8_3();
     test_p8_4();
     test_p8_5();
+    test_p8_6();
 
     printf("\n");
     goc_shutdown();
