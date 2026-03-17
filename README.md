@@ -44,10 +44,10 @@ See the [Design Doc](./DESIGN.md) for implementation details.
   - [Utilities](#utilities)
   - [Fiber launch](#fiber-launch)
   - [minicoro limitations](#minicoro-limitations)
-  - [Channel I/O — fiber context](#channel-io--fiber-context)
-  - [Channel I/O — non-blocking (any context)](#channel-io--non-blocking-any-context)
-  - [Channel I/O — blocking OS threads](#channel-io--blocking-os-threads)
   - [Channel I/O — callbacks (any context)](#channel-io--callbacks-any-context)
+  - [Channel I/O — non-blocking (any context)](#channel-io--non-blocking-any-context)
+  - [Channel I/O — fiber context](#channel-io--fiber-context)
+  - [Channel I/O — blocking OS threads](#channel-io--blocking-os-threads)
   - [Select (`goc_alts`)](#select-goc_alts)
   - [Timeout channel](#timeout-channel)
   - [Thread pool](#thread-pool)
@@ -392,53 +392,6 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for fiber switching.
 
 ---
 
-### Channel I/O — fiber context
-
-These functions may suspend the calling fiber. **Call only from inside a fiber**, not from the libuv loop thread or a plain OS thread.
-
-| Function | Signature | Description |
-|---|---|---|
-| `goc_take` | `goc_val_t goc_take(goc_chan* ch)` | Receive the next value from `ch`. Blocks until a value is available or the channel is closed. Returns `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
-| `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
-
-```c
-static void consumer(void* arg) {
-    goc_chan* ch = arg;
-    goc_val_t v;
-    while ((v = goc_take(ch)).ok == GOC_OK)
-        printf("got %ld\n", (intptr_t)v.val);
-    // channel closed
-}
-```
-
----
-
-### Channel I/O — non-blocking (any context)
-
-| Function | Signature | Description |
-|---|---|---|
-| `goc_take_try` | `goc_val_t goc_take_try(goc_chan* ch)` | Non-blocking receive. Returns immediately from any context. Returns `{val, GOC_OK}` if a value was available, `{NULL, GOC_CLOSED}` if the channel is closed, or `{NULL, GOC_EMPTY}` if the channel is open but empty. Never suspends. |
-
----
-
-### Channel I/O — blocking OS threads
-
-Blocks the calling OS thread (not a fiber). **Do not call from a fiber** (use `goc_take`/`goc_put` there) and **never from the libuv loop thread** (this would deadlock the event loop).
-
-| Function | Signature | Description |
-|---|---|---|
-| `goc_take_sync` | `goc_val_t goc_take_sync(goc_chan* ch)` | Receive a value, blocking the OS thread. Returns `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. |
-| `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
-
-```c
-// From a plain OS thread (e.g. the application's main thread):
-goc_val_t result = goc_take_sync(result_ch);
-if (result.ok == GOC_OK)
-    process(result.val);
-```
-
----
-
 ### Channel I/O — callbacks (any context)
 
 Non-blocking. Safe from the libuv loop thread, pool threads, or any other context. The callback is always invoked on the **libuv loop thread** — do not call `goc_take`/`goc_put` from inside it.
@@ -461,6 +414,53 @@ static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     msg->len = nread;
     goc_put_cb(data_ch, msg, on_put_done, msg);
 }
+```
+
+---
+
+### Channel I/O — non-blocking (any context)
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_take_try` | `goc_val_t goc_take_try(goc_chan* ch)` | Non-blocking receive. Returns immediately from any context. Returns `{val, GOC_OK}` if a value was available, `{NULL, GOC_CLOSED}` if the channel is closed, or `{NULL, GOC_EMPTY}` if the channel is open but empty. Never suspends. |
+
+---
+
+### Channel I/O — fiber context
+
+These functions may suspend the calling fiber. **Call only from inside a fiber**, not from the libuv loop thread or a plain OS thread.
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_take` | `goc_val_t goc_take(goc_chan* ch)` | Receive the next value from `ch`. Blocks until a value is available or the channel is closed. Returns `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
+| `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
+
+```c
+static void consumer(void* arg) {
+    goc_chan* ch = arg;
+    goc_val_t v;
+    while ((v = goc_take(ch)).ok == GOC_OK)
+        printf("got %ld\n", (intptr_t)v.val);
+    // channel closed
+}
+```
+
+---
+
+### Channel I/O — blocking OS threads
+
+Blocks the calling OS thread (not a fiber). **Do not call from a fiber** (use `goc_take`/`goc_put` there) and **never from the libuv loop thread** (this would deadlock the event loop).
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_take_sync` | `goc_val_t goc_take_sync(goc_chan* ch)` | Receive a value, blocking the OS thread. Returns `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. |
+| `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
+
+```c
+// From a plain OS thread (e.g. the application's main thread):
+goc_val_t result = goc_take_sync(result_ch);
+if (result.ok == GOC_OK)
+    process(result.val);
 ```
 
 ---
