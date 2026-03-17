@@ -48,6 +48,19 @@
 .tmp_versions/
 modules.order
 Module.symvers
+
+# CMake build directory
+build/
+cmake-build-*/
+
+# CMake cache
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# IDE
+.vscode/
+.idea/
 Mkfile.old
 dkms.conf
 

@@ -883,6 +883,11 @@ goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n); /* blocking OS thread 
 
 The returned `goc_alts_result.index` is the zero-based index of the winning arm. `goc_alts_result.value` is a `goc_val_t`. For take arms, `value.ok == GOC_CLOSED` means the channel was closed rather than that a `NULL` was sent. For put arms, the winning result is always `{NULL, GOC_OK}` — `result_slot` is NULL for put entries and `wake()` skips the `result_slot` write. For a `GOC_ALT_DEFAULT` arm, the winning result is `{NULL, GOC_OK}`.
 
+**Invariants:**
+
+- **At most one `GOC_ALT_DEFAULT` arm** must be provided. If `ops` contains more than one arm with `op_kind == GOC_ALT_DEFAULT`, both functions abort with a diagnostic error message. Setting `op_kind` to `GOC_ALT_DEFAULT` requires `ch == NULL`; providing a non-NULL channel pointer with `GOC_ALT_DEFAULT` is unsupported and produces undefined behaviour.
+- **Fiber context (goc_alts only):** `goc_alts` must be called from within a fiber (i.e., `mco_running() != NULL`). Calling `goc_alts` from a bare OS thread aborts with a diagnostic error message.
+
 **Phases:**
 
 1. Shuffle `ops` to avoid starvation. A `GOC_ALT_DEFAULT` arm, if present, is excluded from the shuffle and always treated last in Phase 2.
@@ -1205,6 +1210,8 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P8.1 | Stack overflow: an `overflow_fiber` corrupts its own canary word then parks on `goc_take`; a `sender_fiber` calls `goc_put` to wake it; `pool_worker_fn` checks the canary before the next `mco_resume`, finds it corrupted, and calls `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. Two fibers are used (rather than a fiber + `goc_take_sync` from the OS thread) to guarantee the victim parks before the sender runs — with `goc_take_sync`, a race exists where the OS thread parks first and the fiber's `goc_put` rendezvouses immediately without ever suspending, so the canary check never fires. |
 | P8.2 | `goc_take` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.3 | `goc_put` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.4 | `goc_alts` called with more than one `GOC_ALT_DEFAULT` arm (from within a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. A fiber is spawned via `goc_go()` to provide fiber context. |
+| P8.5 | `goc_alts_sync` called with more than one `GOC_ALT_DEFAULT` arm → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 
 ### Running
 

@@ -4,7 +4,7 @@
 
 ### Safety
 
-- [ ] **R1** `goc_alts` should assert `n_default_arms <= 1`
+- [x] **R1** `goc_alts` should assert `n_default_arms <= 1`
 
 - [ ] **R2** `goc_pool_destroy` should not be callable from within the pool being destroyed
 

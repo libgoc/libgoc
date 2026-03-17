@@ -15,6 +15,7 @@
  *   Phase 7 — On resume: cancel losers, extract winner, return result.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <assert.h>
@@ -117,6 +118,7 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
     mco_coro *running = mco_running();
     if (!running) {
         /* Calling goc_alts from a bare OS thread is a programming error. */
+        fprintf(stderr, "goc_alts: cannot be called from OS thread (not in fiber context)\n");
         abort();
     }
 
@@ -127,9 +129,11 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
     /* Phase 1 — Shuffle                                                    */
     /* Build a shuffled index array.  A GOC_ALT_DEFAULT arm is excluded    */
     /* from the shuffle; it is identified and placed at the end.           */
+    /* Enforce that at most one default arm is provided.                   */
     /* ------------------------------------------------------------------ */
     size_t  default_idx  = (size_t)-1;
     size_t  n_nondefault = 0;
+    size_t  n_default = 0;
     /* VLA: n is expected to be small (single digits in practice). A
      * pathologically large n could overflow the fiber's 64 KB stack; callers
      * are responsible for keeping arm counts reasonable. */
@@ -137,6 +141,11 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
 
     for (size_t i = 0; i < n; i++) {
         if (ops[i].op_kind == GOC_ALT_DEFAULT) {
+            n_default++;
+            if (n_default > 1) {
+                fprintf(stderr, "goc_alts: more than one default arm provided (got %zu)\n", n_default);
+                abort();
+            }
             default_idx = i;
         } else {
             indices[n_nondefault++] = i;
@@ -371,7 +380,10 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
     /* The woken CAS in wake() / goc_close() guarantees exactly one entry wins.
      * A NULL winner here means the protocol is broken — abort rather than
      * silently producing undefined behaviour via a NULL dereference. */
-    assert(winner != NULL && "goc_alts: no winner after wake — woken CAS invariant violated");
+    if (winner == NULL) {
+        fprintf(stderr, "goc_alts: no winner after wake — woken CAS invariant violated\n");
+        abort();
+    }
 
     /* winner must not be NULL — the runtime guarantees exactly one wake */
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
@@ -390,14 +402,21 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
 goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     /* Phase 1 — Shuffle                                                    */
+    /* Enforce that at most one default arm is provided.                   */
     /* ------------------------------------------------------------------ */
     size_t  default_idx  = (size_t)-1;
     size_t  n_nondefault = 0;
+    size_t  n_default = 0;
     /* VLA: same size constraint as goc_alts — n should be small. */
     size_t  indices[n];
 
     for (size_t i = 0; i < n; i++) {
         if (ops[i].op_kind == GOC_ALT_DEFAULT) {
+            n_default++;
+            if (n_default > 1) {
+                fprintf(stderr, "goc_alts_sync: more than one default arm provided (got %zu)\n", n_default);
+                abort();
+            }
             default_idx = i;
         } else {
             indices[n_nondefault++] = i;
@@ -638,7 +657,10 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
     }
 
     /* Same invariant as goc_alts: exactly one entry must have won the woken CAS. */
-    assert(winner != NULL && "goc_alts_sync: no winner after wake — woken CAS invariant violated");
+    if (winner == NULL) {
+        fprintf(stderr, "goc_alts_sync: no winner after wake — woken CAS invariant violated\n");
+        abort();
+    }
 
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
     return (goc_alts_result){ .index = winner->arm_idx,

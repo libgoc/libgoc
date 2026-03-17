@@ -48,6 +48,10 @@
  *          verified via fork + waitpid asserting SIGABRT
  *   P8.3   goc_put() called from a bare OS thread (not a fiber) → abort();
  *          verified via fork + waitpid asserting SIGABRT
+ *   P8.4   goc_alts() with multiple default arms → abort();
+ *          verified via fork + waitpid asserting SIGABRT
+ *   P8.5   goc_alts_sync() with multiple default arms → abort();
+ *          verified via fork + waitpid asserting SIGABRT
  *
  * Notes:
  *   - goc_init() is called once in the parent main() before forking, but
@@ -310,6 +314,84 @@ static void test_p8_3(void) {
 done:;
 }
 
+/* --- P8.4: goc_alts() with multiple default arms → abort() --------------- */
+
+/*
+ * p8_4_alts_fiber — fiber entry point for P8.4.
+ * Calls goc_alts() with 2 default arms, which should trigger an abort()
+ * in Phase 1 validation.
+ */
+static void p8_4_alts_fiber(void* arg) {
+    (void)arg;
+
+    goc_alt_op ops[2] = {
+        { .op_kind = GOC_ALT_DEFAULT, .ch = NULL },
+        { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
+    };
+
+    /* Call goc_alts with 2 defaults — must abort() in Phase 1. */
+    goc_alts(ops, 2);
+    /* Unreachable. */
+}
+
+static void p8_4_child_fn(void* arg) {
+    (void)arg;
+
+    /* Spawn a fiber that calls goc_alts with multiple defaults. */
+    goc_go(p8_4_alts_fiber, NULL);
+
+    /* Block the main thread; abort() from the fiber kills the process. */
+    sem_t blocker;
+    sem_init(&blocker, 0, 0);
+    sem_wait(&blocker);
+    /* Unreachable. */
+}
+
+/*
+ * P8.4 — goc_alts() with multiple default arms → abort()
+ *
+ * Verifies that goc_alts() detects and rejects the invariant violation
+ * of having more than one default arm.  Uses fork + waitpid to isolate the
+ * expected crash.
+ */
+static void test_p8_4(void) {
+    TEST_BEGIN("P8.4   goc_alts() with multiple defaults → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_4_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
+/* --- P8.5: goc_alts_sync() with multiple default arms → abort() --------- */
+
+static void p8_5_child_fn(void* arg) {
+    (void)arg;
+
+    goc_alt_op ops[2] = {
+        { .op_kind = GOC_ALT_DEFAULT, .ch = NULL },
+        { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
+    };
+
+    /* Call goc_alts_sync with 2 defaults — must abort(). */
+    goc_alts_sync(ops, 2);
+    /* Unreachable. */
+}
+
+/*
+ * P8.5 — goc_alts_sync() with multiple default arms → abort()
+ *
+ * Verifies that goc_alts_sync() detects and rejects the invariant violation
+ * of having more than one default arm.  Uses fork + waitpid to isolate the
+ * expected crash.
+ */
+static void test_p8_5(void) {
+    TEST_BEGIN("P8.5   goc_alts_sync() with multiple defaults → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_5_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -334,8 +416,10 @@ int main(void) {
     test_p8_1();
     test_p8_2();
     test_p8_3();
-    printf("\n");
+    test_p8_4();
+    test_p8_5();
 
+    printf("\n");
     goc_shutdown();
 
     printf("=========================================================\n");
