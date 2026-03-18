@@ -106,7 +106,7 @@ A CMake function `goc_configure_target(<target>)` centralises the options shared
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
-> **Boehm GC thread registration:** libgoc compiles with `-DGC_THREADS` and requires a Boehm GC built with `--enable-threads` (the `bdw-gc-threaded` pkg-config module). Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime; CMake will fail at configure time if the threaded variant is absent. See `README.md` for per-platform installation instructions. On POSIX (Linux/macOS), threads are created via `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` call is needed or permitted on POSIX (it would double-register and corrupt the GC's internal thread table). On Windows, bdwgc (MSYS2 UCRT64) is compiled with Win32 threads and does not provide `GC_pthread_create`; libgoc uses plain `pthread_create` instead and wraps every thread entry point with `GC_register_my_thread` / `GC_unregister_my_thread` so the collector tracks the thread's stack.
+> **Boehm GC thread registration:** libgoc compiles with `-DGC_THREADS` and requires a Boehm GC built with `--enable-threads` (the `bdw-gc-threaded` pkg-config module). Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime; CMake will fail at configure time if the threaded variant is absent. See `README.md` for per-platform installation instructions. All threads are created via `gc_pthread_create` (defined in `src/internal.h`). On POSIX (Linux/macOS), `gc_pthread_create` is an alias for `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` call is needed or permitted on POSIX (it would double-register and corrupt the GC's internal thread table). On Windows, bdwgc (MSYS2 UCRT64) is compiled with Win32 threads and does not provide `GC_pthread_create`; `gc_pthread_create` is implemented in `gc.c` as a thin wrapper around `pthread_create` that passes a trampoline (`gc_thread_trampoline`) as the thread entry, which calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit.
 
 Named constants defined in `config.h`:
 - `GOC_PAGE_SIZE`
@@ -225,7 +225,7 @@ Boehm GC (bdw-gc) is a **required link-time dependency**. It is not optional and
 
 `goc_init` must be **the first call in `main()`**, before any other library or application code that could trigger GC allocation. It calls `GC_INIT()` unconditionally as its very first operation, followed immediately by `GC_allow_register_threads()` — `GC_INIT()` performs all one-time GC setup, and `GC_allow_register_threads()` enables multi-thread stack registration. **Callers must not call these functions themselves.**
 
-On POSIX, pool workers and the uv loop thread are created via `GC_pthread_create`, which registers each thread with the collector automatically. On Windows, `GC_pthread_create` is not available (MSYS2 bdwgc uses Win32 threads); plain `pthread_create` is used instead and each thread entry point manually calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit. On POSIX, threads must **not** call `GC_register_my_thread` manually — `GC_pthread_create` already does it; a duplicate call corrupts the GC's internal thread table.
+On POSIX, pool workers and the uv loop thread are created via `gc_pthread_create`, which on POSIX is an alias for `GC_pthread_create` and registers each thread with the collector automatically. On Windows, `GC_pthread_create` is not available (MSYS2 bdwgc uses Win32 threads); `gc_pthread_create` calls `pthread_create` with a trampoline that manually calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit. On POSIX, threads must **not** call `GC_register_my_thread` manually — `GC_pthread_create` already does it; a duplicate call corrupts the GC's internal thread table.
 
 **`goc_init` must be called exactly once, as the very first call in `main()`, before any other library or application code that could trigger GC allocation. Calling it more than once is undefined behaviour.**
 
@@ -331,11 +331,11 @@ typedef struct goc_entry {
     void*  put_val;                 /* pending value for a parked GOC_CALLBACK putter */
 
     /* GOC_SYNC */
-    sem_t             sync_sem;     /* embedded semaphore for single-entry sync callers */
-    sem_t*            sync_sem_ptr; /* pointer used by wake(); always &sync_sem for plain
+    goc_sync_t        sync_obj;     /* embedded portable condvar for single-entry sync callers */
+    goc_sync_t*       sync_sem_ptr; /* pointer used by wake(); always &sync_obj for plain
                                        goc_take_sync / goc_put_sync; set to a shared stack
-                                       sem for goc_alts_sync arms so all arms post the same
-                                       semaphore without knowing whether it is embedded or shared */
+                                       goc_sync_t for goc_alts_sync arms so all arms post the
+                                       same condvar without knowing whether it is embedded or shared */
 } goc_entry;
 ```
 
@@ -524,7 +524,7 @@ There is exactly one code path for delivering a value to a callback entry: enque
 
 ### `goc_take_sync(ch)` / `goc_put_sync(ch, val)`
 
-Blocking calls for non-fiber threads (e.g. a plain `pthread` that needs to rendezvous with fiber code). Internally parks a semaphore rather than a fiber context; the calling OS thread blocks until a value is available. Calling from a fiber is a runtime invariant violation and aborts with a diagnostic message (use `goc_take`/`goc_put` there). Must not be called from a libuv callback — it would deadlock the event loop.
+Blocking calls for non-fiber threads (e.g. a plain `pthread` that needs to rendezvous with fiber code). Internally parks a `goc_sync_t` (portable mutex + condvar) rather than a fiber context; the calling OS thread blocks until a value is available. Calling from a fiber is a runtime invariant violation and aborts with a diagnostic message (use `goc_take`/`goc_put` there). Must not be called from a libuv callback — it would deadlock the event loop.
 
 `goc_put_sync` flow:
 
@@ -540,10 +540,10 @@ if parked taker:
     deliver value directly, wake taker
     uv_mutex_unlock → return GOC_OK
 else:
-    allocate goc_entry (SYNC), embed semaphore
+    allocate goc_entry (SYNC), init goc_sync_t
     push onto ch->putters
     uv_mutex_unlock
-    sem_wait(entry->sync_sem)   /* block OS thread */
+    goc_sync_wait(&entry->sync_obj)   /* block OS thread */
 
     /* resumes here */
     return entry->ok            /* GOC_OK = delivered, GOC_CLOSED = channel closed */
@@ -583,7 +583,7 @@ void wake(goc_chan* ch, goc_entry* e, void* value) {
     } else {
         /* GOC_SYNC: store result and unblock the waiting OS thread */
         *e->result_slot = value;
-        sem_post(e->sync_sem_ptr);
+        goc_sync_post(e->sync_sem_ptr);
     }
 }
 ```
@@ -718,7 +718,7 @@ runq_pop(q) → goc_entry* or NULL:
     return entry
 ```
 
-All threads — pool workers and the uv loop thread — are created via `GC_pthread_create` and are automatically registered with Boehm GC. No thread calls `GC_register_my_thread` / `GC_unregister_my_thread` manually.
+All threads — pool workers and the uv loop thread — are created via `gc_pthread_create`. On POSIX (Linux/macOS), `gc_pthread_create` is a macro alias for `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` / `GC_unregister_my_thread` call is needed or permitted on POSIX. On Windows, `gc_pthread_create` calls `pthread_create` with a trampoline (`gc_thread_trampoline` in `gc.c`) that calls `GC_register_my_thread` at thread start and `GC_unregister_my_thread` at thread exit.
 
 ---
 
@@ -911,9 +911,9 @@ The returned `goc_alts_result.index` is the zero-based index of the winning arm.
 4. **Acquire channel locks in ascending pointer-address order** to prevent deadlock when multiple channels are locked simultaneously.
 5. **Re-attempt under lock:** If any arm succeeds before entries are appended to any channel list, release the locks and return immediately. Do **not** write `cancelled` on the other entries — they have not been enqueued and `wake()` will never see them.
 
-   **Park:** For `goc_alts`: call `mco_yield` to suspend the fiber. For `goc_alts_sync`: block on a semaphore. Copy the fiber/semaphore context into every `entries[i]`. Set `entries[i]->arm_idx = i`.
+   **Park:** For `goc_alts`: call `mco_yield` to suspend the fiber. For `goc_alts_sync`: block on a shared `goc_sync_t` (portable mutex + condvar). Copy the fiber/condvar context into every `entries[i]`. Set `entries[i]->arm_idx = i`.
 
-   **`goc_alts_sync` semaphore teardown:** After `sem_wait` returns, call `sem_destroy(&shared_sem)` before returning. This is safe: `wake` wins the `woken` CAS and completes `sem_post` before any other path can call `sem_post` on the same semaphore. All other entries either have their `cancelled` flag set or lose the `woken` CAS, so no additional `sem_post` on `shared_sem` will occur after `sem_wait` unblocks. `sem_destroy` may therefore be called immediately.
+   **`goc_alts_sync` teardown:** After `goc_sync_wait` returns, call `goc_sync_destroy(&shared_sync)` before returning. This is safe: `wake` wins the `woken` CAS and completes `goc_sync_post` before any other path can call `goc_sync_post` on the same object. All other entries either have their `cancelled` flag set or lose the `woken` CAS, so no additional `goc_sync_post` on `shared_sync` will occur after `goc_sync_wait` unblocks. `goc_sync_destroy` may therefore be called immediately.
 
 6. **On wake (park path only):** The first channel to fire performs a CAS on `fired` (0→1, `acq_rel`). The storing thread writes the delivered value into `result_slot` **before** the CAS; the resuming fiber reads `fired` with `memory_order_acquire`, guaranteeing it observes the written value. The resuming fiber then iterates all entries and writes `cancelled = 1` on every entry where `woken == 0` (the losers).
 
@@ -1057,7 +1057,7 @@ uv_tcp_init(goc_scheduler(), server);
 2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
 3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
 4. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
-5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `GC_pthread_create` so thread registration is handled by Boehm's wrapper. All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
+5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `gc_pthread_create` so thread registration is handled by Boehm's wrapper (on POSIX: `GC_pthread_create`; on Windows: a trampoline). All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
 6. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
 
 ---
@@ -1290,7 +1290,7 @@ On Linux, Boehm GC is built from source with `--enable-threads=posix` and cached
 
 On macOS, Homebrew's `bdw-gc` formula does not ship a `bdw-gc-threaded.pc` pkg-config alias; the workflow creates it in the global Homebrew `lib/pkgconfig` directory (`$(brew --prefix)/lib/pkgconfig`) where `pkg-config` searches by default.
 
-On Windows, MSYS2/MinGW-w64 (UCRT64 environment) is used instead of MSVC+vcpkg. This is required because libgoc uses `pthread.h` and C11 `_Atomic` directly, and calls `GC_pthread_create`/`GC_pthread_join` — APIs that are only present in POSIX (pthreads) builds of Boehm GC, not in the Win32-threads build that MSVC+vcpkg produces. MSYS2's MinGW packages provide a POSIX-compatible toolchain with full GCC C11 support and a bdwgc build compiled with pthreads. A `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` before CMake runs.
+On Windows, MSYS2/MinGW-w64 (UCRT64 environment) is used instead of MSVC+vcpkg. This is required because libgoc uses `pthread.h` and C11 `_Atomic` directly — APIs that are not available in MSVC builds or in the Win32-threads build of bdwgc that vcpkg produces. MSYS2's MinGW packages provide a POSIX-compatible toolchain with full GCC C11 support and a bdwgc build compiled with pthreads. A `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` before CMake runs.
 
 The test suite itself is portable to Windows with one exception: **Phase 8 (safety tests)** relies on `fork()`/`waitpid()` to isolate processes that call `abort()`. These POSIX APIs are not available in MinGW. `test_p8_safety.c` detects `_WIN32` at compile time and replaces each of the 11 P8 tests with a `TEST_SKIP` stub, so the binary still builds and runs cleanly — it just reports skipped tests rather than failing.
 

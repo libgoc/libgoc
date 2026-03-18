@@ -592,7 +592,7 @@ typedef enum {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_pool_make` | `goc_pool* goc_pool_make(size_t threads)` | Create a pool with `threads` worker threads. Worker thread registration with Boehm GC is handled automatically via `GC_pthread_create` / `GC_pthread_join` — do not register or unregister threads manually. |
+| `goc_pool_make` | `goc_pool* goc_pool_make(size_t threads)` | Create a pool with `threads` worker threads. Worker thread registration with Boehm GC is handled automatically via `gc_pthread_create` / `gc_pthread_join` (on POSIX: aliases for `GC_pthread_create`/`GC_pthread_join`; on Windows: a trampoline wrapping `GC_register_my_thread`/`GC_unregister_my_thread`) — do not register or unregister threads manually. |
 | `goc_pool_destroy` | `void goc_pool_destroy(goc_pool* pool)` | Wait for all in-flight fibers on the pool to complete naturally, then drain the run queue, join all worker threads, and release pool resources. Blocks indefinitely if any fiber is parked on a channel event that never arrives. Safe to call while fibers are still queued or running — the drain is the synchronisation barrier. **Must not be called from within a worker thread that belongs to `pool`** (including from a fiber running on that pool); that path aborts with a diagnostic message. |
 | `goc_pool_destroy_timeout` | `goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms)` | Like `goc_pool_destroy`, but returns `GOC_DRAIN_OK` if the drain completes within `ms` milliseconds, or `GOC_DRAIN_TIMEOUT` if the timeout expires before all fibers have finished. On timeout the pool is **not** destroyed — worker threads continue running and the pool remains valid. The caller may retry later or take other action (e.g. closing channels to unblock parked fibers, then calling `goc_pool_destroy`). **Must not be called from within a worker thread that belongs to `pool`**; that path aborts with a diagnostic message. |
 
@@ -728,7 +728,7 @@ ctest --test-dir build --output-on-failure
 
 ### Windows
 
-libgoc uses `pthread.h`, C11 `_Atomic`, and `GC_pthread_create`/`GC_pthread_join` (the POSIX-thread wrappers from Boehm GC). These are not available in MSVC builds or in the Win32-threads build of bdwgc that vcpkg produces. The recommended approach for Windows is **MSYS2/MinGW-w64 (UCRT64)**, which provides a POSIX-compatible GCC toolchain with full C11 support and a bdwgc package built with POSIX thread support.
+libgoc uses `pthread.h` and C11 `_Atomic` directly. These are not available in MSVC builds or in the Win32-threads build of bdwgc that vcpkg produces. The recommended approach for Windows is **MSYS2/MinGW-w64 (UCRT64)**, which provides a POSIX-compatible GCC toolchain with full C11 support and a bdwgc package built with POSIX thread support.
 
 ```sh
 # 1. Install MSYS2 from https://www.msys2.org/, then in a UCRT64 shell:
