@@ -28,6 +28,7 @@
 17. [Initialization Sequence](#initialization-sequence)
 18. [Shutdown Sequence](#shutdown-sequence)
 19. [Testing](#testing)
+20. [CI/CD](#cicd)
 
 ---
 
@@ -1266,3 +1267,40 @@ cmake -B build-tsan -DLIBGOC_TSAN=ON
 cmake --build build-tsan
 ctest --test-dir build-tsan --output-on-failure
 ```
+
+---
+
+## CI/CD
+
+### CI Workflow (`.github/workflows/ci.yml`)
+
+Triggered on every push or pull request that touches `src/`, `include/`, `tests/`, `CMakeLists.txt`, `vendor/`, or the workflow file itself.
+
+Runs a build matrix across three operating systems:
+
+| Runner | Dependencies | Build | Tests |
+|---|---|---|---|
+| `ubuntu-latest` | apt: `libuv1-dev`, `libatomic-ops-dev`; Boehm GC built from source | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
+| `macos-latest` | Homebrew: `libuv`, `bdw-gc`, `pkg-config` | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
+| `windows-latest` | vcpkg: `libuv`, `bdwgc`; chocolatey: `pkgconfiglite` | CMake `RelWithDebInfo`, `goc` target only | Skipped — test harness uses POSIX-only APIs (`fork`, `waitpid`, `execinfo.h`) unavailable on Windows |
+
+On Linux, Boehm GC is built from source with `--enable-threads=posix` and cached between runs. A `bdw-gc-threaded.pc` alias is created from the `bdw-gc.pc` file so that CMake's `pkg_check_modules(BDWGC … bdw-gc-threaded)` finds it.
+
+On macOS, Homebrew's `bdw-gc` formula ships a `bdw-gc-threaded.pc` pkg-config alias out of the box.
+
+On Windows, `pkgconfiglite` provides the `pkg-config` executable and vcpkg supplies the libraries. Because the test harness relies on POSIX-only APIs, only the `goc` static library target is built; test executables are not compiled.
+
+### CD Workflow (`.github/workflows/cd.yml`)
+
+Triggered on every push to `main`.
+
+**Jobs:**
+
+1. **`tag`** — Creates a UTC timestamp tag in the format `yyyy.MM.dd.HH.mm` (e.g. `2026.03.18.12.05`) and pushes it to the repository.
+
+2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode and packages it alongside `include/goc.h`:
+   - Linux: `libgoc-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h`)
+   - macOS: `libgoc-macos-arm64.tar.gz` (`libgoc.a` + `goc.h`)
+   - Windows: `libgoc-windows-x86_64.zip` (`goc.lib` + `goc.h`)
+
+3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

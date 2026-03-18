@@ -23,7 +23,7 @@
 
 - [x] **R6** Resolve circular dependencies between source files; move shared declarations to a common header and simplify the build
 
-- [ ] **R7** Build tagged artefacts for each supported platform and publish releases to GitHub
+- [x] **R7** Build tagged artefacts for each supported platform and publish releases to GitHub
 
 ---
 

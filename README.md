@@ -1,4 +1,5 @@
 [![CI](https://github.com/divs1210/libgoc/actions/workflows/ci.yml/badge.svg)](https://github.com/divs1210/libgoc/actions/workflows/ci.yml)
+[![CD](https://github.com/divs1210/libgoc/actions/workflows/cd.yml/badge.svg)](https://github.com/divs1210/libgoc/actions/workflows/cd.yml)
 
 # libgoc
 > A Go-style CSP concurrency runtime for C: threadpools, stackful coroutines, channels, select, async I/O, and garbage collection in one coherent API.
@@ -48,9 +49,9 @@ See the [Design Doc](./DESIGN.md) for implementation details and [TODO](./TODO.m
   - [Channel I/O — non-blocking (any context)](#channel-io--non-blocking-any-context)
   - [Channel I/O — fiber context](#channel-io--fiber-context)
   - [Channel I/O — blocking OS threads](#channel-io--blocking-os-threads)
-  - [RW mutexes](#rw-mutexes)
   - [Select (`goc_alts`)](#select-goc_alts)
   - [Timeout channel](#timeout-channel)
+  - [RW mutexes](#rw-mutexes)
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
 - [Building and Testing](#building-and-testing)
@@ -468,41 +469,6 @@ if (result.ok == GOC_OK)
 
 ---
 
-### RW mutexes
-
-RW mutexes are channel-backed lock handles:
-
-1. Call `goc_read_lock` or `goc_write_lock` to get a per-acquisition lock channel.
-2. Call `goc_take` / `goc_take_sync` on that channel to wait until the lock is granted.
-3. Call `goc_close` on that lock channel to release the lock.
-
-Readers may hold the lock concurrently. Writers are exclusive. If a writer is queued,
-subsequent readers queue behind it (writer preference) to avoid writer starvation.
-
-| Function | Signature | Description |
-|---|---|---|
-| `goc_mutex_make` | `goc_mutex* goc_mutex_make(void)` | Create a new RW mutex. |
-| `goc_read_lock` | `goc_chan* goc_read_lock(goc_mutex* mx)` | Request a read lock; returns a lock channel to await/close. |
-| `goc_write_lock` | `goc_chan* goc_write_lock(goc_mutex* mx)` | Request a write lock; returns a lock channel to await/close. |
-
-```c
-goc_mutex* mx = goc_mutex_make();
-
-/* Read side */
-goc_chan* r = goc_read_lock(mx);
-goc_take_sync(r);      /* lock acquired */
-/* critical section */
-goc_close(r);          /* release */
-
-/* Write side */
-goc_chan* w = goc_write_lock(mx);
-goc_take_sync(w);      /* lock acquired */
-/* critical section */
-goc_close(w);          /* release */
-```
-
----
-
 ### Select (`goc_alts`)
 
 Non-deterministic choice across multiple channel operations.
@@ -574,6 +540,41 @@ goc_alts_result r = goc_alts(ops, 2);
 
 if (r.index == 1)
     printf("timed out after 500 ms\n");
+```
+
+---
+
+### RW mutexes
+
+RW mutexes are channel-backed lock handles:
+
+1. Call `goc_read_lock` or `goc_write_lock` to get a per-acquisition lock channel.
+2. Call `goc_take` / `goc_take_sync` on that channel to wait until the lock is granted.
+3. Call `goc_close` on that lock channel to release the lock.
+
+Readers may hold the lock concurrently. Writers are exclusive. If a writer is queued,
+subsequent readers queue behind it (writer preference) to avoid writer starvation.
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_mutex_make` | `goc_mutex* goc_mutex_make(void)` | Create a new RW mutex. |
+| `goc_read_lock` | `goc_chan* goc_read_lock(goc_mutex* mx)` | Request a read lock; returns a lock channel to await/close. |
+| `goc_write_lock` | `goc_chan* goc_write_lock(goc_mutex* mx)` | Request a write lock; returns a lock channel to await/close. |
+
+```c
+goc_mutex* mx = goc_mutex_make();
+
+/* Read side */
+goc_chan* r = goc_read_lock(mx);
+goc_take_sync(r);      /* lock acquired */
+/* critical section */
+goc_close(r);          /* release */
+
+/* Write side */
+goc_chan* w = goc_write_lock(mx);
+goc_take_sync(w);      /* lock acquired */
+/* critical section */
+goc_close(w);          /* release */
 ```
 
 ---
