@@ -17,11 +17,13 @@
   - **R4.2** `goc_put_sync`
   - **R4.3** `goc_alts_sync`
 
+- [ ] **R5** Go-like RW mutexes that park fibers and block threads
+
 ### Chores
 
-- [ ] **R5** Resolve circular dependencies between source files; move shared declarations to a common header and simplify the build
+- [ ] **R6** Resolve circular dependencies between source files; move shared declarations to a common header and simplify the build
 
-- [ ] **R6** Build tagged artefacts for each supported platform and publish releases to GitHub
+- [ ] **R7** Build tagged artefacts for each supported platform and publish releases to GitHub
 
 ---
 
@@ -29,22 +31,18 @@
 
 ### Features
 
-- [ ] **F1** Fiber Local Storage (see if we can piggyback on minicoro's)
+- [ ] **F1** Telemetry — expose runtime metrics for all pools, worker threads, fibers, channels, and their metadata
 
-- [ ] **F2** Telemetry — expose runtime metrics for all pools, worker threads, fibers, channels, and their metadata
+- [ ] **F2** libuv I/O function wrappers that use channels rather than callbacks
 
-- [ ] **F3** libuv I/O function wrappers that use channels rather than callbacks
-
-- [ ] **F4** Go-like RW mutexes that park fibers and block threads
-
-- [ ] **F5** Memory-managed, mutable dynamic array
-  - **F5.1** Amortized constant-time random access (read / write)
-  - **F5.2** Amortized constant-time push / pop from both head and tail
-  - **F5.3** Efficient concat (prepending / appending)
-  - **F5.4** Efficient slicing (creating shallow-copy subarrays)
+- [ ] **F3** Memory-managed, mutable dynamic array
+  - **F3.1** Amortized constant-time random access (read / write)
+  - **F3.2** Amortized constant-time push / pop from both head and tail
+  - **F3.3** Efficient concat (prepending / appending)
+  - **F3.4** Efficient slicing (creating shallow-copy subarrays)
 
 ### Chores
 
-- [ ] **F6** Publish to package managers for each platform (Homebrew, apt/deb, vcpkg, etc.)
+- [ ] **F4** Publish to package managers for each platform (Homebrew, apt/deb, vcpkg, etc.)
 
-- [ ] **F7** Idiomatic C++ wrapper `libgocxx`
+- [ ] **F5** Idiomatic C++ wrapper `libgocxx`
