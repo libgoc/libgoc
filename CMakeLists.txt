@@ -62,7 +62,7 @@ function(goc_configure_target target_name)
         PRIVATE src
                 vendor/minicoro
     )
-    target_compile_definitions(${target_name} PRIVATE GC_THREADS)
+    target_compile_definitions(${target_name} PRIVATE GC_THREADS GC_PTHREADS)
     target_link_libraries(${target_name}
         PUBLIC
             PkgConfig::LIBUV
@@ -73,7 +73,7 @@ endfunction()
 # minicoro.c must NOT be compiled with -DGC_THREADS.
 # Set globally before any add_library so it applies to all targets that
 # include this source file. Does not require TARGET_DIRECTORY (CMake 3.26+).
-set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS")
+set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS;-UGC_PTHREADS")
 
 # ---------------------------------------------------------------------------
 # Primary static library: goc

@@ -7,18 +7,45 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <time.h>
-#include <semaphore.h>
 #include <pthread.h>
 
 #include "test_harness.h"
 #include "goc.h"
 
-typedef struct { sem_t sem; } done_t;
+/*
+ * done_t — a portable semaphore built from a mutex + condvar.
+ * sem_timedwait is not available on macOS; this implementation works on
+ * Linux, macOS and Windows (MSYS2/MinGW with libwinpthread).
+ * The flag is reset after each successful wait, making done_t reusable.
+ */
+typedef struct {
+    pthread_mutex_t mtx;
+    pthread_cond_t  cond;
+    int             flag;
+} done_t;
 
-static void done_init(done_t* d)          { sem_init(&d->sem, 0, 0); }
-static void done_signal(done_t* d)        { sem_post(&d->sem); }
-static void done_wait(done_t* d)          { sem_wait(&d->sem); }
-static void done_destroy(done_t* d)       { sem_destroy(&d->sem); }
+static void done_init(done_t* d) {
+    pthread_mutex_init(&d->mtx, NULL);
+    pthread_cond_init(&d->cond, NULL);
+    d->flag = 0;
+}
+static void done_signal(done_t* d) {
+    pthread_mutex_lock(&d->mtx);
+    d->flag = 1;
+    pthread_cond_signal(&d->cond);
+    pthread_mutex_unlock(&d->mtx);
+}
+static void done_wait(done_t* d) {
+    pthread_mutex_lock(&d->mtx);
+    while (!d->flag)
+        pthread_cond_wait(&d->cond, &d->mtx);
+    d->flag = 0;
+    pthread_mutex_unlock(&d->mtx);
+}
+static void done_destroy(done_t* d) {
+    pthread_mutex_destroy(&d->mtx);
+    pthread_cond_destroy(&d->cond);
+}
 
 static bool done_wait_ms(done_t* d, long ms)
 {
@@ -29,15 +56,17 @@ static bool done_wait_ms(done_t* d, long ms)
     ts.tv_sec += (ms / 1000) + (nsec / 1000000000L);
     ts.tv_nsec = nsec % 1000000000L;
 
-    for (;;) {
-        if (sem_timedwait(&d->sem, &ts) == 0)
-            return true;
-        if (errno == EINTR)
-            continue;
-        if (errno == ETIMEDOUT)
+    pthread_mutex_lock(&d->mtx);
+    while (!d->flag) {
+        int r = pthread_cond_timedwait(&d->cond, &d->mtx, &ts);
+        if (r == ETIMEDOUT) {
+            pthread_mutex_unlock(&d->mtx);
             return false;
-        return false;
+        }
     }
+    d->flag = 0;
+    pthread_mutex_unlock(&d->mtx);
+    return true;
 }
 
 static void test_p9_1(void)

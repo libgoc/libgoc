@@ -27,14 +27,20 @@
 #include "channel_internal.h"
 
 /* -------------------------------------------------------------------------
- * alts_rand_seed
+ * alts_rand_seed / alts_lcg_rand
  *
- * Per-call seed for rand_r(). Using a global atomic counter avoids the
- * thread-safety problem with rand() (which shares global state) while
- * keeping the implementation simple. The shuffle is for starvation
- * avoidance, not security, so the quality of the PRNG is unimportant.
+ * Portable per-call PRNG that replaces POSIX rand_r().  Using a global
+ * atomic counter avoids the thread-safety problem with rand() (which shares
+ * global state) while keeping the implementation simple.  The shuffle is for
+ * starvation avoidance, not security, so LCG quality is perfectly adequate.
  * ------------------------------------------------------------------------- */
 static _Atomic unsigned int g_alts_rand_seed = 1;
+
+/* glibc-style LCG — same constants and bit-width as glibc rand(). */
+static unsigned int alts_lcg_rand(unsigned int *state) {
+    *state = *state * 1103515245u + 12345u;
+    return (*state >> 16u) & 0x7fffffffu;
+}
 
 /* -------------------------------------------------------------------------
  * alts_shuffle
@@ -44,13 +50,10 @@ static _Atomic unsigned int g_alts_rand_seed = 1;
  * ------------------------------------------------------------------------- */
 static void alts_shuffle(size_t *indices, size_t n) {
     if (n < 2) return;
-    /* rand_r() with a per-call seed snapshot is thread-safe. The seed is an
-     * atomic counter rather than per-fiber state; collisions between threads
-     * merely reduce shuffle variety, which is acceptable for fairness. */
     unsigned int seed = atomic_fetch_add_explicit(&g_alts_rand_seed, 1,
                                                   memory_order_relaxed);
     for (size_t i = n - 1; i > 0; i--) {
-        size_t j = (size_t)rand_r(&seed) % (i + 1);
+        size_t j = (size_t)alts_lcg_rand(&seed) % (i + 1);
         size_t tmp = indices[i];
         indices[i] = indices[j];
         indices[j] = tmp;
