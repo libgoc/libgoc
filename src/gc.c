@@ -151,6 +151,9 @@ void goc_init(void) {
     /* Step 4 — Pool registry (pool.c). */
     pool_registry_init();
 
+    /* Step 4.1 — Mutex registry (mutex.c). */
+    mutex_registry_init();
+
     /* Step 5 — libuv event loop + loop thread (loop.c). */
     loop_init();
 
@@ -217,6 +220,9 @@ void goc_shutdown(void) {
     live_channels_cap = 0;
 
     uv_mutex_destroy(&g_live_mutex);
+
+    /* B.2.1 — Destroy all RW mutex internal locks. */
+    mutex_registry_destroy_all();
 
     /* B.3 — Shut down the event loop and join the loop thread. */
     loop_shutdown();

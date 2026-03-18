@@ -129,6 +129,29 @@ goc_chan* goc_chan_make(size_t buf_size)
 }
 
 /* --------------------------------------------------------------------------
+ * chan_set_on_close
+ *
+ * Install or replace an on-close callback for a channel.
+ * If the channel is already closed, invoke the callback immediately.
+ * -------------------------------------------------------------------------- */
+void chan_set_on_close(goc_chan* ch, void (*on_close)(void*), void* ud)
+{
+    int call_now = 0;
+
+    uv_mutex_lock(ch->lock);
+    if (ch->closed) {
+        call_now = 1;
+    } else {
+        ch->on_close = on_close;
+        ch->on_close_ud = ud;
+    }
+    uv_mutex_unlock(ch->lock);
+
+    if (call_now && on_close != NULL)
+        on_close(ud);
+}
+
+/* --------------------------------------------------------------------------
  * goc_close
  *
  * Idempotent. CAS on close_guard ensures exactly one caller proceeds.
@@ -136,6 +159,9 @@ goc_chan* goc_chan_make(size_t buf_size)
  * -------------------------------------------------------------------------- */
 void goc_close(goc_chan* ch)
 {
+    void (*on_close)(void*) = NULL;
+    void* on_close_ud = NULL;
+
     /* Serialise: only one caller wins the CAS 0→1 */
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(
@@ -201,8 +227,14 @@ void goc_close(goc_chan* ch)
         }
     }
 
+    on_close = ch->on_close;
+    on_close_ud = ch->on_close_ud;
+
     uv_mutex_unlock(ch->lock);
     chan_unregister(ch);
+
+    if (on_close != NULL)
+        on_close(on_close_ud);
 }
 
 /* --------------------------------------------------------------------------

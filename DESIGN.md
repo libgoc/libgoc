@@ -57,6 +57,7 @@ libgoc/
 │   ├── pool.c             # Thread pool workers
 │   ├── fiber.c            # minicoro fiber mechanics
 │   ├── channel.c          # Channel operations
+│   ├── mutex.c            # RW mutexes (channel-backed lock handles)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included by channel.c and alts.c)
@@ -71,6 +72,7 @@ libgoc/
 │   ├── test_p6_thread_pool.c       # Phase 6 — Thread pool
 │   ├── test_p7_integration.c       # Phase 7 — Integration
 │   └── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
+│   └── test_p9_mutexes.c           # Phase 9 — RW mutexes
 ├── vendor/
 │   └── minicoro/
 │       └── minicoro.h     # Vendored header — fiber suspend/resume (header-only)
@@ -96,7 +98,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 |---|---|---|
 | `goc` | static library | All `src/*.c` modules; always built |
 | `goc_shared` | shared library | Same sources as `goc`; built only with `-DLIBGOC_SHARED=ON`; output name `libgoc.so` / `.dylib` / `.dll` |
-| `test_p1_foundation` … `test_p8_safety` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
+| `test_p1_foundation` … `test_p9_mutexes` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
@@ -987,6 +989,11 @@ void          goc_take_cb(goc_chan* ch,
 void          goc_put_cb(goc_chan* ch, void* val,
                          void (*cb)(goc_status_t ok, void* ud), void* ud);
 
+/* RW mutexes (channel-backed lock handles) */
+goc_mutex*    goc_mutex_make(void);
+goc_chan*     goc_read_lock(goc_mutex* mx);
+goc_chan*     goc_write_lock(goc_mutex* mx);
+
 /* Select */
 goc_alts_result goc_alts     (goc_alt_op* ops, size_t n);
 goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n);
@@ -1045,10 +1052,11 @@ uv_tcp_init(goc_scheduler(), server);
 `goc_init` must be called exactly once, as the first call in `main()`. Calling it more than once is undefined behaviour. It performs the following steps:
 
 1. **`gc.c`** — Call `GC_INIT()` then `GC_allow_register_threads()` unconditionally. `GC_INIT()` performs all one-time GC setup; `GC_allow_register_threads()` enables multi-thread stack registration and must follow it. This must happen before any `goc_malloc` call.
-2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a plain `pthread_mutex_t`. Must be fully initialised before the loop thread is spawned (step 4) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
-3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `pthread_mutex_t`). Must be fully initialised before the loop thread is spawned (step 4). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
-4. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via plain `pthread_create`. All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. Because the loop thread is created with `pthread_create` rather than `GC_pthread_create`, it is outside the GC's automatic registration wrapper — it calls `GC_get_stack_base` and `GC_register_my_thread` at entry and `GC_unregister_my_thread` before exit to ensure its stack is scanned during stop-the-world collection. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
-5. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
+2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a plain `pthread_mutex_t`. Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
+3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `pthread_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
+4. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
+5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via plain `pthread_create`. All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. Because the loop thread is created with `pthread_create` rather than `GC_pthread_create`, it is outside the GC's automatic registration wrapper — it calls `GC_get_stack_base` and `GC_register_my_thread` at entry and `GC_unregister_my_thread` before exit to ensure its stack is scanned during stop-the-world collection. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
+6. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
 
 ---
 
@@ -1071,9 +1079,9 @@ Once the drain-wait completes, `goc_pool_destroy`:
 
 Because all fibers have returned before `goc_pool_destroy` returns, no code path will ever call `uv_mutex_lock` on a channel lock again. Channel mutexes may therefore be destroyed immediately after this point without deferral.
 
-**Step 2 — Destroy channel mutexes.**
+**Step 2 — Destroy channel and RW-mutex internal locks.**
 
-After `goc_pool_destroy` returns, iterate the `live_channels` list, calling `uv_mutex_destroy` and `free` on each channel's `lock` pointer, then free the list itself.
+After `goc_pool_destroy` returns, iterate the `live_channels` list, calling `uv_mutex_destroy` and `free` on each channel's `lock` pointer, then free the list itself. Then iterate the RW-mutex registry and destroy/free each `goc_mutex` internal lock.
 
 **Step 3 — Signal the loop thread to close both `uv_async_t` handles.**
 
@@ -1225,6 +1233,16 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P8.9 | `goc_take_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.10 | `goc_put_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.11 | `goc_alts_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+
+**Phase 9 — RW mutexes**
+
+| Test | Description |
+|---|---|
+| P9.1 | Read lock acquire+release from an OS thread: `goc_read_lock` returns a lock channel; `goc_take_sync` acquires with `ok==GOC_OK`; `goc_close` releases |
+| P9.2 | Multiple readers can acquire concurrently |
+| P9.3 | Writer blocks while a reader is held, then acquires after reader release |
+| P9.4 | Writer preference: once a writer is queued, subsequent readers queue behind it |
+| P9.5 | Fiber parking path: reader fiber blocks behind writer and resumes after writer release |
 
 ### Running
 

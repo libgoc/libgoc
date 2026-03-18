@@ -29,6 +29,7 @@ extern "C" {
 
 typedef struct goc_chan goc_chan;
 typedef struct goc_pool goc_pool;
+typedef struct goc_mutex goc_mutex;
 
 /* -------------------------------------------------------------------------
  * Status and value types
@@ -278,6 +279,36 @@ void goc_take_cb(goc_chan* ch,
 void goc_put_cb(goc_chan* ch, void* val,
                 void (*cb)(goc_status_t ok, void* ud),
                 void* ud);
+
+/* -------------------------------------------------------------------------
+ * RW mutexes (channel-backed lock handles)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * goc_mutex_make() — Allocate and return a new RW mutex.
+ *
+ * The mutex itself is GC-heap allocated. Its internal mutex is plain-malloc
+ * allocated (libuv constraint) and is destroyed during goc_shutdown().
+ */
+goc_mutex* goc_mutex_make(void);
+
+/**
+ * goc_read_lock() — Request a read lock and get a lock channel.
+ *
+ * Returns a per-acquisition lock channel. Call goc_take()/goc_take_sync() on
+ * that channel to wait until the lock is acquired (result ok == GOC_OK), then
+ * call goc_close(lock_ch) to release the lock.
+ */
+goc_chan* goc_read_lock(goc_mutex* mx);
+
+/**
+ * goc_write_lock() — Request a write lock and get a lock channel.
+ *
+ * Returns a per-acquisition lock channel. Call goc_take()/goc_take_sync() on
+ * that channel to wait until the lock is acquired (result ok == GOC_OK), then
+ * call goc_close(lock_ch) to release the lock.
+ */
+goc_chan* goc_write_lock(goc_mutex* mx);
 
 /* -------------------------------------------------------------------------
  * Select
