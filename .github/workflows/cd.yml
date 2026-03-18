@@ -112,9 +112,9 @@ jobs:
 
       - name: Set up bdw-gc-threaded pkg-config alias
         run: |
-          PKGDIR="$(brew --prefix bdw-gc)/lib/pkgconfig"
-          if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
-            cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
+          GLOBAL_PKGDIR="$(brew --prefix)/lib/pkgconfig"
+          if [ ! -f "$GLOBAL_PKGDIR/bdw-gc-threaded.pc" ]; then
+            cp "$GLOBAL_PKGDIR/bdw-gc.pc" "$GLOBAL_PKGDIR/bdw-gc-threaded.pc"
           fi
 
       - name: Build libgoc

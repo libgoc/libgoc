@@ -1286,9 +1286,9 @@ Runs a build matrix across three operating systems:
 
 On Linux, Boehm GC is built from source with `--enable-threads=posix` and cached between runs. A `bdw-gc-threaded.pc` alias is created from the `bdw-gc.pc` file so that CMake's `pkg_check_modules(BDWGC … bdw-gc-threaded)` finds it.
 
-On macOS, Homebrew's `bdw-gc` formula does not always ship a `bdw-gc-threaded.pc` pkg-config alias; the workflow creates it from `bdw-gc.pc` after installation.
+On macOS, Homebrew's `bdw-gc` formula does not ship a `bdw-gc-threaded.pc` pkg-config alias; the workflow creates it in the global Homebrew `lib/pkgconfig` directory (`$(brew --prefix)/lib/pkgconfig`) where `pkg-config` searches by default.
 
-On Windows, MSYS2/MinGW-w64 (UCRT64 environment) is used instead of MSVC+vcpkg. This is required because libgoc uses `pthread.h` and C11 `_Atomic` directly, and calls `GC_pthread_create`/`GC_pthread_join` — APIs that are only present in POSIX (pthreads) builds of Boehm GC, not in the Win32-threads build that MSVC+vcpkg produces. MSYS2's MinGW packages provide a POSIX-compatible toolchain with full GCC C11 support and a bdwgc build compiled with pthreads.
+On Windows, MSYS2/MinGW-w64 (UCRT64 environment) is used instead of MSVC+vcpkg. This is required because libgoc uses `pthread.h` and C11 `_Atomic` directly, and calls `GC_pthread_create`/`GC_pthread_join` — APIs that are only present in POSIX (pthreads) builds of Boehm GC, not in the Win32-threads build that MSVC+vcpkg produces. MSYS2's MinGW packages provide a POSIX-compatible toolchain with full GCC C11 support and a bdwgc build compiled with pthreads. A `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` before CMake runs.
 
 The test suite itself is portable to Windows with one exception: **Phase 8 (safety tests)** relies on `fork()`/`waitpid()` to isolate processes that call `abort()`. These POSIX APIs are not available in MinGW. `test_p8_safety.c` detects `_WIN32` at compile time and replaces each of the 11 P8 tests with a `TEST_SKIP` stub, so the binary still builds and runs cleanly — it just reports skipped tests rather than failing.
 

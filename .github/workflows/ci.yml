@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
     paths:
       - 'src/**'
       - 'include/**'
@@ -108,9 +110,9 @@ jobs:
       - name: Set up bdw-gc-threaded pkg-config alias (macOS)
         if: runner.os == 'macOS'
         run: |
-          PKGDIR="$(brew --prefix bdw-gc)/lib/pkgconfig"
-          if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
-            cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
+          GLOBAL_PKGDIR="$(brew --prefix)/lib/pkgconfig"
+          if [ ! -f "$GLOBAL_PKGDIR/bdw-gc-threaded.pc" ]; then
+            cp "$GLOBAL_PKGDIR/bdw-gc.pc" "$GLOBAL_PKGDIR/bdw-gc-threaded.pc"
           fi
 
       - name: Verify dependencies (macOS)
@@ -152,6 +154,15 @@ jobs:
             mingw-w64-ucrt-x86_64-libuv
             mingw-w64-ucrt-x86_64-gc
             mingw-w64-ucrt-x86_64-pkg-config
+
+      - name: Set up bdw-gc-threaded pkg-config alias (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          PKGDIR="/ucrt64/lib/pkgconfig"
+          if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
+            cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
+          fi
 
       - name: Configure & Build (Windows)
         if: runner.os == 'Windows'
