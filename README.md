@@ -48,7 +48,7 @@ See the [Design Doc](./DESIGN.md) for implementation details and [TODO](./TODO.m
   - [Channel I/O — non-blocking (any context)](#channel-io--non-blocking-any-context)
   - [Channel I/O — fiber context](#channel-io--fiber-context)
   - [Channel I/O — blocking OS threads](#channel-io--blocking-os-threads)
-    - [RW mutexes](#rw-mutexes)
+  - [RW mutexes](#rw-mutexes)
   - [Select (`goc_alts`)](#select-goc_alts)
   - [Timeout channel](#timeout-channel)
   - [Thread pool](#thread-pool)
