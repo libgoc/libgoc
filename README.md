@@ -449,7 +449,7 @@ static void consumer(void* arg) {
 
 ### Channel I/O — blocking OS threads
 
-Blocks the calling OS thread (not a fiber). **Do not call from a fiber** (use `goc_take`/`goc_put` there) and **never from the libuv loop thread** (this would deadlock the event loop).
+Blocks the calling OS thread (not a fiber). Calling these from a fiber is a runtime error and aborts with a diagnostic message. Also never call them from the libuv loop thread (this would deadlock the event loop).
 
 | Function | Signature | Description |
 |---|---|---|
@@ -472,7 +472,7 @@ Non-deterministic choice across multiple channel operations.
 | Function | Signature | Description |
 |---|---|---|
 | `goc_alts` | `goc_alts_result goc_alts(goc_alt_op* ops, size_t n)` | **Fiber context only.** Wait until one of the `n` ops fires and return its result. If a `GOC_ALT_DEFAULT` arm is present and no other arm is immediately ready, the default arm fires without suspending the fiber. |
-| `goc_alts_sync` | `goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n)` | **Blocking OS-thread context only.** Same semantics as `goc_alts` but blocks the calling OS thread instead of suspending a fiber. Must not be called from inside a fiber. |
+| `goc_alts_sync` | `goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n)` | **Blocking OS-thread context only.** Same semantics as `goc_alts` but blocks the calling OS thread instead of suspending a fiber. Calling from fiber context is a runtime error and aborts with a diagnostic message. |
 
 ```c
 typedef enum {

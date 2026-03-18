@@ -6,13 +6,13 @@
 
 - [x] **R1** `goc_alts` should assert `n_default_arms <= 1`
 
-- [ ] **R2** `goc_pool_destroy` should not be callable from within the pool being destroyed
+- [x] **R2** `goc_pool_destroy` should not be callable from within the pool being destroyed
 
-- [ ] **R3** `goc_init` and `goc_shutdown` should only be callable from the main thread
+- [x] **R3** `goc_init` and `goc_shutdown` should only be callable from the main thread
   - **R3.1** `goc_init`
   - **R3.2** `goc_shutdown`
 
-- [ ] **R4** Sync variants should assert they are not running on a fiber
+- [x] **R4** Sync variants should assert they are not running on a fiber
   - **R4.1** `goc_take_sync`
   - **R4.2** `goc_put_sync`
   - **R4.3** `goc_alts_sync`

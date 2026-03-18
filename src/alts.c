@@ -395,11 +395,16 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
  * goc_alts_sync  (OS thread context)
  *
  * Same seven-phase protocol as goc_alts, but:
- *   - No mco_running() assertion.
+ *   - Must not run in fiber context.
  *   - Entries use GOC_SYNC and share a single semaphore on the OS stack.
  *   - Yield is replaced by sem_wait; sem_destroy is called after.
  * ------------------------------------------------------------------------- */
 goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
+    if (mco_running() != NULL) {
+        fprintf(stderr, "goc_alts_sync: cannot be called from fiber context\n");
+        abort();
+    }
+
     /* ------------------------------------------------------------------ */
     /* Phase 1 — Shuffle                                                    */
     /* Enforce that at most one default arm is provided.                   */

@@ -347,6 +347,11 @@ goc_status_t goc_put(goc_chan* ch, void* val)
  * -------------------------------------------------------------------------- */
 goc_val_t goc_take_sync(goc_chan* ch)
 {
+    if (mco_running() != NULL) {
+        fprintf(stderr, "goc_take_sync called from fiber\n");
+        abort();
+    }
+
     uv_mutex_lock(ch->lock);
 
     void* val = NULL;
@@ -393,6 +398,11 @@ goc_val_t goc_take_sync(goc_chan* ch)
  * -------------------------------------------------------------------------- */
 goc_status_t goc_put_sync(goc_chan* ch, void* val)
 {
+    if (mco_running() != NULL) {
+        fprintf(stderr, "goc_put_sync called from fiber\n");
+        abort();
+    }
+
     uv_mutex_lock(ch->lock);
 
     /* Closed */

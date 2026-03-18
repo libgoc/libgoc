@@ -59,6 +59,12 @@
  *          via fork + waitpid asserting SIGABRT
  *   P8.8   goc_shutdown() called from a non-main pthread → abort(); verified
  *          via fork + waitpid asserting SIGABRT
+ *   P8.9   goc_take_sync() called from a fiber → abort(); verified via
+ *          fork + waitpid asserting SIGABRT
+ *   P8.10  goc_put_sync() called from a fiber → abort(); verified via
+ *          fork + waitpid asserting SIGABRT
+ *   P8.11  goc_alts_sync() called from a fiber → abort(); verified via
+ *          fork + waitpid asserting SIGABRT
  *
  * Notes:
  *   - goc_init() is called once in the parent main() before forking, but
@@ -488,6 +494,83 @@ static void test_p8_8(void) {
 done:;
 }
 
+/* --- P8.9: goc_take_sync() from fiber context → abort() --------------- */
+
+static void p8_9_take_sync_from_fiber(void* arg) {
+    goc_chan* ch = (goc_chan*)arg;
+    goc_take_sync(ch);
+}
+
+static void p8_9_child_fn(void* arg) {
+    (void)arg;
+
+    goc_chan* ch = goc_chan_make(0);
+    goc_close(ch);
+
+    goc_chan* done = goc_go(p8_9_take_sync_from_fiber, ch);
+    goc_take_sync(done);
+}
+
+static void test_p8_9(void) {
+    TEST_BEGIN("P8.9   goc_take_sync() from fiber context → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_9_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
+/* --- P8.10: goc_put_sync() from fiber context → abort() --------------- */
+
+static void p8_10_put_sync_from_fiber(void* arg) {
+    goc_chan* ch = (goc_chan*)arg;
+    goc_put_sync(ch, (void*)(uintptr_t)0xBEEF);
+}
+
+static void p8_10_child_fn(void* arg) {
+    (void)arg;
+
+    goc_chan* ch = goc_chan_make(0);
+    goc_close(ch);
+
+    goc_chan* done = goc_go(p8_10_put_sync_from_fiber, ch);
+    goc_take_sync(done);
+}
+
+static void test_p8_10(void) {
+    TEST_BEGIN("P8.10  goc_put_sync() from fiber context → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_10_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
+/* --- P8.11: goc_alts_sync() from fiber context → abort() -------------- */
+
+static void p8_11_alts_sync_from_fiber(void* arg) {
+    (void)arg;
+
+    goc_alt_op ops[1] = {
+        { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
+    };
+
+    goc_alts_sync(ops, 1);
+}
+
+static void p8_11_child_fn(void* arg) {
+    (void)arg;
+
+    goc_chan* done = goc_go(p8_11_alts_sync_from_fiber, NULL);
+    goc_take_sync(done);
+}
+
+static void test_p8_11(void) {
+    TEST_BEGIN("P8.11  goc_alts_sync() from fiber context → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_11_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -517,6 +600,9 @@ int main(void) {
     test_p8_6();
     test_p8_7();
     test_p8_8();
+    test_p8_9();
+    test_p8_10();
+    test_p8_11();
 
     printf("\n");
     goc_shutdown();

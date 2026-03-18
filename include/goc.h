@@ -218,7 +218,9 @@ goc_status_t goc_put(goc_chan* ch, void* val);
  * goc_take_sync() — Blocking receive from ch (OS thread context).
  *
  * Blocks the calling OS thread until a value is available or the channel is
- * closed.  Returns {val, GOC_OK} or {NULL, GOC_CLOSED}.
+ * closed. Must not be called from a fiber; 
+ * calling from fiber context aborts with a diagnostic message.
+ * Returns {val, GOC_OK} or {NULL, GOC_CLOSED}.
  */
 goc_val_t goc_take_sync(goc_chan* ch);
 
@@ -238,7 +240,9 @@ goc_val_t goc_take_try(goc_chan* ch);
  * goc_put_sync() — Blocking send to ch (OS thread context).
  *
  * Blocks the calling OS thread until the value has been delivered or the
- * channel is closed.
+ * channel is closed. Must not be called from a fiber;
+ * calling from fiber context aborts with a diagnostic message.
+ * context aborts with a diagnostic message.
  * Returns GOC_OK on success, GOC_CLOSED if the channel is closed.
  */
 goc_status_t goc_put_sync(goc_chan* ch, void* val);
@@ -304,7 +308,8 @@ goc_alts_result goc_alts(goc_alt_op* ops, size_t n);
  * goc_alts_sync() — Select over multiple channel operations (OS thread context).
  *
  * Same semantics as goc_alts() but blocks the calling OS thread instead of
- * parking a fiber.  Safe to call from any OS thread.
+ * parking a fiber. Must not be called from a fiber;
+ * calling from fiber context aborts with a diagnostic message.
  */
 goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n);
 

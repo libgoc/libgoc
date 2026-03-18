@@ -520,7 +520,7 @@ There is exactly one code path for delivering a value to a callback entry: enque
 
 ### `goc_take_sync(ch)` / `goc_put_sync(ch, val)`
 
-Blocking calls for non-fiber threads (e.g. a plain `pthread` that needs to rendezvous with fiber code). Internally parks a semaphore rather than a fiber context; the calling OS thread blocks until a value is available. Must not be called from a fiber — use `goc_take`/`goc_put` there. Must not be called from a libuv callback — it would deadlock the event loop.
+Blocking calls for non-fiber threads (e.g. a plain `pthread` that needs to rendezvous with fiber code). Internally parks a semaphore rather than a fiber context; the calling OS thread blocks until a value is available. Calling from a fiber is a runtime invariant violation and aborts with a diagnostic message (use `goc_take`/`goc_put` there). Must not be called from a libuv callback — it would deadlock the event loop.
 
 `goc_put_sync` flow:
 
@@ -883,7 +883,7 @@ goc_alts_result goc_alts     (goc_alt_op* ops, size_t n); /* fiber context */
 goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n); /* blocking OS thread */
 ```
 
-`goc_alts` may suspend the calling fiber and must only be called from within a fiber. `goc_alts_sync` blocks the calling OS thread and must not be called from within a fiber.
+`goc_alts` may suspend the calling fiber and must only be called from within a fiber. `goc_alts_sync` blocks the calling OS thread; calling it from within a fiber is a runtime invariant violation and aborts with a diagnostic message.
 
 The returned `goc_alts_result.index` is the zero-based index of the winning arm. `goc_alts_result.value` is a `goc_val_t`. For take arms, `value.ok == GOC_CLOSED` means the channel was closed rather than that a `NULL` was sent. For put arms, the winning result is always `{NULL, GOC_OK}` — `result_slot` is NULL for put entries and `wake()` skips the `result_slot` write. For a `GOC_ALT_DEFAULT` arm, the winning result is `{NULL, GOC_OK}`.
 
@@ -1222,6 +1222,9 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P8.6 | `goc_pool_destroy` called from within the target pool's own worker thread → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.7 | `goc_init` called from a non-main pthread → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.8 | `goc_shutdown` called from a non-main pthread after main-thread `goc_init` → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.9 | `goc_take_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.10 | `goc_put_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
+| P8.11 | `goc_alts_sync` called from within a fiber → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 
 ### Running
 
