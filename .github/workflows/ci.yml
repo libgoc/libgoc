@@ -105,6 +105,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake libuv bdw-gc pkg-config
 
+      - name: Set up bdw-gc-threaded pkg-config alias (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          PKGDIR="$(brew --prefix bdw-gc)/lib/pkgconfig"
+          if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
+            cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
+          fi
+
       - name: Verify dependencies (macOS)
         if: runner.os == 'macOS'
         run: |
@@ -124,35 +132,32 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
       # ---- Windows -----------------------------------------------------
+      # Uses MSYS2/MinGW-w64 (UCRT64) to provide a POSIX-compatible toolchain
+      # on Windows. This is required because libgoc uses pthread.h and C11
+      # _Atomic directly, and calls GC_pthread_create/GC_pthread_join — APIs
+      # that are only present in POSIX (pthreads) builds of Boehm GC, not in
+      # the Win32-threads build that MSVC + vcpkg produce.
       # Tests are skipped on Windows because the test harness uses POSIX-only
       # APIs (fork, waitpid, execinfo.h) that are not available on Windows.
       # The library build verifies that libgoc itself compiles on Windows.
 
-      - name: Install pkg-config (Windows)
+      - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
-        run: choco install pkgconfiglite --yes
-
-      - name: Install vcpkg dependencies (Windows)
-        if: runner.os == 'Windows'
-        run: vcpkg install libuv bdwgc --triplet x64-windows
-
-      - name: Set up bdw-gc-threaded pkg-config alias (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $pkgdir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\pkgconfig"
-          if (Test-Path "$pkgdir\bdw-gc.pc") {
-            Copy-Item "$pkgdir\bdw-gc.pc" "$pkgdir\bdw-gc-threaded.pc" -Force
-          }
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-libuv
+            mingw-w64-ucrt-x86_64-gc
+            mingw-w64-ucrt-x86_64-pkg-config
 
       - name: Configure & Build (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $env:PKG_CONFIG_PATH = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\pkgconfig"
-          cmake -B build `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          cmake --build build --target goc --config RelWithDebInfo
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build --target goc --parallel $(nproc)
         timeout-minutes: 10

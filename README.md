@@ -725,24 +725,24 @@ ctest --test-dir build --output-on-failure
 
 ### Windows
 
-> **Boehm GC:** vcpkg's `bdw-gc` port is built with `GC_THREADS` enabled. The `vcpkg install` command below is sufficient — no manual source build is required.
+libgoc uses `pthread.h`, C11 `_Atomic`, and `GC_pthread_create`/`GC_pthread_join` (the POSIX-thread wrappers from Boehm GC). These are not available in MSVC builds or in the Win32-threads build of bdwgc that vcpkg produces. The recommended approach for Windows is **MSYS2/MinGW-w64 (UCRT64)**, which provides a POSIX-compatible GCC toolchain with full C11 support and a bdwgc package built with POSIX thread support.
 
-```bat
-REM 1. Install dependencies via vcpkg (or adjust paths as needed)
-vcpkg install libuv bdw-gc
+```sh
+# 1. Install MSYS2 from https://www.msys2.org/, then in a UCRT64 shell:
+pacman -S mingw-w64-ucrt-x86_64-gcc \
+          mingw-w64-ucrt-x86_64-cmake \
+          mingw-w64-ucrt-x86_64-libuv \
+          mingw-w64-ucrt-x86_64-gc \
+          mingw-w64-ucrt-x86_64-pkg-config
 
-REM 2. Configure (pass vcpkg toolchain if using vcpkg)
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg-root>/scripts/buildsystems/vcpkg.cmake
+# 2. Configure
+cmake -B build
 
-REM 3. Build
-cmake --build build --config RelWithDebInfo
-
-REM 4. Run tests
-ctest --test-dir build --output-on-failure -C RelWithDebInfo
-
-REM Or run a single phase directly
-build\RelWithDebInfo\test_p1_foundation.exe
+# 3. Build
+cmake --build build --target goc --parallel $(nproc)
 ```
+
+> **Tests:** the test harness uses `fork`, `waitpid`, and `execinfo.h` (POSIX-only APIs not available on Windows even under MinGW). Test executables are not built or run on Windows.
 
 ---
 

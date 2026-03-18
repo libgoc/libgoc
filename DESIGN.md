@@ -1274,25 +1274,25 @@ ctest --test-dir build-tsan --output-on-failure
 
 ### CI Workflow (`.github/workflows/ci.yml`)
 
-Triggered on every push or pull request that touches `src/`, `include/`, `tests/`, `CMakeLists.txt`, `vendor/`, or the workflow file itself.
+Triggered on every push or pull request that touches `src/`, `include/`, `tests/`, `CMakeLists.txt`, `vendor/`, or the workflow file itself. Changes to documentation (`README.md`, `DESIGN.md`, `TODO.md`) do **not** trigger CI.
 
 Runs a build matrix across three operating systems:
 
 | Runner | Dependencies | Build | Tests |
 |---|---|---|---|
 | `ubuntu-latest` | apt: `libuv1-dev`, `libatomic-ops-dev`; Boehm GC built from source | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
-| `macos-latest` | Homebrew: `libuv`, `bdw-gc`, `pkg-config` | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
-| `windows-latest` | vcpkg: `libuv`, `bdwgc`; chocolatey: `pkgconfiglite` | CMake `RelWithDebInfo`, `goc` target only | Skipped — test harness uses POSIX-only APIs (`fork`, `waitpid`, `execinfo.h`) unavailable on Windows |
+| `macos-latest` | Homebrew: `libuv`, `bdw-gc`, `pkg-config`; `bdw-gc-threaded.pc` alias created manually | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
+| `windows-latest` | MSYS2 UCRT64: `gcc`, `cmake`, `libuv`, `gc`, `pkg-config` (MinGW packages) | CMake `RelWithDebInfo`, `goc` target only | Skipped |
 
 On Linux, Boehm GC is built from source with `--enable-threads=posix` and cached between runs. A `bdw-gc-threaded.pc` alias is created from the `bdw-gc.pc` file so that CMake's `pkg_check_modules(BDWGC … bdw-gc-threaded)` finds it.
 
-On macOS, Homebrew's `bdw-gc` formula ships a `bdw-gc-threaded.pc` pkg-config alias out of the box.
+On macOS, Homebrew's `bdw-gc` formula does not always ship a `bdw-gc-threaded.pc` pkg-config alias; the workflow creates it from `bdw-gc.pc` after installation.
 
-On Windows, `pkgconfiglite` provides the `pkg-config` executable and vcpkg supplies the libraries. Because the test harness relies on POSIX-only APIs, only the `goc` static library target is built; test executables are not compiled.
+On Windows, MSYS2/MinGW-w64 (UCRT64 environment) is used instead of MSVC+vcpkg. This is required because libgoc uses `pthread.h` and C11 `_Atomic` directly, and calls `GC_pthread_create`/`GC_pthread_join` — APIs that are only present in POSIX (pthreads) builds of Boehm GC, not in the Win32-threads build that MSVC+vcpkg produces. MSYS2's MinGW packages provide a POSIX-compatible toolchain with full GCC C11 support and a bdwgc build compiled with pthreads. Tests are skipped because the test harness uses POSIX-only APIs (`fork`, `waitpid`, `execinfo.h`) not available on Windows even in a MinGW environment.
 
 ### CD Workflow (`.github/workflows/cd.yml`)
 
-Triggered on every push to `main`.
+Triggered on every push to `main` that touches `src/`, `include/`, `CMakeLists.txt`, `vendor/`, or the workflow file itself. Documentation-only pushes do **not** trigger a release.
 
 **Jobs:**
 
@@ -1301,6 +1301,6 @@ Triggered on every push to `main`.
 2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode and packages it alongside `include/goc.h`:
    - Linux: `libgoc-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h`)
    - macOS: `libgoc-macos-arm64.tar.gz` (`libgoc.a` + `goc.h`)
-   - Windows: `libgoc-windows-x86_64.zip` (`goc.lib` + `goc.h`)
+   - Windows: `libgoc-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h`, built via MSYS2/MinGW-w64)
 
 3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

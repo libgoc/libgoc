@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'CMakeLists.txt'
+      - 'vendor/**'
+      - '.github/workflows/cd.yml'
 
 jobs:
   tag:
@@ -104,6 +110,13 @@ jobs:
       - name: Install Homebrew dependencies
         run: brew install cmake libuv bdw-gc pkg-config
 
+      - name: Set up bdw-gc-threaded pkg-config alias
+        run: |
+          PKGDIR="$(brew --prefix bdw-gc)/lib/pkgconfig"
+          if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
+            cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
+          fi
+
       - name: Build libgoc
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -133,43 +146,38 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install pkg-config
-        run: choco install pkgconfiglite --yes
-
-      - name: Install vcpkg dependencies
-        run: vcpkg install libuv bdwgc --triplet x64-windows
-
-      - name: Set up bdw-gc-threaded pkg-config alias
-        shell: pwsh
-        run: |
-          $pkgdir = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\pkgconfig"
-          if (Test-Path "$pkgdir\bdw-gc.pc") {
-            Copy-Item "$pkgdir\bdw-gc.pc" "$pkgdir\bdw-gc-threaded.pc" -Force
-          }
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-libuv
+            mingw-w64-ucrt-x86_64-gc
+            mingw-w64-ucrt-x86_64-pkg-config
 
       - name: Build libgoc
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          $env:PKG_CONFIG_PATH = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib\pkgconfig"
-          cmake -B build `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows `
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target goc --config Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target goc --parallel $(nproc)
         timeout-minutes: 10
 
       - name: Package artifact
-        shell: pwsh
+        shell: msys2 {0}
         run: |
-          New-Item -ItemType Directory -Force -Path dist
-          Copy-Item "build\Release\goc.lib" "dist\"
-          Copy-Item "include\goc.h" "dist\"
-          Compress-Archive -Path "dist\*" -DestinationPath "libgoc-windows-x86_64.zip"
+          mkdir -p dist
+          cp build/libgoc.a dist/
+          cp include/goc.h dist/
+          cd dist
+          tar czf ../libgoc-windows-x86_64.tar.gz libgoc.a goc.h
 
       - uses: actions/upload-artifact@v4
         with:
           name: libgoc-windows-x86_64
-          path: libgoc-windows-x86_64.zip
+          path: libgoc-windows-x86_64.tar.gz
 
   release:
     name: Publish GitHub Release
@@ -190,4 +198,4 @@ jobs:
           files: |
             libgoc-linux-x86_64.tar.gz
             libgoc-macos-arm64.tar.gz
-            libgoc-windows-x86_64.zip
+            libgoc-windows-x86_64.tar.gz
