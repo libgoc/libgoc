@@ -31,7 +31,7 @@
 
 ### Features
 
-- [ ] **F1** Telemetry — expose runtime metrics for all pools, worker threads, fibers, channels, and their metadata
+- [ ] **F1** Telemetry — expose runtime metrics for all pools, worker threads, fibers, channels, mutexes, and their metadata
 
 - [ ] **F2** libuv I/O function wrappers that use channels rather than callbacks
 
