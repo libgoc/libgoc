@@ -15,7 +15,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include "../include/goc.h"
-#include "internal.h"
+#include "channel_internal.h"
 
 typedef struct goc_mutex_release_ctx goc_mutex_release_ctx;
 

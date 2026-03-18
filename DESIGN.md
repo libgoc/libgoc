@@ -125,7 +125,7 @@ ASAN and TSAN each compile a separate instrumented copy of the `goc` static libr
 
 **Install rules** (`cmake --install`): `libgoc.a` is installed to `${CMAKE_INSTALL_LIBDIR}`, `include/goc.h` to `${CMAKE_INSTALL_INCLUDEDIR}`, and (when `-DLIBGOC_SHARED=ON`) the shared library to `${CMAKE_INSTALL_LIBDIR}` / `${CMAKE_INSTALL_BINDIR}`. A `pkg-config` file is generated from `libgoc.pc.in` at configure time and installed to `${CMAKE_INSTALL_LIBDIR}/pkgconfig/libgoc.pc`.
 
-> **Static archive link order:** On Linux, `ld` processes archives in a single left-to-right pass and only extracts an object file when it resolves a symbol already pending. Within `libgoc.a` there are upward cross-references: `gc.c.o` calls into `pool.c.o`, and `channel.c.o` / `fiber.c.o` call `post_to_run_queue` in `pool.c.o`. To resolve these regardless of object file ordering, every test executable links against `libgoc.a` wrapped in `-Wl,--start-group … -Wl,--end-group`, which instructs `ld` to rescan the enclosed archives until all cross-references are satisfied. `cmake_path` (required by the test discovery loop) sets the effective minimum at CMake 3.20; the `$<LINK_GROUP:RESCAN,...>` generator expression (CMake ≥ 3.24) is not used to preserve compatibility with the stated minimum.
+> **Static archive link order:** The internal declarations are split so channel-only helpers live in `src/channel_internal.h` while runtime-wide declarations remain in `src/internal.h`. With this layout, test executables link directly against the selected `goc` target via `target_link_libraries` without Linux-specific archive-rescan linker options.
 
 ---
 
