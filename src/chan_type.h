@@ -18,6 +18,8 @@ struct goc_chan {
     int          closed;
     size_t       dead_count;
     _Atomic int  close_guard;  /* CAS 0→1 to serialise close; prevents double-close races */
+    void       (*on_close)(void*);
+    void*        on_close_ud;
 };
 
 #endif /* GOC_CHAN_TYPE_H */

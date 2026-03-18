@@ -17,7 +17,7 @@
   - **R4.2** `goc_put_sync`
   - **R4.3** `goc_alts_sync`
 
-- [ ] **R5** Go-like RW mutexes that park fibers and block threads
+- [x] **R5** Go-like RW mutexes that park fibers and block threads
 
 ### Chores
 

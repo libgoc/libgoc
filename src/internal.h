@@ -101,6 +101,7 @@ struct goc_entry {
 /* channel.c → used by alts.c, fiber.c */
 void wake(goc_chan* ch, goc_entry* e, void* value);
 void compact_dead_entries(goc_chan* ch);
+void chan_set_on_close(goc_chan* ch, void (*on_close)(void*), void* ud);
 
 /* gc.c → used by channel.c */
 void chan_register(goc_chan* ch);
@@ -118,9 +119,11 @@ void post_callback(goc_entry* entry, void* value);
 /* gc.c → used by pool.c, loop.c */
 void live_channels_init(void);
 void pool_registry_init(void);
+void mutex_registry_init(void);
 
 /* pool.c → used by gc.c */
 void pool_registry_destroy_all(void);
+void mutex_registry_destroy_all(void);
 
 /* ---------------------------------------------------------------------------
  * Inline Ring-Buffer Helpers

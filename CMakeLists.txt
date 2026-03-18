@@ -49,6 +49,7 @@ set(GOC_SOURCES
     src/pool.c
     src/fiber.c
     src/channel.c
+    src/mutex.c
     src/minicoro.c
 )
 
