@@ -61,6 +61,7 @@ libgoc/
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
+│   ├── channel_internal.h  # Channel-only internals and inline channel helpers
 │   └── config.h           # Build configuration (PAGE_SIZE, stack defaults, etc.)
 ├── tests/
 │   ├── test_harness.h              # Shared harness macros + SIGSEGV/SIGABRT crash handler
@@ -71,7 +72,7 @@ libgoc/
 │   ├── test_p5_select_timeout.c    # Phase 5 — Select and timeout
 │   ├── test_p6_thread_pool.c       # Phase 6 — Thread pool
 │   ├── test_p7_integration.c       # Phase 7 — Integration
-│   └── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
+│   ├── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
 │   └── test_p9_mutexes.c           # Phase 9 — RW mutexes
 ├── vendor/
 │   └── minicoro/
