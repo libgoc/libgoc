@@ -5,17 +5,74 @@
  *   - goc_malloc
  *   - live-channels registry (live_channels array + g_live_mutex)
  *   - pool registry initialisation (delegates to pool.c)
+ *   - gc_pthread_create / gc_pthread_join (Windows only; POSIX aliases in
+ *     internal.h)
  */
 
 #include <stdlib.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <errno.h>
 #include <pthread.h>
 #include <gc.h>
 #include "../include/goc.h"
 #include "chan_type.h"
 #include "internal.h"
+
+/* ---------------------------------------------------------------------------
+ * gc_pthread_create / gc_pthread_join  (Windows-only implementation)
+ *
+ * On POSIX these are #defined as GC_pthread_create / GC_pthread_join in
+ * internal.h.  On Windows, bdwgc (MSYS2 UCRT64) is compiled with Win32
+ * threads and does not provide GC_pthread_create, so we implement the
+ * equivalent behaviour here: a generic trampoline registers the thread with
+ * the GC before calling the real thread function and unregisters it on exit.
+ * ---------------------------------------------------------------------------*/
+
+#ifdef _WIN32
+
+typedef struct {
+    void* (*fn)(void*);
+    void*  arg;
+} gc_thread_args_t;
+
+static void* gc_thread_trampoline(void* raw)
+{
+    /* Extract fn/arg and free the heap-allocated carrier before we touch
+     * any GC-managed memory (avoids a window where the carrier is live but
+     * not yet reachable by the GC). */
+    gc_thread_args_t* w   = (gc_thread_args_t*)raw;
+    void* (*fn)(void*)    = w->fn;
+    void*  arg            = w->arg;
+    free(w);
+
+    struct GC_stack_base sb;
+    GC_get_stack_base(&sb);
+    GC_register_my_thread(&sb);
+    void* ret = fn(arg);
+    GC_unregister_my_thread();
+    return ret;
+}
+
+int gc_pthread_create(pthread_t* t, const pthread_attr_t* a,
+                      void* (*fn)(void*), void* arg)
+{
+    gc_thread_args_t* w = malloc(sizeof(gc_thread_args_t));
+    if (!w) return ENOMEM;
+    w->fn  = fn;
+    w->arg = arg;
+    int rc = pthread_create(t, a, gc_thread_trampoline, w);
+    if (rc != 0) free(w);
+    return rc;
+}
+
+int gc_pthread_join(pthread_t t, void** retval)
+{
+    return pthread_join(t, retval);
+}
+
+#endif /* _WIN32 */
 
 /* ---------------------------------------------------------------------------
  * Live-channels registry

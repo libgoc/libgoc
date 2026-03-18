@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <pthread.h>
 #include <semaphore.h>
 #include <uv.h>
 #include <gc.h>
@@ -126,5 +127,33 @@ extern _Atomic(uv_async_t*)  g_wakeup;
 
 /* Defined in fiber.c */
 extern goc_pool*             g_default_pool;
+
+/* ---------------------------------------------------------------------------
+ * Portable GC-aware pthread wrappers
+ *
+ * Use gc_pthread_create / gc_pthread_join everywhere in libgoc instead of
+ * calling GC_pthread_create / pthread_create directly.
+ *
+ * On POSIX (Linux / macOS): simple aliases for GC_pthread_create /
+ * GC_pthread_join, which register the new thread with Boehm GC automatically
+ * via GC_call_with_stack_base.  Threads must NOT call GC_register_my_thread
+ * manually on POSIX — doing so double-registers the thread and corrupts the
+ * GC's internal thread table.
+ *
+ * On Windows (MSYS2 UCRT64): bdwgc is compiled with Win32 threads and does
+ * not provide GC_pthread_create.  gc_pthread_create uses a generic trampoline
+ * that calls GC_register_my_thread before the thread body and
+ * GC_unregister_my_thread after it exits.  GC_allow_register_threads() must
+ * have been called first — goc_init() does this.
+ * --------------------------------------------------------------------------- */
+
+#ifdef _WIN32
+int gc_pthread_create(pthread_t* t, const pthread_attr_t* a,
+                      void* (*fn)(void*), void* arg);
+int gc_pthread_join(pthread_t t, void** retval);
+#else
+#  define gc_pthread_create  GC_pthread_create
+#  define gc_pthread_join    GC_pthread_join
+#endif
 
 #endif /* GOC_INTERNAL_H */

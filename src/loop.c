@@ -172,26 +172,6 @@ static void *loop_thread_fn(void *arg)
 }
 
 /* --------------------------------------------------------------------------
- * loop_thread_gc_wrapper (Windows only)
- *
- * On Windows, bdwgc is compiled with Win32 threads and does not provide
- * GC_pthread_create.  Plain pthread_create is used instead, so we must
- * register and unregister the thread with the GC manually.
- * -------------------------------------------------------------------------- */
-
-#ifdef _WIN32
-static void *loop_thread_gc_wrapper(void *arg)
-{
-    struct GC_stack_base sb;
-    GC_get_stack_base(&sb);
-    GC_register_my_thread(&sb);
-    void *ret = loop_thread_fn(arg);
-    GC_unregister_my_thread();
-    return ret;
-}
-#endif
-
-/* --------------------------------------------------------------------------
  * loop_init / loop_shutdown — internal (declared in internal.h)
  * -------------------------------------------------------------------------- */
 
@@ -218,24 +198,9 @@ void loop_init(void)
     /* 5. Initialise the MPSC callback queue. */
     cb_queue_init();
 
-    /* 6. Spawn the loop thread.
-     *
-     * On POSIX: GC_pthread_create registers the thread with bdwgc
-     * automatically.  Pool workers and the loop thread must NOT call
-     * GC_register_my_thread manually on POSIX — GC_pthread_create already
-     * does it; a manual call would double-register and corrupt the GC's
-     * internal thread table (observed as SIGSEGV in GC_call_with_stack_base
-     * during P1.4).
-     *
-     * On Windows: bdwgc (MSYS2 UCRT64) is compiled with Win32 threads and
-     * does not provide GC_pthread_create.  We use plain pthread_create and
-     * let loop_thread_gc_wrapper call GC_register_my_thread /
-     * GC_unregister_my_thread manually. */
-#ifndef _WIN32
-    GC_pthread_create(&g_loop_thread, NULL, loop_thread_fn, NULL);
-#else
-    pthread_create(&g_loop_thread, NULL, loop_thread_gc_wrapper, NULL);
-#endif
+    /* 6. Spawn the loop thread (GC-registered on all platforms via
+     *    gc_pthread_create — see internal.h). */
+    gc_pthread_create(&g_loop_thread, NULL, loop_thread_fn, NULL);
 }
 
 void loop_shutdown(void)
@@ -244,11 +209,7 @@ void loop_shutdown(void)
     uv_async_send(g_shutdown_async);
 
     /* Wait for the loop thread to finish. */
-#ifndef _WIN32
-    GC_pthread_join(g_loop_thread, NULL);
-#else
-    pthread_join(g_loop_thread, NULL);
-#endif
+    gc_pthread_join(g_loop_thread, NULL);
 
     /* All handles are closed; the loop should be idle. */
     assert(uv_loop_close(g_loop) == 0);

@@ -295,28 +295,6 @@ static void pool_abort_if_called_from_worker(goc_pool* pool, const char* api_nam
 }
 
 /* -------------------------------------------------------------------------
- * pool_worker_gc_wrapper (Windows only)
- *
- * On Windows, bdwgc is compiled with Win32 threads and does not provide
- * GC_pthread_create.  Plain pthread_create is used instead, which means the
- * GC does not automatically register the new thread.  This wrapper calls
- * GC_register_my_thread before entering pool_worker_fn and
- * GC_unregister_my_thread when it exits, satisfying bdwgc's requirement
- * that every thread touching the GC heap is registered.
- * ---------------------------------------------------------------------- */
-
-#ifdef _WIN32
-static void* pool_worker_gc_wrapper(void* arg) {
-    struct GC_stack_base sb;
-    GC_get_stack_base(&sb);
-    GC_register_my_thread(&sb);
-    void* ret = pool_worker_fn(arg);
-    GC_unregister_my_thread();
-    return ret;
-}
-#endif
-
-/* -------------------------------------------------------------------------
  * goc_pool_make
  * ---------------------------------------------------------------------- */
 
@@ -346,13 +324,7 @@ goc_pool* goc_pool_make(size_t threads) {
     pool->threads = malloc(threads * sizeof(pthread_t));
 
     for (size_t i = 0; i < threads; i++) {
-#ifndef _WIN32
-        GC_pthread_create(&pool->threads[i], NULL, pool_worker_fn, pool);
-#else
-        /* Windows: use plain pthread_create; thread registers itself with
-         * the GC inside pool_worker_gc_wrapper. */
-        pthread_create(&pool->threads[i], NULL, pool_worker_gc_wrapper, pool);
-#endif
+        gc_pthread_create(&pool->threads[i], NULL, pool_worker_fn, pool);
     }
 
     registry_add(pool);
@@ -387,11 +359,7 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 4. Reap worker threads. */
     for (size_t i = 0; i < pool->thread_count; i++) {
-#ifndef _WIN32
-        GC_pthread_join(pool->threads[i], NULL);
-#else
-        pthread_join(pool->threads[i], NULL);
-#endif
+        gc_pthread_join(pool->threads[i], NULL);
     }
 
     /* 5. Destroy synchronisation primitives. */
