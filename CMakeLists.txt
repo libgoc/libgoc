@@ -142,17 +142,6 @@ foreach(test_src IN LISTS TEST_SOURCES)
 
     target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro)
 
-    # Wrap libgoc.a in a rescan group so ld resolves cross-archive references
-    # regardless of object-file ordering (Linux ld single-pass limitation).
-    # $<LINK_GROUP:RESCAN,...> (CMake >= 3.24) is intentionally avoided to
-    # preserve the stated minimum of CMake 3.20.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        target_link_options(${test_name} PRIVATE
-            "LINKER:--start-group"
-            "$<TARGET_FILE:${GOC_LINK_TARGET}>"
-            "LINKER:--end-group"
-        )
-    endif()
     target_link_libraries(${test_name} PRIVATE
         ${GOC_LINK_TARGET}
         PkgConfig::LIBUV

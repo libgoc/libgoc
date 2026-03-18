@@ -24,8 +24,7 @@
 #include <gc.h>
 #include "minicoro.h"
 #include "../include/goc.h"
-#include "chan_type.h"
-#include "internal.h"
+#include "channel_internal.h"
 
 /* -------------------------------------------------------------------------
  * alts_rand_seed

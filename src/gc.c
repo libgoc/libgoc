@@ -14,6 +14,7 @@
 #include <pthread.h>
 #include <gc.h>
 #include "../include/goc.h"
+#include "chan_type.h"
 #include "internal.h"
 
 /* ---------------------------------------------------------------------------

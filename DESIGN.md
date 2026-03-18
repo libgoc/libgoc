@@ -60,7 +60,8 @@ libgoc/
 │   ├── mutex.c            # RW mutexes (channel-backed lock handles)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
-│   ├── chan_type.h         # Authoritative struct goc_chan definition (included by channel.c and alts.c)
+│   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
+│   ├── channel_internal.h  # Channel-only internals and inline channel helpers
 │   └── config.h           # Build configuration (PAGE_SIZE, stack defaults, etc.)
 ├── tests/
 │   ├── test_harness.h              # Shared harness macros + SIGSEGV/SIGABRT crash handler
@@ -71,7 +72,7 @@ libgoc/
 │   ├── test_p5_select_timeout.c    # Phase 5 — Select and timeout
 │   ├── test_p6_thread_pool.c       # Phase 6 — Thread pool
 │   ├── test_p7_integration.c       # Phase 7 — Integration
-│   └── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
+│   ├── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
 │   └── test_p9_mutexes.c           # Phase 9 — RW mutexes
 ├── vendor/
 │   └── minicoro/
@@ -125,7 +126,7 @@ ASAN and TSAN each compile a separate instrumented copy of the `goc` static libr
 
 **Install rules** (`cmake --install`): `libgoc.a` is installed to `${CMAKE_INSTALL_LIBDIR}`, `include/goc.h` to `${CMAKE_INSTALL_INCLUDEDIR}`, and (when `-DLIBGOC_SHARED=ON`) the shared library to `${CMAKE_INSTALL_LIBDIR}` / `${CMAKE_INSTALL_BINDIR}`. A `pkg-config` file is generated from `libgoc.pc.in` at configure time and installed to `${CMAKE_INSTALL_LIBDIR}/pkgconfig/libgoc.pc`.
 
-> **Static archive link order:** On Linux, `ld` processes archives in a single left-to-right pass and only extracts an object file when it resolves a symbol already pending. Within `libgoc.a` there are upward cross-references: `gc.c.o` calls into `pool.c.o`, and `channel.c.o` / `fiber.c.o` call `post_to_run_queue` in `pool.c.o`. To resolve these regardless of object file ordering, every test executable links against `libgoc.a` wrapped in `-Wl,--start-group … -Wl,--end-group`, which instructs `ld` to rescan the enclosed archives until all cross-references are satisfied. `cmake_path` (required by the test discovery loop) sets the effective minimum at CMake 3.20; the `$<LINK_GROUP:RESCAN,...>` generator expression (CMake ≥ 3.24) is not used to preserve compatibility with the stated minimum.
+> **Static archive link order:** The internal declarations are split so channel-only helpers live in `src/channel_internal.h` while runtime-wide declarations remain in `src/internal.h`. With this layout, test executables link directly against the selected `goc` target via `target_link_libraries` without Linux-specific archive-rescan linker options.
 
 ---
 
@@ -260,7 +261,7 @@ Returned by `goc_take`, `goc_take_sync`, `goc_take_try`, and the `value` field o
 
 ### Channel (`goc_chan`)
 
-The full struct definition lives in `src/chan_type.h` — the single authoritative location. `channel.c` and `alts.c` include `chan_type.h` directly (via `internal.h`, which includes it). All other files treat `goc_chan` as an opaque pointer declared in `goc.h`.
+The full struct definition lives in `src/chan_type.h` — the single authoritative location. Channel-facing code reaches it via `channel_internal.h`, and lifecycle teardown code that touches channel internals includes it directly (for example, `gc.c` to destroy `ch->lock` during shutdown). Code that does not need concrete channel fields continues to treat `goc_chan` as opaque via `goc.h`.
 
 ```c
 /* src/chan_type.h */
@@ -1025,12 +1026,12 @@ uv_loop_t*    goc_scheduler(void);
 | `goc_chan_destroy` | `void goc_chan_destroy(goc_chan* ch)` | `channel.c` — stub only; mutex teardown is deferred to `goc_shutdown` Step 2 |
 | `chan_register` | `void chan_register(goc_chan* ch)` | `gc.c` — appends `ch` to the `live_channels` array under `g_live_mutex`; called by `goc_chan_make`. This list is the sole input to the graceful-drain wait in `goc_shutdown`. |
 | `chan_unregister` | `void chan_unregister(goc_chan* ch)` | `gc.c` — removes `ch` from `live_channels` under `g_live_mutex`; called by `goc_close`. |
-| `chan_take_from_buffer` | `static inline int chan_take_from_buffer(goc_chan*, void**)` | `internal.h` — requires `struct goc_chan` in scope; pulled in via `chan_type.h` |
-| `chan_take_from_putter` | `static inline int chan_take_from_putter(goc_chan*, void**)` | `internal.h` — requires `struct goc_chan` in scope; pulled in via `chan_type.h`; snapshots `e->next` before `wake()` to avoid UAF on stack-allocated entries |
-| `chan_put_to_taker` | `static inline int chan_put_to_taker(goc_chan*, void*)` | `internal.h` — requires `struct goc_chan` in scope; pulled in via `chan_type.h`; snapshots `e->next` before `wake()` to avoid UAF on stack-allocated entries |
-| `chan_put_to_buffer` | `static inline int chan_put_to_buffer(goc_chan*, void*)` | `internal.h` — requires `struct goc_chan` in scope; pulled in via `chan_type.h` |
+| `chan_take_from_buffer` | `static inline int chan_take_from_buffer(goc_chan*, void**)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h` |
+| `chan_take_from_putter` | `static inline int chan_take_from_putter(goc_chan*, void**)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h`; snapshots `e->next` before `wake()` to avoid UAF on stack-allocated entries |
+| `chan_put_to_taker` | `static inline int chan_put_to_taker(goc_chan*, void*)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h`; snapshots `e->next` before `wake()` to avoid UAF on stack-allocated entries |
+| `chan_put_to_buffer` | `static inline int chan_put_to_buffer(goc_chan*, void*)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h` |
 
-> **Note:** `chan_register` and `chan_unregister` are *defined* in `gc.c` but *called* from `channel.c` (`goc_chan_make` calls `chan_register`; `goc_close` calls `chan_unregister`). The inline ring-buffer helpers in `internal.h` depend on the full `struct goc_chan` layout, which is provided by `chan_type.h`. `internal.h` includes `chan_type.h` directly, so any `.c` file that includes `internal.h` automatically has the full struct in scope.
+> **Note:** `chan_register` and `chan_unregister` are *defined* in `gc.c` but *called* from `channel.c` (`goc_chan_make` calls `chan_register`; `goc_close` calls `chan_unregister`). The inline ring-buffer helpers live in `channel_internal.h`, which includes both `chan_type.h` and `internal.h`. Files that need channel internals should include `channel_internal.h` (or `chan_type.h` directly when only the concrete channel layout is needed).
 
 ### `goc_scheduler`
 
@@ -1052,10 +1053,10 @@ uv_tcp_init(goc_scheduler(), server);
 `goc_init` must be called exactly once, as the first call in `main()`. Calling it more than once is undefined behaviour. It performs the following steps:
 
 1. **`gc.c`** — Call `GC_INIT()` then `GC_allow_register_threads()` unconditionally. `GC_INIT()` performs all one-time GC setup; `GC_allow_register_threads()` enables multi-thread stack registration and must follow it. This must happen before any `goc_malloc` call.
-2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a plain `pthread_mutex_t`. Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
-3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `pthread_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
+2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
+3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
 4. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
-5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via plain `pthread_create`. All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. Because the loop thread is created with `pthread_create` rather than `GC_pthread_create`, it is outside the GC's automatic registration wrapper — it calls `GC_get_stack_base` and `GC_register_my_thread` at entry and `GC_unregister_my_thread` before exit to ensure its stack is scanned during stop-the-world collection. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
+5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `GC_pthread_create` so thread registration is handled by Boehm's wrapper. All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
 6. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
 
 ---

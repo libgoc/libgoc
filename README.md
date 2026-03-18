@@ -24,7 +24,7 @@ See the [Design Doc](./DESIGN.md) for implementation details and [TODO](./TODO.m
 |---|---|
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, timers, cross-thread wakeup |
-| Boehm GC | garbage collection; **must be built with `--enable-threads`**; linked automatically, initialised by `goc_init`; owns thread pool worker creation via `GC_pthread_create` / `GC_pthread_join` |
+| Boehm GC | garbage collection; **must be built with `--enable-threads`**; linked automatically, initialised by `goc_init`; provides `GC_pthread_create` / `GC_pthread_join` wrappers used for libgoc worker and loop threads |
 
 > See [minicoro limitations](#minicoro-limitations) in the Public API section for fiber stack constraints.
 
@@ -391,6 +391,8 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for fiber switching.
 
 **Stack overflow aborts the process.** libgoc writes a canary value at the low end of each fiber stack on creation and validates it on every resume. If the canary has been overwritten, the runtime calls `abort()` immediately with a diagnostic message. This turns silent heap corruption into a deterministic, debuggable crash. Stack overflow is still a programming error — avoid large stack-allocated buffers and deep recursion inside fibers. If a fiber is known to need more stack space, restructure the work to use `goc_malloc`-allocated buffers on the GC heap instead.
 
+**`src/minicoro.c` must be compiled without `-DGC_THREADS`.** The build system enforces this with `-UGC_THREADS` on that translation unit. This avoids a TLS interaction between minicoro and Boehm's thread wrapper during thread startup.
+
 ---
 
 ### Channel I/O — callbacks (any context)
@@ -636,7 +638,7 @@ libgoc ships with a comprehensive, phased test suite covering the full public AP
 
 | Dependency | macOS | Linux (Debian/Ubuntu) | Linux (Fedora/RHEL) | Windows |
 |---|---|---|---|---|
-| CMake ≥ 3.16 | `brew install cmake` | `apt install cmake` | `dnf install cmake` | [cmake.org](https://cmake.org/download/) |
+| CMake ≥ 3.20 | `brew install cmake` | `apt install cmake` | `dnf install cmake` | [cmake.org](https://cmake.org/download/) |
 | libuv | `brew install libuv` | `apt install libuv1-dev` | `dnf install libuv-devel` | vcpkg or source build |
 | Boehm GC | `brew install bdw-gc` | source build (see below) | `dnf install gc-devel` | vcpkg or source build |
 | pkg-config | `brew install pkg-config` | `apt install pkg-config` | `dnf install pkgconfig` | — |
@@ -650,7 +652,7 @@ A C11 compiler (clang or gcc on POSIX; MSVC or clang-cl on Windows) is required.
 |---|---|---|
 | `GOC_PAGE_SIZE` | platform | Memory page size used for stack alignment |
 | `GOC_DEFAULT_STACK_SIZE` | `65536` | Per-fiber stack size (64 KB) |
-| `GOC_DEAD_COUNT_THRESHOLD` | `8` | Dead fiber reap threshold before GC hint |
+| `GOC_DEAD_COUNT_THRESHOLD` | `8` | Dead-entry compaction threshold for channel waiter lists |
 | `GOC_ALTS_STACK_THRESHOLD` | `8` | Max `goc_alts` arms before scratch buffer moves to heap |
 
 ---
