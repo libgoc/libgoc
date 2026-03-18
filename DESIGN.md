@@ -1218,7 +1218,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P7.2 | Fan-out / fan-in: 1 producer, 4 workers, result aggregation, 20 items, sum verified |
 | P7.3 | High-volume stress: 10 000 messages, sum verified |
 | P7.4 | Multi-fiber: 8 senders on 1 unbuffered channel, all IDs received exactly once |
-| P7.5 | Timeout + cancellation: slower fiber's result discarded cleanly, shutdown completes without hang |
+| P7.5 | Timeout + cancellation: slower fiber's result discarded cleanly, shutdown completes without hang. `goc_close(result_ch)` and both `goc_take_sync` fiber joins are performed **before** the result assertions so that no fiber can be left parked on an unclosed channel if a timing-sensitive assertion fails. |
 
 **Phase 8 — Safety and crash behaviour**
 
@@ -1253,7 +1253,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 ```sh
 cmake -B build
 cmake --build build
-ctest --test-dir build --output-on-failure
+ctest --test-dir build --output-on-failure --timeout 120
 # or run a single phase directly:
 ./build/test_p1_foundation
 ```
@@ -1282,9 +1282,9 @@ Runs a build matrix across three operating systems:
 
 | Runner | Dependencies | Build | Tests |
 |---|---|---|---|
-| `ubuntu-latest` | apt: `libuv1-dev`, `libatomic-ops-dev`; Boehm GC built from source | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
-| `macos-latest` | Homebrew: `libuv`, `bdw-gc`, `pkg-config`; `bdw-gc-threaded.pc` alias created manually | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest` |
-| `windows-latest` | MSYS2 UCRT64: `gcc`, `cmake`, `libuv`, `gc`, `pkg-config` (MinGW packages) | CMake `RelWithDebInfo`, full build | P1–P7, P9 via `ctest`; P8 self-skips (see below) |
+| `ubuntu-latest` | apt: `libuv1-dev`, `libatomic-ops-dev`; Boehm GC built from source | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest --timeout 120` |
+| `macos-latest` | Homebrew: `libuv`, `bdw-gc`, `pkg-config`; `bdw-gc-threaded.pc` alias created manually | CMake `RelWithDebInfo` | All phases (P1–P9) via `ctest --timeout 120` |
+| `windows-latest` | MSYS2 UCRT64: `gcc`, `cmake`, `libuv`, `gc`, `pkg-config` (MinGW packages) | CMake `RelWithDebInfo`, full build | P1–P7, P9 via `ctest --timeout 120`; P8 self-skips (see below) |
 
 On Linux, Boehm GC is built from source with `--enable-threads=posix` and cached between runs. A `bdw-gc-threaded.pc` alias is created from the `bdw-gc.pc` file so that CMake's `pkg_check_modules(BDWGC … bdw-gc-threaded)` finds it.
 

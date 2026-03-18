@@ -581,24 +581,29 @@ static void test_p7_5(void) {
     };
     goc_alts_result r = goc_alts_sync(ops, 2);
 
+    /* Close result_ch unconditionally — ensures that any fiber still parked
+     * as a putter (e.g., the fast fiber if the timeout won on a slow runner)
+     * receives GOC_CLOSED and exits cleanly regardless of which alts arm won.
+     * goc_close is idempotent; calling it again after the normal path is safe. */
+    goc_close(result_ch);
+
+    /* Drain all fibers before asserting so that goc_shutdown never waits on
+     * a live fiber left behind by an assertion failure jumping to done:.
+     * goc_take_sync blocks until each fiber's join channel is closed (i.e.,
+     * the fiber has returned and fiber_trampoline has called goc_close). */
+    goc_take_sync(fast_join);
+    goc_take_sync(slow_join);
+
+    /* Drain the timeout channel: the libuv timer fires at ~P7_5_TIMEOUT_MS ms
+     * from creation; by the time we reach here both worker fibers have already
+     * completed, so the timer has almost certainly fired.  If not, this call
+     * parks briefly until it does. */
+    goc_take_sync(tch);
+
     /* The fast fiber must have won: correct index and value. */
     ASSERT(r.index == 0);
     ASSERT(r.value.ok == GOC_OK);
     ASSERT((uintptr_t)r.value.val == 0xFADE);
-
-    /* Close result_ch so the slow fiber's pending goc_put sees GOC_CLOSED
-     * and exits without hanging. */
-    goc_close(result_ch);
-
-    /* Wait for both fibers to finish; neither must hang. */
-    goc_take_sync(fast_join);
-    goc_take_sync(slow_join);
-
-    /* The timeout channel was created by goc_timeout; its libuv timer will
-     * fire eventually and close tch.  We do not need to close it manually —
-     * goc_shutdown handles cleanup — but we can drain it to confirm it closes
-     * within a reasonable window (avoids a dangling timer warning). */
-    goc_take_sync(tch);
 
     TEST_PASS();
 done:;
