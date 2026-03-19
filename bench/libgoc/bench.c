@@ -66,9 +66,10 @@ static void bench_ping_pong(size_t ping_rounds) {
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
+    int    ms   = (int)(s * 1000);
     double rate = (double)(ping_rounds) / s;
-    printf("Channel ping-pong: %zu round trips in %.3fs (%.0f round trips/s)\n",
-           ping_rounds, s, rate);
+    printf("Channel ping-pong: %zu round trips in %dms (%.0f round trips/s)\n",
+           ping_rounds, ms, rate);
 }
 
 
@@ -121,9 +122,10 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
+    int    ms   = (int)(s * 1000);
     double rate = (double)(ring_hops) / s;
-    printf("Ring benchmark: %zu hops across %zu tasks in %.3fs (%.0f hops/s)\n",
-           ring_hops, ring_nodes, s, rate);
+    printf("Ring benchmark: %zu hops across %zu tasks in %dms (%.0f hops/s)\n",
+           ring_hops, ring_nodes, ms, rate);
 }
 
 

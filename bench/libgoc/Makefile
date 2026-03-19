@@ -1,4 +1,4 @@
-.PHONY: all run build clean
+.PHONY: all run run-all build clean
 
 ROOT_DIR := $(abspath ../..)
 BUILD_DIR := $(ROOT_DIR)/build-bench
@@ -23,6 +23,14 @@ $(BENCH_BIN): bench.c $(BUILD_DIR)/libgoc.a
 
 run: $(BENCH_BIN)
 	./$(BENCH_BIN)
+
+run-all: $(BENCH_BIN)
+	@for pool in 1 2 4 8; do \
+		echo "=== Pool Size: $$pool ==="; \
+		echo "GOC_POOL_THREADS=$$pool"; \
+		GOC_POOL_THREADS=$$pool ./$(BENCH_BIN); \
+		echo; \
+	done
 
 clean:
 	rm -f $(BENCH_BIN)

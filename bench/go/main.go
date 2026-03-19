@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"reflect"
-	"runtime"
 	"sync"
 	"time"
 )
@@ -16,8 +15,6 @@ func main() {
 	selectTasks := 200000
 	spawnCount := 200000
 	primeMax := 20000
-
-	fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
 	pingPong(pingRounds)
 	ringBenchmark(ringNodes, ringHops)
@@ -58,9 +55,10 @@ func pingPong(rounds int) {
 	a <- 0
 	wg.Wait()
 	duration := time.Since(start)
+	ms := int(duration.Nanoseconds() / 1000000)
 
 	rate := float64(rounds) / duration.Seconds()
-	fmt.Printf("Channel ping-pong: %d round trips in %s (%.0f round trips/s)\n", rounds, duration, rate)
+	fmt.Printf("Channel ping-pong: %d round trips in %dms (%.0f round trips/s)\n", rounds, ms, rate)
 }
 
 
@@ -101,9 +99,10 @@ func ringBenchmark(nodes, hops int) {
 	channels[0] <- hops
 	wg.Wait()
 	duration := time.Since(start)
+	ms := int(duration.Nanoseconds() / 1000000)
 
 	rate := float64(hops) / duration.Seconds()
-	fmt.Printf("Ring benchmark: %d hops across %d tasks in %s (%.0f hops/s)\n", hops, nodes, duration, rate)
+	fmt.Printf("Ring benchmark: %d hops across %d tasks in %dms (%.0f hops/s)\n", hops, nodes, ms, rate)
 }
 
 
@@ -162,9 +161,10 @@ func fanInBenchmark(workers, tasks int) {
 	<-done
 	workerWG.Wait()
 	duration := time.Since(start)
+	ms := int(duration.Nanoseconds() / 1000000)
 
 	rate := float64(tasks) / duration.Seconds()
-	fmt.Printf("Selective receive / fan-out / fan-in: %d messages with %d workers in %s (%.0f msg/s)\n", tasks, workers, duration, rate)
+	fmt.Printf("Selective receive / fan-out / fan-in: %d messages with %d workers in %dms (%.0f msg/s)\n", tasks, workers, ms, rate)
 }
 
 
@@ -188,9 +188,10 @@ func spawnIdle(count int) {
 	close(park)
 	wg.Wait()
 	duration := time.Since(start)
+	ms := int(duration.Nanoseconds() / 1000000)
 
 	rate := float64(count) / duration.Seconds()
-	fmt.Printf("Spawn idle tasks: %d goroutines in %s (%.0f tasks/s)\n", count, duration, rate)
+	fmt.Printf("Spawn idle tasks: %d goroutines in %dms (%.0f tasks/s)\n", count, ms, rate)
 }
 
 
@@ -201,9 +202,10 @@ func primeSieve(max int) {
 	start := time.Now()
 	count := sieve(max)
 	duration := time.Since(start)
+	ms := int(duration.Nanoseconds() / 1000000)
 
 	rate := float64(count) / duration.Seconds()
-	fmt.Printf("Prime sieve: %d primes up to %d in %s (%.0f primes/s)\n", count, max, duration, rate)
+	fmt.Printf("Prime sieve: %d primes up to %d in %dms (%.0f primes/s)\n", count, max, ms, rate)
 }
 
 // sieve performs a concurrent prime sieve and returns the number of primes <= max.
