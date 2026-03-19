@@ -7,7 +7,6 @@
 
 // Helpers
 // =======
-static goc_pool* single_threaded_pool = NULL;
 
 
 // Benchmarks
@@ -61,8 +60,8 @@ static void bench_ping_pong(size_t ping_rounds) {
     ping_pong_args_t args_ba = { .recv = b, .send = a, .rounds = ping_rounds };
     ping_pong_args_t args_ab = { .recv = a, .send = b, .rounds = ping_rounds };
 
-    goc_chan* j1 = goc_go_on(single_threaded_pool, player_fn, &args_ba);
-    goc_chan* j2 = goc_go_on(single_threaded_pool, player_fn, &args_ab);
+    goc_chan* j1 = goc_go(player_fn, &args_ba);
+    goc_chan* j2 = goc_go(player_fn, &args_ab);
 
     uint64_t t0 = uv_hrtime();
     goc_put_sync(a, (void*)(uintptr_t)0);
@@ -79,7 +78,60 @@ static void bench_ping_pong(size_t ping_rounds) {
 
 // 2. Ring Benchmark
 // =================
+typedef struct {
+    goc_chan* recv;
+    goc_chan* send;
+} ring_node_args_t;
 
+static void ring_node_fn(void* arg) {
+    ring_node_args_t* a = (ring_node_args_t*)arg;
+    for (;;) {
+        goc_val_t v = goc_take(a->recv);
+        if (v.ok != GOC_OK) {
+            goc_close(a->send);
+            return;
+        }
+        size_t n = (size_t)(uintptr_t)v.val;
+        if (n == 0) {
+            goc_close(a->send);
+            return;
+        }
+        goc_put(a->send, (void*)(uintptr_t)(n - 1));
+    }
+}
+
+static void bench_ring(size_t ring_nodes, size_t ring_hops) {
+    if (ring_nodes < 1)
+        return;
+
+    goc_chan** channels = goc_malloc(sizeof(goc_chan*) * ring_nodes);
+    for (size_t i = 0; i < ring_nodes; i++) {
+        channels[i] = goc_chan_make(0);
+    }
+
+    for (size_t i = 0; i < ring_nodes; i++) {
+        ring_node_args_t* args = goc_malloc(sizeof(ring_node_args_t));
+        args->recv = channels[i];
+        args->send = channels[(i + 1) % ring_nodes];
+        goc_go(ring_node_fn, args);
+    }
+
+    uint64_t t0 = uv_hrtime();
+    goc_put_sync(channels[0], (void*)(uintptr_t)ring_hops);
+    for (size_t i = 0; i < ring_nodes; i++) {
+        goc_take_sync(channels[i]);
+    }
+    uint64_t t1 = uv_hrtime();
+
+    double s    = (double)(t1 - t0) / 1e9;
+    double rate = (double)(ring_hops) / s;
+    printf("Ring benchmark: %zu hops across %zu tasks in %.3fs (%.0f hops/s)\n",
+           ring_hops, ring_nodes, s, rate);
+
+    for (size_t i = 0; i < ring_nodes; i++) {
+        goc_close(channels[i]);
+    }
+}
 
 
 // 3. Selective Receive / Fan-out / Fan-in Benchmark
@@ -102,9 +154,7 @@ static void bench_ping_pong(size_t ping_rounds) {
 int main(void) {
     goc_init();
 
-    single_threaded_pool = goc_pool_make(1);
-
-    size_t ping_rounds       = 200000;
+    size_t ping_rounds    = 200000;
     // size_t ring_nodes     = 128;
     // size_t ring_hops      = 500000;
     // size_t select_workers = 8;
@@ -113,6 +163,7 @@ int main(void) {
     // size_t prime_max      = 20000;
 
     bench_ping_pong(ping_rounds);
+    // bench_ring(ring_nodes, ring_hops);
 
     goc_shutdown();
     return 0;
