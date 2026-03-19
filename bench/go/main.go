@@ -28,6 +28,13 @@ func main() {
 	primeSieve(*primeMax)
 }
 
+
+// ============ Benchmarks ============
+
+
+// 1. Ping Pong Benchmark
+// ======================
+// pingPong measures a two-goroutine channel ping-pong for the specified rounds.
 func pingPong(rounds int) {
 	a := make(chan int)
 	b := make(chan int)
@@ -58,6 +65,10 @@ func pingPong(rounds int) {
 	fmt.Printf("Channel ping-pong: %d round trips in %s (%.0f round trips/s)\n", rounds, duration, rate)
 }
 
+
+// 2. Ring Benchmark
+// =================
+// ringBenchmark measures sending a token around a ring of goroutines.
 func ringBenchmark(nodes, hops int) {
 	if nodes < 1 {
 		return
@@ -97,6 +108,10 @@ func ringBenchmark(nodes, hops int) {
 	fmt.Printf("Ring benchmark: %d hops across %d tasks in %s (%.0f hops/s)\n", hops, nodes, duration, rate)
 }
 
+
+// 3. Fan-In Benchmark
+// ===================
+// fanInBenchmark measures selective receive fan-out/fan-in throughput.
 func fanInBenchmark(workers, tasks int) {
 	if workers < 1 {
 		return
@@ -154,6 +169,10 @@ func fanInBenchmark(workers, tasks int) {
 	fmt.Printf("Selective receive / fan-out / fan-in: %d messages with %d workers in %s (%.0f msg/s)\n", tasks, workers, duration, rate)
 }
 
+
+// 4. Spawn Idle Tasks Benchmark
+// =============================
+// spawnIdle measures the cost of spawning and joining idle goroutines.
 func spawnIdle(count int) {
 	var wg sync.WaitGroup
 	wg.Add(count)
@@ -176,6 +195,10 @@ func spawnIdle(count int) {
 	fmt.Printf("Spawn idle tasks: %d goroutines in %s (%.0f tasks/s)\n", count, duration, rate)
 }
 
+
+// 5. Prime Sieve Benchmark
+// ========================
+// primeSieve measures the rate of generating primes up to max using a sieve.
 func primeSieve(max int) {
 	start := time.Now()
 	count := sieve(max)
@@ -185,6 +208,7 @@ func primeSieve(max int) {
 	fmt.Printf("Prime sieve: %d primes up to %d in %s (%.0f primes/s)\n", count, max, duration, rate)
 }
 
+// sieve performs a concurrent prime sieve and returns the number of primes <= max.
 func sieve(max int) int {
 	ch := generate(max)
 	count := 0
@@ -201,6 +225,7 @@ func sieve(max int) int {
 	return count
 }
 
+// generate emits integers from 2 up to max and then closes the channel.
 func generate(max int) <-chan int {
 	out := make(chan int)
 	go func() {
@@ -212,6 +237,7 @@ func generate(max int) <-chan int {
 	return out
 }
 
+// filter removes multiples of prime from the input channel.
 func filter(in <-chan int, prime int) <-chan int {
 	out := make(chan int)
 	go func() {

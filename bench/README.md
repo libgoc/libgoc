@@ -14,7 +14,13 @@ This directory contains standalone CSP benchmarks implemented in Go and in C usi
 
 From this directory:
 
+### Go
+
 ```sh
 make -C go run
+```
+
+### libgoc
+```sh
 make -C libgoc run
 ```

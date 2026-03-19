@@ -5,10 +5,14 @@
 #include <stdio.h>
 #include <uv.h>
 
+// Helpers
+// =======
+// ns_to_seconds converts a nanosecond duration to seconds.
 static double ns_to_seconds(uint64_t ns) {
     return (double)ns / 1e9;
 }
 
+// print_rate prints a benchmark throughput line for the given operation.
 static void print_rate(const char* name, size_t ops, uint64_t ns, const char* unit) {
     double seconds = ns_to_seconds(ns);
     double rate = seconds > 0.0 ? (double)ops / seconds : 0.0;
@@ -16,12 +20,16 @@ static void print_rate(const char* name, size_t ops, uint64_t ns, const char* un
     printf("%s: %zu %s in %.3f s (%.0f %s/s)\n", name, ops, unit, seconds, rate, unit);
 }
 
+
+// 1. Ping Pong Benchmark
+// ======================
 typedef struct {
     goc_chan* recv;
     goc_chan* send;
     size_t max;
 } ping_args_t;
 
+// ping_fiber bounces an incrementing counter between two channels until max is reached.
 static void ping_fiber(void* arg) {
     ping_args_t* a = arg;
 
@@ -41,6 +49,7 @@ static void ping_fiber(void* arg) {
     }
 }
 
+// bench_ping_pong measures round-trip latency between two channels.
 static void bench_ping_pong(size_t rounds) {
     goc_chan* a_to_b = goc_chan_make(0);
     goc_chan* b_to_a = goc_chan_make(0);
@@ -60,11 +69,15 @@ static void bench_ping_pong(size_t rounds) {
     print_rate("Channel ping-pong", rounds, end - start, "round trips");
 }
 
+
+// 2. Ring Benchmark
+// =================
 typedef struct {
     goc_chan* in;
     goc_chan* out;
 } ring_node_t;
 
+// ring_node forwards a counter around the ring until it reaches zero.
 static void ring_node(void* arg) {
     ring_node_t* node = arg;
 
@@ -85,6 +98,7 @@ static void ring_node(void* arg) {
     }
 }
 
+// bench_ring measures message passing latency around a ring of nodes.
 static void bench_ring(size_t nodes, size_t hops) {
     goc_chan** chans = goc_malloc(sizeof(goc_chan*) * nodes);
     ring_node_t* args = goc_malloc(sizeof(ring_node_t) * nodes);
@@ -111,11 +125,15 @@ static void bench_ring(size_t nodes, size_t hops) {
     print_rate("Ring benchmark", hops, end - start, "hops");
 }
 
+
+// 3. Selective Receive / Fan-out / Fan-in Benchmark
+// =================================================
 typedef struct {
     goc_chan* in;
     goc_chan* out;
 } worker_args_t;
 
+// fan_worker forwards messages from the shared input to its own output.
 static void fan_worker(void* arg) {
     worker_args_t* a = arg;
 
@@ -128,12 +146,16 @@ static void fan_worker(void* arg) {
     }
 }
 
+
+// 4. Spawn / Join Benchmark
+// =========================
 typedef struct {
     goc_chan** outs;
     size_t out_count;
     size_t total;
 } fan_in_args_t;
 
+// fan_in_collector consumes from all worker outputs using goc_alts until the total is reached.
 static void fan_in_collector(void* arg) {
     fan_in_args_t* a = arg;
     goc_alt_op* ops = goc_malloc(sizeof(goc_alt_op) * a->out_count);
@@ -153,6 +175,7 @@ static void fan_in_collector(void* arg) {
     }
 }
 
+// bench_select_fan measures selective receive fan-out/fan-in throughput.
 static void bench_select_fan(size_t workers, size_t tasks) {
     goc_chan* input = goc_chan_make(0);
     goc_chan** outs = goc_malloc(sizeof(goc_chan*) * workers);
@@ -193,6 +216,7 @@ static void idle_fiber(void* arg) {
     goc_take(park);
 }
 
+// bench_spawn measures the cost of spawning and joining idle fibers.
 static void bench_spawn(size_t count) {
     goc_chan* park = goc_chan_make(0);
     goc_chan** joins = goc_malloc(sizeof(goc_chan*) * count);
@@ -211,11 +235,15 @@ static void bench_spawn(size_t count) {
     print_rate("Spawn idle tasks", count, end - start, "fibers");
 }
 
+
+// 5. Prime Sieve Benchmark
+// ========================
 typedef struct {
     goc_chan* out;
     size_t max;
 } gen_args_t;
 
+// generator emits integers from 2 up to max then closes the channel.
 static void generator(void* arg) {
     gen_args_t* a = arg;
     for (size_t i = 2; i <= a->max; i++) {
@@ -230,6 +258,7 @@ typedef struct {
     size_t prime;
 } filter_args_t;
 
+// filter removes multiples of prime from the input stream.
 static void filter(void* arg) {
     filter_args_t* a = arg;
 
@@ -247,6 +276,7 @@ static void filter(void* arg) {
     }
 }
 
+// sieve implements a concurrent prime sieve and returns the number of primes <= max.
 static size_t sieve(size_t max) {
     goc_chan* ch = goc_chan_make(0);
     gen_args_t gen = { .out = ch, .max = max };
@@ -276,6 +306,7 @@ static size_t sieve(size_t max) {
     return count;
 }
 
+// bench_primes measures the throughput of the concurrent prime sieve.
 static void bench_primes(size_t max) {
     uint64_t start = uv_hrtime();
     size_t primes = sieve(max);
