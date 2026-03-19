@@ -61,7 +61,7 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
     entry->pool     = pool;
 
     /* 4. Initialise the minicoro descriptor with the trampoline and stack size. */
-    mco_desc desc   = mco_desc_init(fiber_trampoline, GOC_DEFAULT_STACK_SIZE);
+    mco_desc desc   = mco_desc_init(fiber_trampoline, 0); /* 0 = use minicoro's default (adapts to active allocator) */
     desc.user_data  = entry;
 
     /* 5. Create the coroutine. */

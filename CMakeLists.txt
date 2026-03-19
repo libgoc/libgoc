@@ -84,7 +84,7 @@ endfunction()
 # minicoro.c must NOT be compiled with -DGC_THREADS.
 # Set globally before any add_library so it applies to all targets that
 # include this source file. Does not require TARGET_DIRECTORY (CMake 3.26+).
-set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS;-UGC_PTHREADS")
+set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS;-UGC_PTHREADS;-DMCO_USE_VMEM_ALLOCATOR")
 
 # ---------------------------------------------------------------------------
 # Primary static library: goc

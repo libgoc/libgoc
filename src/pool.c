@@ -145,7 +145,7 @@ static void registry_remove(goc_pool* pool) {
  * ---------------------------------------------------------------------- */
 
 static void runq_push(goc_runq* q, goc_entry* entry) {
-    goc_runq_node* node = goc_malloc(sizeof(goc_runq_node));
+    goc_runq_node* node = malloc(sizeof(goc_runq_node));
     node->entry = entry;
     node->next  = NULL;
 
@@ -166,7 +166,7 @@ static goc_entry* runq_pop(goc_runq* q) {
     goc_entry* entry = next->entry;
     q->head          = next;
     uv_mutex_unlock(&q->head_lock);
-    /* sentinel (old head) is now unreachable; GC will collect it */
+    free(sentinel);  /* malloc'd in runq_push; must be freed explicitly */
     return entry;
 }
 
@@ -302,8 +302,10 @@ goc_pool* goc_pool_make(size_t threads) {
     goc_pool* pool = malloc(sizeof(goc_pool));
     memset(pool, 0, sizeof(goc_pool));
 
-    /* Initialise run queue with a sentinel node (GC-heap). */
-    goc_runq_node* sentinel = goc_malloc(sizeof(goc_runq_node));
+    /* Initialise run queue with a sentinel node (plain malloc — must not be
+     * GC-heap, because goc_pool is malloc'd and BDWGC won't scan its fields
+     * for GC pointers; see runq_push/runq_pop for the same reasoning). */
+    goc_runq_node* sentinel = malloc(sizeof(goc_runq_node));
     sentinel->entry = NULL;
     sentinel->next  = NULL;
     pool->runq.head = sentinel;
@@ -369,14 +371,11 @@ void goc_pool_destroy(goc_pool* pool) {
     pthread_mutex_destroy(&pool->drain_mutex);
     pthread_cond_destroy(&pool->drain_cond);
 
-    /* 6. Drain and release any remaining runq nodes.
-     *    (Entries themselves are GC-heap; only the nodes are freed.) */
+    /* 6. Drain and release any remaining runq nodes (malloc'd; must be freed). */
     goc_runq_node* n = pool->runq.head;
     while (n != NULL) {
         goc_runq_node* next = n->next;
-        /* n is GC-heap; the GC will collect it — no explicit free needed.
-         * The sentinel and any unconsumed nodes are already unreachable. */
-        (void)n;
+        free(n);
         n = next;
     }
 
@@ -443,11 +442,11 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     pthread_mutex_destroy(&pool->drain_mutex);
     pthread_cond_destroy(&pool->drain_cond);
 
-    /* Drain runq nodes (GC-heap; already unreachable after workers exit). */
+    /* Drain runq nodes (malloc'd; must be freed explicitly). */
     goc_runq_node* n = pool->runq.head;
     while (n != NULL) {
         goc_runq_node* next = n->next;
-        (void)n;
+        free(n);
         n = next;
     }
 
