@@ -369,7 +369,7 @@ int main(void) {
 #endif
     size_t select_workers = bench_get_env_size("GOC_BENCH_SELECT_WORKERS", 8);
     size_t select_tasks   = bench_get_env_size("GOC_BENCH_SELECT_TASKS", 200000);
-    /* Default spawn count is lower to avoid exhausting per-fiber stack mappings. */
+    /* Default spawn count is lower on macOS to avoid exhausting stack mappings. */
     size_t spawn_count    = bench_get_env_size("GOC_BENCH_SPAWN_COUNT", default_spawn_count);
     size_t prime_max      = bench_get_env_size("GOC_BENCH_PRIME_MAX", default_prime_max);
 
