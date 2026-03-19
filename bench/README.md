@@ -55,5 +55,8 @@ Prime sieve: 2262 primes up to 20000 in 171.285332ms (13206 primes/s)
 ### libgoc
 
 ```sh
-
+$ GOC_POOL_THREADS=1 make -C libgoc run
+./bench-libgoc
+Channel ping-pong: 200000 round trips in 0.048s (4177962 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 0.341s (1464775 hops/s)
 ```
