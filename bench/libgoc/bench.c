@@ -360,11 +360,18 @@ int main(void) {
     size_t ping_rounds    = 200000;
     size_t ring_nodes     = 128;
     size_t ring_hops      = 500000;
-    size_t select_workers = 8;
-    size_t select_tasks   = 200000;
+#ifdef __APPLE__
+    size_t default_spawn_count = 20000;
+    size_t default_prime_max   = 10000;
+#else
+    size_t default_spawn_count = 50000;
+    size_t default_prime_max   = 20000;
+#endif
+    size_t select_workers = bench_get_env_size("GOC_BENCH_SELECT_WORKERS", 8);
+    size_t select_tasks   = bench_get_env_size("GOC_BENCH_SELECT_TASKS", 200000);
     /* Default spawn count is lower to avoid exhausting per-fiber stack mappings. */
-    size_t spawn_count    = bench_get_env_size("GOC_BENCH_SPAWN_COUNT", 50000);
-    size_t prime_max      = 20000;
+    size_t spawn_count    = bench_get_env_size("GOC_BENCH_SPAWN_COUNT", default_spawn_count);
+    size_t prime_max      = bench_get_env_size("GOC_BENCH_PRIME_MAX", default_prime_max);
 
     bench_ping_pong(ping_rounds);
     bench_ring(ring_nodes, ring_hops);

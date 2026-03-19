@@ -30,11 +30,19 @@ make run-all
 4. **Spawn idle tasks** — Fiber creation and join overhead
 5. **Prime sieve** — Concurrent prime pipeline
 
-The spawn-idle benchmark defaults to 50,000 fibers to avoid exhausting per-fiber
-stack mappings on typical Linux configurations. Override it with:
+The spawn-idle benchmark defaults to 50,000 fibers on Linux (20,000 on macOS) to
+avoid exhausting per-fiber stack mappings. The prime sieve default is 20,000 on
+Linux (10,000 on macOS) for the same reason. Override them with:
 
 ```sh
 GOC_BENCH_SPAWN_COUNT=200000 make run
+GOC_BENCH_PRIME_MAX=20000 make run
+```
+
+You can also tune the fan-out/fan-in workload:
+
+```sh
+GOC_BENCH_SELECT_WORKERS=8 GOC_BENCH_SELECT_TASKS=200000 make run
 ```
 
 ## Output Format

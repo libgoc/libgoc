@@ -41,9 +41,10 @@ Both implementations now use consistent integer millisecond formatting:
 ## Benchmark Notes
 
 - **Go**: All 5 benchmarks are enabled and functional
-- **libgoc**: All 5 benchmarks are enabled. The spawn-idle default is lower (50k) to
-  avoid per-fiber stack mapping limits; override with `GOC_BENCH_SPAWN_COUNT` if
-  you want to push higher.
+- **libgoc**: All 5 benchmarks are enabled. The spawn-idle and prime-sieve defaults
+  are lower on macOS (20k spawns / 10k primes) to avoid per-fiber stack mapping
+  limits. Override with `GOC_BENCH_SPAWN_COUNT` or `GOC_BENCH_PRIME_MAX` if you want
+  to push higher.
 
 ## Runs
 
