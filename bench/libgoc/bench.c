@@ -8,6 +8,11 @@
 // Helpers
 // =======
 
+
+
+// Benchmarks
+// ==========
+
 // 1. Ping Pong Benchmark
 // ======================
 typedef struct {
@@ -16,9 +21,26 @@ typedef struct {
     size_t    rounds;
 } ping_pong_args_t;
 
-static void player_fn(void* arg) {
+static void player_loop_fn(void* arg, goc_chan* ret_ch, goc_chan* break_ch) {
     ping_pong_args_t* a = (ping_pong_args_t*)arg;
 
+    goc_val_t v = goc_take(a->recv);
+    if (v.ok != GOC_OK) {
+        goc_close(break_ch);
+        return;
+    }
+    size_t n = (size_t)(uintptr_t)v.val;
+    if (n >= a->rounds) {
+        goc_close(a->send);
+        goc_put(ret_ch, NULL);
+        goc_close(break_ch);
+        return;
+    }
+    goc_put(a->send, (void*)(uintptr_t)(n + 1));
+}
+
+static void player_fn(void* arg) {
+    ping_pong_args_t* a = (ping_pong_args_t*)arg;
     for (;;) {
         goc_val_t v = goc_take(a->recv);
         if (v.ok != GOC_OK)
