@@ -5,10 +5,6 @@
 #include <stdio.h>
 #include <uv.h>
 
-// Helpers
-// =======
-
-
 // Benchmarks
 // ==========
 
