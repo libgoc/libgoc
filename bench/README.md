@@ -52,3 +52,8 @@ Spawn idle tasks: 200000 goroutines in 770.926955ms (259428 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 171.285332ms (13206 primes/s)
 ```
 
+### libgoc
+
+```sh
+
+```
