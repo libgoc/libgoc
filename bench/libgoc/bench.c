@@ -109,17 +109,18 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
         channels[i] = goc_chan_make(0);
     }
 
+    goc_chan** joins = goc_malloc(sizeof(goc_chan*) * ring_nodes);
     for (size_t i = 0; i < ring_nodes; i++) {
         ring_node_args_t* args = goc_malloc(sizeof(ring_node_args_t));
         args->recv = channels[i];
         args->send = channels[(i + 1) % ring_nodes];
-        goc_go(ring_node_fn, args);
+        joins[i] = goc_go(ring_node_fn, args);
     }
 
     uint64_t t0 = uv_hrtime();
     goc_put_sync(channels[0], (void*)(uintptr_t)ring_hops);
     for (size_t i = 0; i < ring_nodes; i++) {
-        goc_take_sync(channels[i]);
+        goc_take_sync(joins[i]);
     }
     uint64_t t1 = uv_hrtime();
 
@@ -127,10 +128,6 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     double rate = (double)(ring_hops) / s;
     printf("Ring benchmark: %zu hops across %zu tasks in %.3fs (%.0f hops/s)\n",
            ring_hops, ring_nodes, s, rate);
-
-    for (size_t i = 0; i < ring_nodes; i++) {
-        goc_close(channels[i]);
-    }
 }
 
 
@@ -154,16 +151,16 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
 int main(void) {
     goc_init();
 
-    size_t ping_rounds    = 200000;
-    // size_t ring_nodes     = 128;
-    // size_t ring_hops      = 500000;
+    size_t ping_rounds       = 200000;
+    size_t ring_nodes        = 128;
+    size_t ring_hops         = 500000;
     // size_t select_workers = 8;
     // size_t select_tasks   = 200000;
     // size_t spawn_count    = 200000;
     // size_t prime_max      = 20000;
 
     bench_ping_pong(ping_rounds);
-    // bench_ring(ring_nodes, ring_hops);
+    bench_ring(ring_nodes, ring_hops);
 
     goc_shutdown();
     return 0;
