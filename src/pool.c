@@ -207,6 +207,14 @@ static void* pool_worker_fn(void* arg) {
 
         GC_remove_roots(&entry, &entry + 1);
 
+        /* If the fiber just parked (called goc_take, goc_put, or goc_alts slow
+         * path and set fiber_entry->parked = 0 before yielding), set it back
+         * to 1 now that mco_resume has returned and the coroutine is truly
+         * MCO_SUSPENDED.  This unblocks any wake() call spinning on parked==0. */
+        goc_entry* fe = (goc_entry*)mco_get_user_data(coro);
+        if (fe != NULL)
+            atomic_store_explicit(&fe->parked, 1, memory_order_release);
+
         /* Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
          * be re-posted to a run queue via post_to_run_queue(), which increments
          * active_count before the next resume.  If a fiber yields without being

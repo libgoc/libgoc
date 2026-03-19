@@ -123,6 +123,36 @@ struct goc_entry {
     /* Sync fields (GOC_SYNC) */
     goc_sync_t         sync_obj;
     goc_sync_t*        sync_sem_ptr;   /* points to sync_obj (own) or a shared goc_sync_t in goc_alts_sync */
+
+    /* Yield-gate: guards the race between wake() and mco_yield().
+     *
+     * There is a brief window between when a parking fiber releases
+     * ch->lock (or the alts lock set) and when it actually calls mco_yield.
+     * If wake() calls post_to_run_queue during that window, a pool worker
+     * calls mco_resume on a MCO_RUNNING coroutine — mco_resume silently
+     * returns MCO_NOT_SUSPENDED, the entry is "consumed", and the fiber hangs
+     * after calling mco_yield with nobody left to resume it.
+     *
+     * Protocol (GOC_FIBER entries only):
+     *   `parked` lives on the fiber's INITIAL goc_entry (accessible via
+     *   mco_get_user_data(e->coro)).  Its values:
+     *     0 = parking in progress (fiber set it just before releasing locks,
+     *         mco_yield has not yet returned on the pool worker side)
+     *     1 = fiber is safely MCO_SUSPENDED (pool_worker_fn set it after
+     *         mco_resume returned)
+     *
+     *   Fiber (goc_take / goc_put / goc_alts slow path):
+     *     Sets fiber_entry->parked = 0 while still holding the channel lock(s),
+     *     then releases the lock(s) and calls mco_yield.
+     *
+     *   pool_worker_fn (after mco_resume returns):
+     *     Sets fiber_entry->parked = 1.
+     *
+     *   wake() and goc_close() (GOC_FIBER case):
+     *     Spin with sched_yield() while fiber_entry->parked == 0 before
+     *     calling post_to_run_queue.  This guarantees the coroutine is truly
+     *     MCO_SUSPENDED before any worker thread calls mco_resume. */
+    _Atomic int              parked;      /* per-fiber flag; see protocol above */
 };
 
 /* ---------------------------------------------------------------------------

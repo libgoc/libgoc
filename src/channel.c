@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <stdatomic.h>
+#include <sched.h>
 #include <uv.h>
 #include <gc.h>
 #include "minicoro.h"
@@ -61,9 +62,19 @@ void wake(goc_chan* ch, goc_entry* e, void* value)
     e->ok = GOC_OK;
 
     switch (e->kind) {
-    case GOC_FIBER:
+    case GOC_FIBER: {
+        /* Spin until the fiber has truly called mco_yield (parked == 1).
+         * There is a brief window between when the parking fiber releases
+         * ch->lock and when it calls mco_yield.  Calling post_to_run_queue
+         * during that window causes a pool worker to call mco_resume on a
+         * MCO_RUNNING coroutine, which silently fails, leaving the fiber
+         * permanently suspended with no one to resume it (hang). */
+        goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
+        while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+            sched_yield();
         post_to_run_queue(e->pool, e);
         break;
+    }
     case GOC_CALLBACK:
         post_callback(e, value);
         break;
@@ -191,7 +202,13 @@ void goc_close(goc_chan* ch)
                         memory_order_acq_rel, memory_order_acquire)) {
                     e->ok = GOC_CLOSED;
                     switch (e->kind) {
-                    case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
+                    case GOC_FIBER: {
+                        goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
+                        while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+                            sched_yield();
+                        post_to_run_queue(e->pool, e);
+                        break;
+                    }
                     case GOC_CALLBACK: post_callback(e, NULL);        break;
                     case GOC_SYNC:     goc_sync_post(e->sync_sem_ptr);     break;
                     }
@@ -215,7 +232,13 @@ void goc_close(goc_chan* ch)
                         memory_order_acq_rel, memory_order_acquire)) {
                     e->ok = GOC_CLOSED;
                     switch (e->kind) {
-                    case GOC_FIBER:    post_to_run_queue(e->pool, e); break;
+                    case GOC_FIBER: {
+                        goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
+                        while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+                            sched_yield();
+                        post_to_run_queue(e->pool, e);
+                        break;
+                    }
                     case GOC_CALLBACK: post_callback(e, NULL);        break;
                     case GOC_SYNC:     goc_sync_post(e->sync_sem_ptr);     break;
                     }
@@ -290,12 +313,20 @@ goc_val_t goc_take(goc_chan* ch)
     while (*pp) pp = &(*pp)->next;
     *pp = &e;
 
+    /* Set parked = 0 on the fiber's initial entry while ch->lock is still held.
+     * wake() and goc_close() will spin until pool_worker_fn sets it back to 1
+     * after mco_resume returns, guaranteeing the coroutine is truly
+     * MCO_SUSPENDED before any worker calls mco_resume on it. */
+    goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
+    atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
+
     void* stack_base = e.coro->stack_base;
     void* stack_top  = (char*)stack_base + e.coro->stack_size;
     GC_add_roots(stack_base, stack_top);
 
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
+    /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
     GC_remove_roots(stack_base, stack_top);
 
@@ -360,12 +391,17 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     while (*pp) pp = &(*pp)->next;
     *pp = &e;
 
+    /* Same yield-gate as goc_take slow path. */
+    goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
+    atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
+
     void* stack_base = e.coro->stack_base;
     void* stack_top  = (char*)stack_base + e.coro->stack_size;
     GC_add_roots(stack_base, stack_top);
 
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
+    /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
     GC_remove_roots(stack_base, stack_top);
 

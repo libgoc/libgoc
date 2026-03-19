@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"reflect"
 	"runtime"
@@ -10,22 +9,21 @@ import (
 )
 
 func main() {
-	pingRounds := flag.Int("ping-rounds", 200000, "ping-pong round trips")
-	ringNodes := flag.Int("ring-nodes", 128, "number of ring tasks")
-	ringHops := flag.Int("ring-hops", 500000, "token hops around the ring")
-	selectWorkers := flag.Int("select-workers", 8, "fan-out worker count")
-	selectTasks := flag.Int("select-tasks", 200000, "messages sent through fan-out/fan-in")
-	spawnCount := flag.Int("spawn-tasks", 200000, "idle tasks to spawn")
-	primeMax := flag.Int("prime-max", 20000, "upper bound for prime sieve")
-	flag.Parse()
+	pingRounds := 200000
+	ringNodes := 128
+	ringHops := 500000
+	selectWorkers := 8
+	selectTasks := 200000
+	spawnCount := 200000
+	primeMax := 20000
 
 	fmt.Printf("GOMAXPROCS=%d\n", runtime.GOMAXPROCS(0))
 
-	pingPong(*pingRounds)
-	ringBenchmark(*ringNodes, *ringHops)
-	fanInBenchmark(*selectWorkers, *selectTasks)
-	spawnIdle(*spawnCount)
-	primeSieve(*primeMax)
+	pingPong(pingRounds)
+	ringBenchmark(ringNodes, ringHops)
+	fanInBenchmark(selectWorkers, selectTasks)
+	spawnIdle(spawnCount)
+	primeSieve(primeMax)
 }
 
 

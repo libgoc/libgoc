@@ -353,6 +353,14 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
     void *stack_top  = (char *)stack_base + running->stack_size;
     GC_add_roots(stack_base, stack_top);
 
+    /* Set parked = 0 on the fiber's initial entry while all channel locks are
+     * still held.  wake() / goc_close() spin on this flag (via pool_worker_fn
+     * setting it back to 1 after mco_resume returns) to avoid resuming the
+     * coroutine before it has actually called mco_yield.  Must be set before
+     * releasing any lock so that no waker can call post_to_run_queue before
+     * we yield. */
+    atomic_store_explicit(&self->parked, 0, memory_order_release);
+
     /* Release all locks in reverse order before yielding. */
     for (size_t j = n_unique; j-- > 0; )
         uv_mutex_unlock(sorted_chans[j]->lock);
@@ -361,6 +369,7 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
 
     /* Suspend this fiber; the pool worker will resume us when a channel fires. */
     mco_yield(running);
+    /* pool_worker_fn has set self->parked = 1 by this point */
 
     /* ------------------------------------------------------------------ */
     /* Phase 7 — On resume                                                 */
