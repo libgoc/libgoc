@@ -266,6 +266,13 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
 
     /* ------------------------------------------------------------------ */
     /* Phase 4 — Acquire all channel locks in ascending pointer order      */
+    /*                                                                      */
+    /* DEADLOCK PREVENTION: Multiple concurrent goc_alts calls on          */
+    /* overlapping channel sets would deadlock if they acquired locks in   */
+    /* arbitrary order. We enforce a global total order by sorting         */
+    /* channel pointers (address as key). All goc_alts calls acquire       */
+    /* locks in ascending address order, ensuring no cycles can form in     */
+    /* the wait-for graph.                                                  */
     /* ------------------------------------------------------------------ */
     for (size_t i = 0; i < n_unique; i++) {
         uv_mutex_lock(sorted_chans[i]->lock);
@@ -553,6 +560,13 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
 
     /* ------------------------------------------------------------------ */
     /* Phase 4 — Acquire locks in ascending pointer order                  */
+    /*                                                                      */
+    /* DEADLOCK PREVENTION: Multiple concurrent goc_alts_sync calls on     */
+    /* overlapping channel sets would deadlock if they acquired locks in   */
+    /* arbitrary order. We enforce a global total order by sorting         */
+    /* channel pointers (address as key). All calls acquire locks in       */
+    /* ascending address order, ensuring no cycles can form in the         */
+    /* wait-for graph.                                                      */
     /* ------------------------------------------------------------------ */
     for (size_t i = 0; i < n_unique; i++) {
         uv_mutex_lock(sorted_chans[i]->lock);

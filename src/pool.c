@@ -144,6 +144,13 @@ static void registry_remove(goc_pool* pool) {
  * runq_push / runq_pop — two-lock MPMC operations
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * runq_push — Add entry to the tail of the FIFO run queue
+ *
+ * Thread-safe via two-lock queue (separate head and tail locks).
+ * Called by multiple threads to enqueue work.
+ * ---------------------------------------------------------------------- */
+
 static void runq_push(goc_runq* q, goc_entry* entry) {
     goc_runq_node* node = malloc(sizeof(goc_runq_node));
     node->entry = entry;
@@ -154,6 +161,13 @@ static void runq_push(goc_runq* q, goc_entry* entry) {
     q->tail       = node;
     uv_mutex_unlock(&q->tail_lock);
 }
+
+/* -------------------------------------------------------------------------
+ * runq_pop — Remove entry from the head of the FIFO run queue  
+ *
+ * Thread-safe via two-lock queue design. Returns NULL if queue is empty.
+ * Called by worker threads to dequeue work.
+ * ---------------------------------------------------------------------- */
 
 static goc_entry* runq_pop(goc_runq* q) {
     uv_mutex_lock(&q->head_lock);
@@ -273,6 +287,13 @@ void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
  * live_count tracks the number of fibers alive on the pool rather than
  * the number of scheduler events.  This is the only correct drain signal:
  * a parked fiber must still count as live even while active_count is zero.
+ * ---------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------------
+ * pool_fiber_born — Increment live fiber count for drain coordination
+ *
+ * Called when a fiber is spawned to track outstanding work for pool draining.
+ * Must be paired with pool_fiber_died when the fiber completes.
  * ---------------------------------------------------------------------- */
 
 void pool_fiber_born(goc_pool* pool) {

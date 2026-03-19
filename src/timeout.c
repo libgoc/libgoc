@@ -1,5 +1,7 @@
-/* src/timeout.c — goc_timeout implementation
+/*
+ * src/timeout.c — Timeout channels via libuv timers
  *
+ * Implements: goc_timeout
  * All timer handles are malloc-allocated and live on the libuv event loop
  * thread. The GC heap is never used for handle storage.
  */

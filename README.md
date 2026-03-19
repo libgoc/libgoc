@@ -365,8 +365,8 @@ goc_close(ch);
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the default pool with the default 64 KB stack. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
-| `goc_go_on` | `goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg)` | Spawn on a specific pool with the default stack size. Returns a join channel with the same semantics as `goc_go`. |
+| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the default pool. Stack is managed by minicoro. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
+| `goc_go_on` | `goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg)` | Spawn on a specific pool. Stack is managed by minicoro. Returns a join channel with the same semantics as `goc_go`. |
 
 ```c
 typedef struct { goc_chan* ch; int n; } args_t;
@@ -414,6 +414,8 @@ static void on_put_done(goc_status_t ok, void* ud) {
     (void)ok; (void)ud;  // GC-allocated; no free needed even if channel closed
 }
 
+// on_read runs on the libuv loop thread — goc_put_cb is safe to call here.
+// The callback (on_put_done) will also be invoked on the loop thread.
 static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     if (nread <= 0) return;
     my_msg_t* msg = goc_malloc(sizeof(my_msg_t));
@@ -584,7 +586,7 @@ goc_close(w);          /* release */
 
 ### Thread pool
 
-The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
+The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
 
 ```c
 typedef enum {

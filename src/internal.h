@@ -176,6 +176,14 @@ void chan_unregister(goc_chan* ch);
 void post_to_run_queue(goc_pool* pool, goc_entry* entry);
 void pool_fiber_born(goc_pool* pool);
 
+/* channel.c — inline helper for common atomic CAS pattern */
+static inline bool try_claim_wake(goc_entry* e) {
+    int expected = 0;
+    return atomic_compare_exchange_strong_explicit(
+        &e->woken, &expected, 1,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
 /* loop.c → used by channel.c, alts.c, timeout.c, gc.c */
 void loop_init(void);
 void loop_shutdown(void);

@@ -243,7 +243,6 @@ goc_val_t goc_take_try(goc_chan* ch);
  * Blocks the calling OS thread until the value has been delivered or the
  * channel is closed. Must not be called from a fiber;
  * calling from fiber context aborts with a diagnostic message.
- * context aborts with a diagnostic message.
  * Returns GOC_OK on success, GOC_CLOSED if the channel is closed.
  */
 goc_status_t goc_put_sync(goc_chan* ch, void* val);
@@ -331,7 +330,8 @@ goc_chan* goc_write_lock(goc_mutex* mx);
  * Returns {index, {val, ok}} identifying the arm that fired.  For put arms,
  * value.val is NULL; value.ok is GOC_OK or GOC_CLOSED.
  *
- * Must only be called from within a fiber.
+ * Must only be called from within a fiber; calling from OS thread context
+ * aborts with a diagnostic message.
  */
 goc_alts_result goc_alts(goc_alt_op* ops, size_t n);
 
