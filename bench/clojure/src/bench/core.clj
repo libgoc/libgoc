@@ -19,7 +19,7 @@
 
 (ns bench.core
   (:require [clojure.core.async :as a
-             :refer [go chan <! >! <!! >!! close! alts!]]))
+             :refer [go go-loop chan <! >! <!! >!! close! alts!]]))
 
 (def ^:private ping-rounds    200000)
 (def ^:private ring-nodes     128)
@@ -43,14 +43,12 @@
 (defn- player
   "One ping-pong participant.  Returns the go-block's result channel (join handle)."
   [recv send rounds]
-  (go
-    (loop []
-      (when-let [v (<! recv)]
-        (if (>= v rounds)
-          (close! send)
-          (do (>! send (inc v))
-              (recur)))))
-    :done))
+  (go-loop []
+    (when-let [v (<! recv)]
+      (if (>= v rounds)
+        (close! send)
+        (do (>! send (inc v))
+            (recur))))))
 
 (defn bench-ping-pong [rounds]
   (let [a  (chan)
@@ -80,15 +78,13 @@
 (defn- ring-node
   "One ring participant.  Returns the go-block's result channel (join handle)."
   [in out]
-  (go
-    (loop []
-      (if-let [v (<! in)]
-        (if (zero? v)
-          (close! out)
-          (do (>! out (dec v))
-              (recur)))
-        (close! out)))
-    :done))
+  (go-loop []
+    (if-let [v (<! in)]
+      (if (zero? v)
+        (close! out)
+        (do (>! out (dec v))
+            (recur)))
+      (close! out))))
 
 (defn bench-ring [nodes hops]
   (let [channels (vec (repeatedly nodes chan))
@@ -120,10 +116,10 @@
         outs (vec (repeatedly workers chan))
         ; fan-out workers
         _    (doseq [out outs]
-               (go (loop []
-                     (if-let [v (<! in)]
-                       (do (>! out v) (recur))
-                       (close! out)))))
+               (go-loop []
+                 (if-let [v (<! in)]
+                   (do (>! out v) (recur))
+                   (close! out))))
         ; collector: alts! across all worker output channels
         done (chan)
         _    (go
@@ -224,6 +220,11 @@
 ; ============================================================================
 
 (defn -main [& _args]
+  (Thread/setDefaultUncaughtExceptionHandler
+   (reify java.lang.Thread$UncaughtExceptionHandler
+     (uncaughtException [_ _ ex]
+       (println (str "Uncaught exception: " (.getMessage ex))))))
+
   (let [pool-size (Long/parseLong
                    (System/getProperty "clojure.core.async.pool-size" "8"))]
     (printf "CLOJURE_POOL_THREADS=%d\n" pool-size)
