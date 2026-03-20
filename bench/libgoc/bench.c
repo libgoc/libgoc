@@ -537,14 +537,14 @@ int main(void) {
     size_t ping_rounds    = 200000;
     size_t ring_nodes     = 128;
     size_t ring_hops      = 500000;
-    // size_t select_workers = 8;
-    // size_t select_tasks   = 200000;
+    size_t select_workers = 8;
+    size_t select_tasks   = 200000;
     // size_t spawn_count    = 200000;
     // size_t prime_max      = 20000;
 
     bench_ping_pong(ping_rounds);
     bench_ring(ring_nodes, ring_hops);
-    // bench_fan_in(select_workers, select_tasks);
+    bench_fan_in(select_workers, select_tasks);
     // bench_spawn_idle(spawn_count);
     // bench_prime_sieve(prime_max);
 
