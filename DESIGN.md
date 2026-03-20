@@ -74,8 +74,7 @@ libgoc/
 │   ├── test_p6_thread_pool.c       # Phase 6 — Thread pool
 │   ├── test_p7_integration.c       # Phase 7 — Integration
 │   ├── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
-│   ├── test_p9_mutexes.c           # Phase 9 — RW mutexes
-│   └── test_p10_take_all.c         # Phase 10 — goc_take_all helpers
+│   └── test_p9_mutexes.c           # Phase 9 — RW mutexes
 ├── bench/                           # Benchmarks (see bench/README.md)
 │   ├── go/                          # Go benchmark sources
 │   ├── libgoc/                      # C benchmark sources
@@ -108,7 +107,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 |---|---|---|
 | `goc` | static library | All `src/*.c` modules; always built |
 | `goc_shared` | shared library | Same sources as `goc`; built only with `-DLIBGOC_SHARED=ON`; output name `libgoc.so` / `.dylib` / `.dll` |
-| `test_p1_foundation` … `test_p10_take_all` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
+| `test_p1_foundation` … `test_p9_mutexes` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
@@ -1197,7 +1196,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 - **Harness**: `tests/test_harness.h` provides shared `TEST_BEGIN` / `ASSERT` / `TEST_PASS` / `TEST_FAIL` macros with `goto done` cleanup — no `setjmp`. All phase test files include this header instead of duplicating the macros.
 - **Crash handler**: `test_harness.h` also provides `install_crash_handler()`, which registers a `SIGSEGV` and `SIGABRT` signal handler. On Linux and macOS, `sigaction` is used; on Linux the handler calls `backtrace_symbols_fd()` to print a full backtrace to `stderr` (test executables are linked with `-rdynamic` so function names resolve), and on macOS it uses `fprintf` instead of `dprintf`. On Windows, `signal()` is used as a fallback with `fprintf` to `stderr`; no backtrace is printed. In all cases the handler re-raises the signal with the default disposition restored so the process exits with the correct signal status. `install_crash_handler()` is called as the first statement of `main()` in each phase binary, before `goc_init()`. This approach is used in preference to core dumps because GitHub Actions runners do not reliably write core files to disk, whereas `stderr` output is always captured by CTest `--output-on-failure`.
 - **Isolation**: `goc_init()` and `goc_shutdown()` bracket the entire test binary — called once each in the `main()` of **each phase's test binary** before and after all tests in that phase run. Individual test functions do not call them.
-- **Synchronisation**: a `done_t` helper lets the main thread block until fibers finish without relying on `sleep` or a `goc_chan`. All test phases (P1–P10) use a portable `done_t` backed by `pthread_mutex_t` + `pthread_cond_t`; `done_signal` signals the condvar, `done_wait` waits on it, and `done_wait_ms` provides a timed wait. This replaces an earlier `sem_t`-based implementation that used `sem_init` / `sem_wait`, which is deprecated (and non-functional) on macOS for unnamed POSIX semaphores.
+- **Synchronisation**: a `done_t` helper lets the main thread block until fibers finish without relying on `sleep` or a `goc_chan`. All test phases (P1–P9) use a portable `done_t` backed by `pthread_mutex_t` + `pthread_cond_t`; `done_signal` signals the condvar, `done_wait` waits on it, and `done_wait_ms` provides a timed wait. This replaces an earlier `sem_t`-based implementation that used `sem_init` / `sem_wait`, which is deprecated (and non-functional) on macOS for unnamed POSIX semaphores.
 - **GC integration**: Boehm GC is linked automatically; no hook table setup is required in tests.
 - **Crash tests**: tests that expect `abort()` (e.g. canary violation) use `fork` + `waitpid` in the test function itself (`fork_expect_sigabrt` helper). Each test forks a child; before calling `goc_init()` the child performs two setup steps:
   1. **Reset `SIGABRT` to `SIG_DFL`** — the parent installs a `crash_handler` for `SIGABRT` (via `install_crash_handler()`), which the child inherits through `fork`. When `abort()` fires on a pool worker thread, glibc's `abort` implementation blocks `SIGABRT` on the calling thread before raising it. The inherited crash handler then calls `raise(SIGABRT)` while the signal is still blocked, which interacts with `abort()`'s internal signal-mask loop and causes the child to hang rather than terminate. Resetting to `SIG_DFL` before `goc_init()` ensures `abort()` terminates the child immediately regardless of which thread calls it.
@@ -1247,6 +1246,12 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P3.12 | Buffered channel closed with values still in the ring: `goc_take_sync` drains all buffered values with `ok==GOC_OK` before returning `{NULL, GOC_CLOSED}` |
 | P3.13 | Buffered channel closed with values still in the ring: fiber draining with `goc_take` receives all buffered values with `ok==GOC_OK` before receiving `{NULL, GOC_CLOSED}` |
 | P3.14 | Legitimate `NULL` payload through unbuffered channel: fiber puts `NULL`, taker receives `ok==GOC_OK` and `val==NULL` |
+| P3.15 | `goc_take_all_sync` with `n==0`: no crash, returns non-NULL GC array |
+| P3.16 | `goc_take_all_sync` on pre-filled buffered channels: all results `ok==GOC_OK`, values intact, order matches channel order |
+| P3.17 | `goc_take_all_sync` on already-closed channels: all results `ok==GOC_CLOSED` |
+| P3.18 | `goc_take_all_sync` blocks until fibers send on each channel; all results `ok==GOC_OK`, values intact |
+| P3.19 | `goc_take_all` from fiber on pre-filled buffered channels: all results `ok==GOC_OK`, values intact, order matches channel order |
+| P3.20 | `goc_take_all` from fiber parks on each channel until a sender fiber delivers; all results `ok==GOC_OK`, values intact |
 
 **Phase 4 — Callbacks**
 
@@ -1327,17 +1332,6 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P9.4 | Writer preference: once a writer is queued, subsequent readers queue behind it |
 | P9.5 | Fiber parking path: reader fiber blocks behind writer and resumes after writer release |
 
-**Phase 10 — goc_take_all helpers**
-
-| Test | Description |
-|---|---|
-| P10.1 | `goc_take_all_sync` with `n==0`: no crash, returns non-NULL GC array |
-| P10.2 | `goc_take_all_sync` on pre-filled buffered channels: all results `ok==GOC_OK`, values intact, order matches channel order |
-| P10.3 | `goc_take_all_sync` on already-closed channels: all results `ok==GOC_CLOSED` |
-| P10.4 | `goc_take_all_sync` blocks until fibers send on each channel; all results `ok==GOC_OK`, values intact |
-| P10.5 | `goc_take_all` from fiber on pre-filled buffered channels: all results `ok==GOC_OK`, values intact, order matches channel order |
-| P10.6 | `goc_take_all` from fiber parks on each channel until a sender fiber delivers; all results `ok==GOC_OK`, values intact |
-
 ### Running
 
 ```sh
@@ -1372,10 +1366,10 @@ Runs a build matrix across four configurations:
 
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P10) via `ctest --timeout 120`; P8.1 exercises canary abort |
-| `macos-latest` | *(none — canary build)* | All phases (P1–P10) via `ctest --timeout 120`; P8.1 exercises canary abort |
-| `windows-latest` | *(none — canary build)* | P1–P7, P9–P10 via `ctest --timeout 120`; P8 self-skips (no `fork`) |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P10) via `ctest --timeout 120`; P8.1 skipped (vmem build) |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9 via `ctest --timeout 120`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P9) via `ctest --timeout 120`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 
