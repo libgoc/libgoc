@@ -12,19 +12,18 @@ LDLIBS := $(shell $(PKG_CONFIG) --libs libuv bdw-gc-threaded)
 
 all: build
 
-$(BUILD_DIR)/libgoc.a:
+# Always run cmake --build so that library API changes in src/ are picked up
+# even when build-bench/libgoc.a already exists from an older build.
+# cmake --build is incremental, so it only recompiles changed source files.
+build: bench.c
 	cmake -S $(ROOT_DIR) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
 	cmake --build $(BUILD_DIR) --target goc
+	$(CC) $(CFLAGS) $< $(BUILD_DIR)/libgoc.a $(LDLIBS) -o $(BENCH_BIN)
 
-build: $(BENCH_BIN)
-
-$(BENCH_BIN): bench.c $(BUILD_DIR)/libgoc.a
-	$(CC) $(CFLAGS) $< $(BUILD_DIR)/libgoc.a $(LDLIBS) -o $@
-
-run: $(BENCH_BIN)
+run: build
 	./$(BENCH_BIN)
 
-run-all: $(BENCH_BIN)
+run-all: build
 	@for pool in 1 2 4 8; do \
 		echo "=== Pool Size: $$pool ==="; \
 		echo "GOC_POOL_THREADS=$$pool"; \
@@ -34,3 +33,4 @@ run-all: $(BENCH_BIN)
 
 clean:
 	rm -f $(BENCH_BIN)
+	rm -rf $(BUILD_DIR)
