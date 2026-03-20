@@ -1,7 +1,7 @@
 # Benchmarks
 
-This directory contains standalone CSP benchmarks implemented in Go and in C
-using libgoc.
+This directory contains standalone CSP benchmarks implemented in Go, in C
+using libgoc, and in Clojure using core.async.
 
 1. **Channel ping-pong** — Two tasks pass a single message back and forth,
    measuring the basic cost of a send/receive and the context switch it causes.
@@ -39,15 +39,27 @@ make -C libgoc run
 make -C libgoc run-all
 ```
 
+### Clojure
+
+Requires [Clojure CLI tools](https://clojure.org/guides/install_clojure).
+
+```sh
+# Single run (uses default pool size = 8)
+make -C clojure run
+
+# Multi-pool testing (runs with CLOJURE_POOL_THREADS = 1, 2, 4, 8)
+make -C clojure run-all
+```
+
 ## Benchmark Status
 
-| # | Benchmark | Go | libgoc |
-|---|-----------|:--:|:------:|
-| 1 | Channel ping-pong | ✅ | ✅ |
-| 2 | Ring | ✅ | ✅ |
-| 3 | Selective receive / fan-out / fan-in | ✅ | ✅ |
-| 4 | Spawn idle tasks | ✅ | ✅ |
-| 5 | Prime sieve | ✅ | ✅ |
+| # | Benchmark | Go | libgoc | Clojure |
+|---|-----------|:--:|:------:|:-------:|
+| 1 | Channel ping-pong | ✅ | ✅ | ✅ |
+| 2 | Ring | ✅ | ✅ | ✅ |
+| 3 | Selective receive / fan-out / fan-in | ✅ | ✅ | ✅ |
+| 4 | Spawn idle tasks | ✅ | ✅ | ✅ |
+| 5 | Prime sieve | ✅ | ✅ | ✅ |
 
 ## Runs
 
@@ -173,61 +185,67 @@ Spawn idle tasks: 200000 fibers in 12828ms (15590 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 1580ms (1431 primes/s)
 ```
 
-## Report: libgoc vs. Go Baseline
+### Clojure core.async (`make run-all`)
 
-This report evaluates the performance of **libgoc canary** and **libgoc vmem** relative to the **Go** runtime. All figures represent operations per second; the multiplier in parentheses indicates performance relative to the Go baseline (e.g., **1.10x** represents 10% faster, while **0.50x** represents half the speed).
+```
+TODO: run `make -C clojure run-all` and paste output here
+```
+
+## Report: libgoc vs. Go Baseline (+ Clojure)
+
+This report evaluates the performance of **libgoc canary**, **libgoc vmem**, and **Clojure core.async** relative to the **Go** runtime. All figures represent operations per second; the multiplier in parentheses indicates performance relative to the Go baseline (e.g., **1.10x** represents 10% faster, while **0.50x** represents half the speed).
 
 ---
 
 ### Channel ping-pong (round trips/s)
 *Measures overhead of basic synchronization and context switching.*
 
-| Pool | Go (Baseline) | libgoc canary | libgoc vmem |
-| :--- | :--- | :--- | :--- |
-| **1** | 2,280,645 | 2,353,892 **(1.03x)** | 2,343,156 **(1.03x)** |
-| **2** | 2,224,597 | 1,892,095 **(0.85x)** | 1,895,838 **(0.85x)** |
-| **4** | 2,228,437 | 1,319,020 **(0.59x)** | 599,752 **(0.27x)** |
-| **8** | 2,257,564 | 790,813 **(0.35x)** | 464,624 **(0.21x)** |
+| Pool | Go (Baseline) | libgoc canary | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 2,280,645 | 2,353,892 **(1.03x)** | 2,343,156 **(1.03x)** | TBD |
+| **2** | 2,224,597 | 1,892,095 **(0.85x)** | 1,895,838 **(0.85x)** | TBD |
+| **4** | 2,228,437 | 1,319,020 **(0.59x)** | 599,752 **(0.27x)** | TBD |
+| **8** | 2,257,564 | 790,813 **(0.35x)** | 464,624 **(0.21x)** | TBD |
 
 ### Ring (hops/s)
 *Measures message passing latency across a circular topology.*
 
-| Pool | Go (Baseline) | libgoc canary | libgoc vmem |
-| :--- | :--- | :--- | :--- |
-| **1** | 2,243,222 | 2,322,813 **(1.04x)** | 2,248,408 **(1.00x)** |
-| **2** | 2,284,381 | 1,678,839 **(0.73x)** | 1,657,377 **(0.73x)** |
-| **4** | 2,240,562 | 995,646 **(0.44x)** | 529,457 **(0.24x)** |
-| **8** | 2,250,942 | 1,138,495 **(0.51x)** | 618,487 **(0.27x)** |
+| Pool | Go (Baseline) | libgoc canary | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 2,243,222 | 2,322,813 **(1.04x)** | 2,248,408 **(1.00x)** | TBD |
+| **2** | 2,284,381 | 1,678,839 **(0.73x)** | 1,657,377 **(0.73x)** | TBD |
+| **4** | 2,240,562 | 995,646 **(0.44x)** | 529,457 **(0.24x)** | TBD |
+| **8** | 2,250,942 | 1,138,495 **(0.51x)** | 618,487 **(0.27x)** | TBD |
 
 ### Selective receive / fan-out / fan-in (msg/s)
 *Evaluates complex orchestration and selection logic.*
 
-| Pool | Go (Baseline) | libgoc canary | libgoc vmem |
-| :--- | :--- | :--- | :--- |
-| **1** | 599,056 | 313,967 **(0.52x)** | 311,113 **(0.52x)** |
-| **2** | 650,773 | 456,951 **(0.70x)** | 454,532 **(0.70x)** |
-| **4** | 661,967 | 437,770 **(0.66x)** | 365,187 **(0.55x)** |
-| **8** | 657,846 | 355,597 **(0.54x)** | 214,316 **(0.33x)** |
+| Pool | Go (Baseline) | libgoc canary | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 599,056 | 313,967 **(0.52x)** | 311,113 **(0.52x)** | TBD |
+| **2** | 650,773 | 456,951 **(0.70x)** | 454,532 **(0.70x)** | TBD |
+| **4** | 661,967 | 437,770 **(0.66x)** | 365,187 **(0.55x)** | TBD |
+| **8** | 657,846 | 355,597 **(0.54x)** | 214,316 **(0.33x)** | TBD |
 
 ### Spawn idle tasks (tasks/s)
 *Tests the efficiency of task creation and scheduling.*
 
-| Pool | Go (Baseline) | libgoc canary | libgoc vmem |
-| :--- | :--- | :--- | :--- |
-| **1** | 188,282 | 18,373 **(0.10x)** | 19,353 **(0.10x)** |
-| **2** | 350,786 | 24,834 **(0.07x)** | 25,190 **(0.07x)** |
-| **4** | 416,456 | 22,633 **(0.05x)** | 18,999 **(0.05x)** |
-| **8** | 492,388 | 20,007 **(0.04x)** | 15,590 **(0.03x)** |
+| Pool | Go (Baseline) | libgoc canary | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 188,282 | 18,373 **(0.10x)** | 19,353 **(0.10x)** | TBD |
+| **2** | 350,786 | 24,834 **(0.07x)** | 25,190 **(0.07x)** | TBD |
+| **4** | 416,456 | 22,633 **(0.05x)** | 18,999 **(0.05x)** | TBD |
+| **8** | 492,388 | 20,007 **(0.04x)** | 15,590 **(0.03x)** | TBD |
 
 ### Prime sieve (primes/s)
 *High-concurrency filtering test.*
 
-| Pool | Go (Baseline) | libgoc canary | libgoc vmem |
-| :--- | :--- | :--- | :--- |
-| **1** | 1,919 | 3,017 **(1.57x)** | 2,375 **(1.24x)** |
-| **2** | 3,962 | 3,486 **(0.88x)** | 1,370 **(0.35x)** |
-| **4** | 7,647 | 3,026 **(0.40x)** | 1,342 **(0.18x)** |
-| **8** | 14,136 | 1,449 **(0.10x)** | 1,431 **(0.10x)** |
+| Pool | Go (Baseline) | libgoc canary | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 1,919 | 3,017 **(1.57x)** | 2,375 **(1.24x)** | TBD |
+| **2** | 3,962 | 3,486 **(0.88x)** | 1,370 **(0.35x)** | TBD |
+| **4** | 7,647 | 3,026 **(0.40x)** | 1,342 **(0.18x)** | TBD |
+| **8** | 14,136 | 1,449 **(0.10x)** | 1,431 **(0.10x)** | TBD |
 
 ---
 
@@ -272,3 +290,10 @@ goroutines on the same thread naturally and scales CPU-bound pipelines
 while communication-bound workloads (ping-pong, ring) remain flat.
 libgoc's current pool scheduler lacks work-stealing; this is a known area
 of improvement tracked in `TODO.md`.
+
+**Clojure core.async** uses IOC (inversion-of-control) state-machine
+continuations rather than true green threads.  Go blocks are dispatched
+onto a fixed JVM thread pool (`CLOJURE_POOL_THREADS`), analogous to
+`GOMAXPROCS` and `GOC_POOL_THREADS`.  JVM startup and JIT warm-up overhead
+are amortised across the run.  Results pending — run `make -C clojure run-all`
+and update the tables above.
