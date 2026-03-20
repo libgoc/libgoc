@@ -287,18 +287,15 @@ Both canary and vmem builds reach ~2.39–2.43 M round trips/s (ping-pong,
 to each other and ahead of Go.  With a single pool thread, all fibers run
 on the same OS thread, so there are no cross-thread wakeups.
 
-**Canary and vmem now perform almost identically at all pool sizes.**  After
-the pool optimizations (Fix 1/3/4/5) the pre-optimization gap between canary
-and vmem has nearly vanished.  Both modes degrade at the same rate as pool
-threads increase, confirming that cross-thread wakeup latency (not stack
-allocation or GC scan overhead per se) is the dominant cost.  The remaining
-bottleneck is the shared-pool scheduler's lack of work-stealing, tracked in
-`TODO.md`.
+**Canary and vmem perform almost identically at all pool sizes.**  Both
+modes degrade at the same rate as pool threads increase, confirming that
+cross-thread wakeup latency (not stack allocation or GC scan overhead) is
+the dominant cost.  The remaining bottleneck is the shared-pool
+scheduler's lack of work-stealing, tracked in `TODO.md`.
 
 **Fan-out/fan-in benefits most from parallelism.**  At pool=2 both modes
-reach ~0.82× Go (up from ~0.70× pre-optimization), the best scaling ratio
-across all benchmarks.  The 8-worker parallel pattern allows genuine
-load-sharing across threads.
+reach ~0.82× Go, the best scaling ratio across all benchmarks.  The
+8-worker parallel pattern allows genuine load-sharing across threads.
 
 **Spawn idle — Go's goroutine model is ~10–20× faster.**  Go goroutines have
 a ~2–4 KiB initial stack that grows automatically; minicoro fibers use a
@@ -329,8 +326,8 @@ onto a fixed JVM thread pool (`CLOJURE_POOL_THREADS`), analogous to
 **Clojure ping-pong and ring are 0.30–0.91× Go.**  Channel round-trip
 overhead is higher than Go (no work-stealing, JVM dispatch overhead), but
 Clojure holds up better than libgoc at high pool counts for the ring:
-at pool=4 Clojure achieves 2.03 M hops/s (0.91×) while libgoc canary
-falls to 0.44× and vmem to 0.24×.
+at pool=4 Clojure achieves 2.03 M hops/s (0.91×) while libgoc falls to
+~0.23× (both canary and vmem now perform near-identically).
 
 **Spawn idle: Clojure is 2× faster than Go at pool=1–4.**  core.async
 go-blocks are cheap heap-allocated state machines — no fixed stack, no GC

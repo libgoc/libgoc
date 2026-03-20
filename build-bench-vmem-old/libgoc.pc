@@ -1,0 +1,11 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libgoc
+Description: Go-style CSP concurrency runtime for C: threadpools, stackful coroutines, channels, select, async I/O, and garbage collection
+Version: 
+Requires: libuv bdw-gc-threaded
+Libs: -L${libdir} -lgoc
+Cflags: -I${includedir} -DGC_THREADS -D_GNU_SOURCE
