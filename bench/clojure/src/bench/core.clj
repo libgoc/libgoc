@@ -226,11 +226,6 @@
 ; ============================================================================
 
 (defn -main [& _args]
-  (Thread/setDefaultUncaughtExceptionHandler
-   (reify java.lang.Thread$UncaughtExceptionHandler
-     (uncaughtException [_ _ ex]
-       (println (str "Uncaught exception: " (.getMessage ex))))))
-
   (let [pool-size (Long/parseLong
                    (System/getProperty "clojure.core.async.pool-size" "8"))]
     (printf "CLOJURE_POOL_THREADS=%d\n" pool-size)

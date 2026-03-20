@@ -73,3 +73,7 @@ build_orig/
 root/
 pr.md
 bench/libgoc/gc_fix.md
+build-bench-vmem/
+build-bench-vmem-old/
+bench/libgoc/bench-libgoc-vmem
+bench/libgoc/bench-vmem-old

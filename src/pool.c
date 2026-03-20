@@ -163,7 +163,7 @@ static void runq_push(goc_runq* q, goc_entry* entry) {
 }
 
 /* -------------------------------------------------------------------------
- * runq_pop — Remove entry from the head of the FIFO run queue  
+ * runq_pop — Remove entry from the head of the FIFO run queue
  *
  * Thread-safe via two-lock queue design. Returns NULL if queue is empty.
  * Called by worker threads to dequeue work.
@@ -190,6 +190,12 @@ static goc_entry* runq_pop(goc_runq* q) {
 
 static void* pool_worker_fn(void* arg) {
     goc_pool* pool = (goc_pool*)arg;
+
+    /* [Fix 3] Compute the worker thread's own stack bottom once at thread
+     * start — it never changes during the worker's lifetime. */
+    struct GC_stack_base orig_sb;
+    GC_get_my_stackbottom(&orig_sb);
+    struct GC_stack_base fiber_sb = orig_sb;
 
     while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
         uv_sem_wait(&pool->work_sem);
@@ -223,10 +229,10 @@ static void* pool_worker_fn(void* arg) {
          *
          * Fix: tell the GC the new "stack bottom" (high end of the fiber
          * stack) before resuming, so it scans only [RSP, fiber_stack_top].
-         * Restore the original bottom after mco_resume returns. */
-        struct GC_stack_base orig_sb;
-        GC_get_my_stackbottom(&orig_sb);
-        struct GC_stack_base fiber_sb;
+         * Restore the original bottom after mco_resume returns.
+         *
+         * [Fix 3] orig_sb is captured once at thread start (above) instead
+         * of calling GC_get_my_stackbottom on every iteration. */
         fiber_sb.mem_base = (char*)coro->stack_base + coro->stack_size;
         GC_set_stackbottom(NULL, &fiber_sb);
 

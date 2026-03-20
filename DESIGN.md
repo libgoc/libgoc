@@ -653,14 +653,13 @@ typedef struct goc_pool {
     uv_sem_t        work_sem;       /* signalled when runq becomes non-empty */
     _Atomic int     shutdown;       /* set to 1 to stop workers */
 
-    /* Drain synchronisation — used by goc_pool_destroy to wait until all
-       in-flight fibers have completed before joining worker threads. */
+    /* Drain synchronisation — drain_mutex protects active_count, live_count,
+       and drain_cond. */
     pthread_mutex_t drain_mutex;
     pthread_cond_t  drain_cond;
-    size_t          active_count;   /* fibers currently queued or executing; incremented
-                                       by post_to_run_queue, decremented unconditionally
-                                       after every mco_resume (yield or exit).  Used for
-                                       internal scheduling accounting only. */
+    size_t          active_count;   /* fibers currently queued or executing;
+                                       incremented by post_to_run_queue (under drain_mutex),
+                                       decremented after every mco_resume (yield or exit). */
     size_t          live_count;     /* fibers still alive on this pool; incremented exactly
                                        once per fiber at birth by pool_fiber_born() (called
                                        from goc_go_on before post_to_run_queue), decremented
@@ -675,38 +674,40 @@ typedef struct goc_pool {
 } goc_pool;
 ```
 
-> **`drain_cond` is signalled only on `MCO_DEAD`.** `active_count` is decremented on every yield or exit, but the broadcast fires only when a fiber actually dies. `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`, not `active_count == 0` — a parked fiber (MCO_SUSPENDED) has already decremented `active_count` to zero while still being alive, so using `active_count` as the drain signal would cause a premature return while fibers are merely blocked on a channel.
+> **`drain_cond` is signalled only on `MCO_DEAD`.** `active_count` is decremented (under `drain_mutex`) on every yield or exit, but the broadcast fires only when a fiber actually dies. `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`, not `active_count == 0` — a parked fiber (MCO_SUSPENDED) has already decremented `active_count` to zero while still being alive, so using `active_count` as the drain signal would cause a premature return while fibers are merely blocked on a channel.
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
 
 Each worker thread runs a loop:
 
 ```
+/* [Fix 3] orig_sb is computed once at thread start; fiber_sb reuses the struct. */
+GC_get_my_stackbottom(&orig_sb)
+fiber_sb = orig_sb
+
 while not shutdown:
     wait on work_sem
-    goc_entry* entry = runq_pop()
+    goc_entry* entry = runq_pop(&runq)
     if *entry->stack_canary_ptr != GOC_STACK_CANARY:
         abort()                        /* stack overflow — deterministic crash, not silent corruption
                                           applies to ALL entry kinds: launch entries AND goc_alts
                                           park entries; stack_canary_ptr must never be NULL */
     mco_coro* coro = entry->coro       /* snapshot handle before resume — see note below */
 
-    /* Redirect GC stack scan to fiber stack for the duration of mco_resume.
-       See "GC Stack Bottom Redirect" below for full explanation. */
-    struct GC_stack_base orig_sb, fiber_sb
-    GC_get_my_stackbottom(&orig_sb)
+    /* [Fix 3] Redirect GC stack scan to fiber stack.
+       orig_sb was captured once at thread start; no per-iteration
+       GC_get_my_stackbottom call needed. */
     fiber_sb.mem_base = coro->stack_base + coro->stack_size
     GC_set_stackbottom(NULL, &fiber_sb)
 
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
 
     GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
+
     lock(drain_mutex); active_count--; unlock(drain_mutex)
-    /* active_count is decremented unconditionally.  The lock is released before
-       checking MCO_DEAD to avoid holding drain_mutex across mco_destroy. */
     if mco_status(coro) == MCO_DEAD:
         fe = mco_get_user_data(coro)
-        goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
+        goc_fiber_root_unregister(fe->fiber_root_handle)  /* clear bitmap slot; fix 5 */
         mco_destroy(coro)
         lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
@@ -721,20 +722,24 @@ while not shutdown:
 
 > **GC Stack Bottom Redirect.** When `mco_resume` switches the CPU stack pointer (RSP) from the worker OS thread's stack into the fiber's stack, the Boehm GC stop-the-world handler captures that fiber-stack RSP as the "bottom of the stack to scan". GC then tries to scan from that RSP all the way up to the worker thread's registered OS-stack bottom — a range potentially spanning the entire virtual address space between the two stacks. That range contains unmapped pages, causing SIGSEGV inside the GC marker thread on every collection cycle.
 >
-> **Fix:** Before `mco_resume`, call `GC_get_my_stackbottom` to save the worker's current OS-thread stack bottom, then `GC_set_stackbottom(NULL, &fiber_sb)` to redirect GC's scan to `[fiber_RSP, fiber_stack_top]` — the actual fiber stack. After `mco_resume` returns (fiber has yielded or exited), restore the original OS thread stack bottom with `GC_set_stackbottom(NULL, &orig_sb)`. This keeps the GC scan range valid for the entire duration of fiber execution and eliminates the inter-stack SIGSEGV.
+> **Fix:** At worker-thread start, `GC_get_my_stackbottom` is called once to capture `orig_sb` (stable for the thread's lifetime — Fix 3). Before each `mco_resume`, `GC_set_stackbottom(NULL, &fiber_sb)` redirects GC's scan to `[fiber_RSP, fiber_stack_top]` — the actual fiber stack. After `mco_resume` returns (fiber has yielded or exited), `GC_set_stackbottom(NULL, &orig_sb)` restores the worker's OS-thread stack bottom. This keeps the GC scan range valid for the entire duration of fiber execution and eliminates the inter-stack SIGSEGV.
 
 > **GC Fiber Stack Roots.** While a fiber is suspended between `mco_yield` and the next `mco_resume`, its stack is not associated with any OS-thread stack that the GC scans automatically. The fiber's local variables may hold pointers to GC-managed objects, so the fiber stack must be treated as a GC root during the suspension window.
 >
 > **Why not `GC_add_roots`?** BDW-GC's `GC_add_roots` / `GC_remove_roots` store entries in a fixed internal table (`MAX_ROOT_SETS` ≈ 2048). Benchmarks that spawn large numbers of fibers (e.g. `bench_spawn_idle` with 200 000 fibers) exhaust this table, causing BDW-GC to abort with `"Too many root sets"`.
 >
-> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that iterates a lock-free linked list of live fiber stacks and calls `GC_push_all_eager` for each live entry during every GC mark phase. The list is manipulated with atomic CAS operations only — no mutex — because BDW-GC's stop-the-world suspends threads via SIGPWR on Linux; a mutex in the callback would deadlock if a stopped thread held it. Each fiber registers on birth (`goc_go_on`, O(1) CAS-prepend) and unregisters on death (`pool_worker_fn` before `mco_destroy`, O(1) CAS to NULL via the stored handle). Dead nodes remain in the list but are skipped by the callback; memory overhead is one `malloc`'d node per fiber lifetime.
+> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that scans all live fiber stacks and calls `GC_push_all_eager` for each during every GC mark phase.  Live fibers are tracked with a **flat array + atomic bitmap** (Fix 5): the slot array is divided into CHUNK_SIZE-slot chunks allocated on demand; a parallel `_Atomic(uint64_t)` bitmap encodes liveness (1 = slot in use).  The `push_fiber_roots` callback iterates bitmap words — skipping dead 64-slot regions in a single comparison — then visits only the set bits.  This avoids pointer-chasing through dead linked-list nodes and immediately reclaims slots of exited fibers for reuse.
 >
-> **Exact-SP scanning and `goc_entry` liveness.** Each `fiber_root_node` stores three fields set at registration time:
-> - `coro` (`_Atomic(mco_coro*)`) — set to NULL on unregistration (O(1) CAS).
-> - `scan_from` (`_Atomic(void*)`) — cached saved RSP/SP of the suspended fiber, initialised by `mco_get_suspended_sp` at birth and updated by `goc_fiber_root_update_sp` (called in `pool_worker_fn` after each `mco_resume` returns with `MCO_SUSPENDED`). The callback reads this cached value instead of calling `mco_get_suspended_sp` per GC cycle, avoiding 200k random cache misses to vmem-allocated `mco_coro` structs.
-> - `entry` (`goc_entry*`) — the fiber's initial GC-allocated entry; explicitly pushed via `GC_push_all_eager(&n->entry, …)`. This is required because the run queue node that holds a reference to `goc_entry*` is `malloc`'d (not GC-managed), making the entry unreachable to the conservative scanner without this explicit push.
+> **Thread-safety.** Registration and unregistration use `fiber_root_mutex` (a plain `uv_mutex_t`).  Growth (adding a new chunk) uses `calloc` — not `GC_malloc` — so the GC cannot be triggered while the mutex is held.  The `push_fiber_roots` callback reads the chunk pointer array and bitmap WITHOUT holding `fiber_root_mutex` (a mutex in the callback would deadlock if a stopped thread held it).  Growth publishes the new chunk pointer to `fiber_root_chunks[c]` before atomically incrementing `fiber_root_num_chunks` with a `memory_order_release` fence; the callback's `memory_order_acquire` load of `num_chunks` guarantees it sees a consistent snapshot.  Unregistration clears the bitmap bit with `memory_order_release` via `atomic_fetch_and`.
 >
-> **Shutdown cleanup.** `goc_shutdown()` frees all nodes in `fiber_root_head` and resets the head to NULL. Without this cleanup, nodes from a completed `goc_init/shutdown` cycle accumulate in the static list, and subsequent cycles pay O(N_accumulated) per GC mark phase.
+> **Handle.** `goc_fiber_root_register` returns the slot index cast to `void*`.  This keeps the handle valid across potential future growth (which appends new chunks without moving old ones).
+>
+> **Slot fields.** Each `fiber_root_slot` stores three fields:
+> - `scan_from` (`_Atomic(void*)`) — cached saved RSP/SP of the suspended fiber, initialised by `mco_get_suspended_sp` at birth and updated by `goc_fiber_root_update_sp` (called in `pool_worker_fn` after each `mco_resume` returns with `MCO_SUSPENDED`).
+> - `stack_top` (`void*`) — high end of the fiber stack (constant after init).
+> - `entry` (`goc_entry*`) — the fiber's GC-allocated entry; explicitly pushed via `GC_push_all_eager(&s->entry, …)` to keep it alive (the run queue node referencing it is `malloc`'d, not GC-managed).
+>
+> **Shutdown cleanup.** `goc_shutdown()` frees all chunk arrays, zeros the used bitmap words, resets `fiber_root_num_chunks` to 0, and destroys `fiber_root_mutex`.
 
 The invariant is:
 
@@ -761,7 +766,7 @@ The invariant is:
 ```c
 typedef struct goc_runq_node {
     goc_entry*           entry;
-    struct goc_runq_node* next;   /* GC-allocated node */
+    struct goc_runq_node* next;
 } goc_runq_node;
 
 typedef struct {
@@ -773,22 +778,23 @@ typedef struct {
 ```
 
 ```
-runq_push(q, entry):
-    node = goc_malloc(sizeof(goc_runq_node))
+runq_push(entry):
+    node = malloc(sizeof(goc_runq_node))
     node->entry = entry; node->next = NULL
-    uv_mutex_lock(&q->tail_lock)
-    q->tail->next = node
-    q->tail = node
-    uv_mutex_unlock(&q->tail_lock)
+    uv_mutex_lock(&runq.tail_lock)
+    runq.tail->next = node
+    runq.tail = node
+    uv_mutex_unlock(&runq.tail_lock)
 
-runq_pop(q) → goc_entry* or NULL:
-    uv_mutex_lock(&q->head_lock)
-    node = q->head->next          /* head is a sentinel */
+runq_pop() → goc_entry* or NULL:
+    uv_mutex_lock(&runq.head_lock)
+    node = runq.head->next          /* head is a sentinel */
     if node == NULL:
-        uv_mutex_unlock(&q->head_lock) → return NULL
-    q->head = node
+        uv_mutex_unlock(&runq.head_lock) → return NULL
+    runq.head = node
     entry = node->entry
-    uv_mutex_unlock(&q->head_lock)
+    uv_mutex_unlock(&runq.head_lock)
+    free(node)
     return entry
 ```
 
@@ -1093,7 +1099,7 @@ uv_loop_t*    goc_scheduler(void);
 | Function | Signature | Defined in |
 |---|---|---|
 | `cb_queue_init` | `void cb_queue_init(void)` | `loop.c` |
-| `post_to_run_queue` | `void post_to_run_queue(goc_pool* pool, goc_entry* entry)` | `pool.c` — increments `active_count` only; does **not** touch `live_count` |
+| `post_to_run_queue` | `void post_to_run_queue(goc_pool* pool, goc_entry* entry)` | `pool.c` — increments `active_count` under `drain_mutex`; does **not** touch `live_count` |
 | `pool_fiber_born` | `void pool_fiber_born(goc_pool* pool)` | `pool.c` — increments `live_count` exactly once per new fiber; called from `goc_go_on` before `post_to_run_queue` |
 | `post_callback` | `void post_callback(goc_entry* entry, void* value)` | `loop.c` |
 | `on_wakeup` | `void on_wakeup(uv_async_t* handle)` | `loop.c` |
