@@ -254,17 +254,19 @@ static void p8_1_child_fn(void* arg) {
  */
 static void test_p8_1(void) {
     TEST_BEGIN("P8.1   stack overflow: canary overwrite → abort()");
-    
-    // Skip stack overflow test in virtual memory mode - no fixed stack to overflow
-    if (getenv("LIBGOC_TEST_MODE") && strcmp(getenv("LIBGOC_TEST_MODE"), "vmem") == 0) {
-        printf("SKIPPED (virtual memory mode)\n");
-        return;
-    }
-    
+
+#ifdef LIBGOC_VMEM_ENABLED
+    /* In virtual memory mode the canary macros are no-ops — the canary check
+     * in pool_worker_fn never fires, so the child would never call abort().
+     * Skip here to avoid an infinite wait in fork_expect_sigabrt. */
+    printf("SKIPPED (virtual memory mode)\n");
+    return;
+#else
     bool got_sigabrt = fork_expect_sigabrt(p8_1_child_fn, NULL);
     ASSERT(got_sigabrt);
     TEST_PASS();
 done:;
+#endif
 }
 
 /* --- P8.2: goc_take() from a bare OS thread → abort() ------------------- */

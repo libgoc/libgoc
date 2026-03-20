@@ -182,6 +182,12 @@ foreach(test_src IN LISTS TEST_SOURCES)
         PkgConfig::BDWGC
     )
 
+    # Propagate the vmem mode flag so tests can conditionally skip behaviour
+    # that only applies to canary mode (e.g. P8.1 stack-overflow detection).
+    if(LIBGOC_VMEM)
+        target_compile_definitions(${test_name} PRIVATE LIBGOC_VMEM_ENABLED)
+    endif()
+
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 

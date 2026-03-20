@@ -699,7 +699,17 @@ while not shutdown:
                                           applies to ALL entry kinds: launch entries AND goc_alts
                                           park entries; stack_canary_ptr must never be NULL */
     mco_coro* coro = entry->coro       /* snapshot handle before resume — see note below */
+
+    /* Redirect GC stack scan to fiber stack for the duration of mco_resume.
+       See "GC Stack Bottom Redirect" below for full explanation. */
+    struct GC_stack_base orig_sb, fiber_sb
+    GC_get_my_stackbottom(&orig_sb)
+    fiber_sb.mem_base = coro->stack_base + coro->stack_size
+    GC_set_stackbottom(NULL, &fiber_sb)
+
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
+
+    GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
     GC_remove_roots(&entry, &entry + 1)
     lock(drain_mutex); active_count--; unlock(drain_mutex)
     /* active_count is decremented unconditionally.  The lock is released before
@@ -716,6 +726,10 @@ while not shutdown:
 ```
 
 > **Why `coro` is snapshotted before `mco_resume`.** When a fiber suspends inside `goc_take`, it stack-allocates a `goc_entry` (the parking entry) on its own coroutine stack and parks. The pool worker's `entry` pointer therefore points into the fiber's stack for the duration of that park. If the fiber is immediately re-scheduled on the same resume call (i.e. it runs to completion without yielding again), minicoro recycles the stack — and the memory `entry` pointed at is gone by the time `mco_resume` returns. Reading `entry->coro` after the resume is therefore a use-after-free and a potential segfault. The `mco_coro` object itself is minicoro heap-allocated and remains valid until `mco_destroy`, so snapshotting `coro = entry->coro` *before* the resume is always safe and eliminates the hazard entirely. See [Unified Wakeup](#unified-wakeup) for the analogous `e->next` snapshot requirement in `chan_put_to_taker` and `chan_take_from_putter`.
+
+> **GC Stack Bottom Redirect.** When `mco_resume` switches the CPU stack pointer (RSP) from the worker OS thread's stack into the fiber's stack, the Boehm GC stop-the-world handler captures that fiber-stack RSP as the "bottom of the stack to scan". GC then tries to scan from that RSP all the way up to the worker thread's registered OS-stack bottom — a range potentially spanning the entire virtual address space between the two stacks. That range contains unmapped pages, causing SIGSEGV inside the GC marker thread on every collection cycle.
+>
+> **Fix:** Before `mco_resume`, call `GC_get_my_stackbottom` to save the worker's current OS-thread stack bottom, then `GC_set_stackbottom(NULL, &fiber_sb)` to redirect GC's scan to `[fiber_RSP, fiber_stack_top]` — the actual fiber stack. After `mco_resume` returns (fiber has yielded or exited), restore the original OS thread stack bottom with `GC_set_stackbottom(NULL, &orig_sb)`. This keeps the GC scan range valid for the entire duration of fiber execution and eliminates the inter-stack SIGSEGV.
 
 The invariant is:
 
