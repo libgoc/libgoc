@@ -378,22 +378,11 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
         goc_entry *e  = entries[si];
 
         if (ops[i].op_kind == GOC_ALT_TAKE) {
-            /* Append to ch->takers */
-            goc_entry **pp = &ch->takers;
-            while (*pp) pp = &(*pp)->next;
-            *pp = e;
+            chan_list_append(&ch->takers, &ch->takers_tail, e);
         } else {
-            /* Append to ch->putters */
-            goc_entry **pp = &ch->putters;
-            while (*pp) pp = &(*pp)->next;
-            *pp = e;
+            chan_list_append(&ch->putters, &ch->putters_tail, e);
         }
     }
-
-    /* Register fiber stack as a GC root for the suspension window. */
-    void *stack_base = running->stack_base;
-    void *stack_top  = (char *)stack_base + running->stack_size;
-    GC_add_roots(stack_base, stack_top);
 
     /* Set parked = 0 on the fiber's initial entry while all channel locks are
      * still held.  wake() / goc_close() spin on this flag (via pool_worker_fn
@@ -416,7 +405,6 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     /* Phase 7 — On resume                                                 */
     /* ------------------------------------------------------------------ */
-    GC_remove_roots(stack_base, stack_top);
 
     /* Cancel all losing entries (woken == 0). */
     goc_entry *winner = NULL;
@@ -633,13 +621,9 @@ goc_alts_result* goc_alts_sync(goc_alt_op *ops, size_t n) {
         goc_entry *e  = entries[si];
 
         if (ops[i].op_kind == GOC_ALT_TAKE) {
-            goc_entry **pp = &ch->takers;
-            while (*pp) pp = &(*pp)->next;
-            *pp = e;
+            chan_list_append(&ch->takers, &ch->takers_tail, e);
         } else {
-            goc_entry **pp = &ch->putters;
-            while (*pp) pp = &(*pp)->next;
-            *pp = e;
+            chan_list_append(&ch->putters, &ch->putters_tail, e);
         }
     }
 

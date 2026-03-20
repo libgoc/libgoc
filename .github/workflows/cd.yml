@@ -78,7 +78,7 @@ jobs:
 
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target goc --parallel $(nproc)
         env:
           PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
@@ -89,12 +89,12 @@ jobs:
           cp build/libgoc.a dist/
           cp include/goc.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-vmem-linux-x86_64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz libgoc.a goc.h
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libgoc-${{ needs.tag.outputs.tag }}-vmem-linux-x86_64
-          path: libgoc-${{ needs.tag.outputs.tag }}-vmem-linux-x86_64.tar.gz
+          name: libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64
+          path: libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz
 
   build-macos:
     name: Build (macOS)
@@ -119,7 +119,7 @@ jobs:
 
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target goc --parallel $(sysctl -n hw.ncpu)
 
       - name: Package artifact
@@ -128,12 +128,12 @@ jobs:
           cp build/libgoc.a dist/
           cp include/goc.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-vmem-macos-arm64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz libgoc.a goc.h
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libgoc-${{ needs.tag.outputs.tag }}-vmem-macos-arm64
-          path: libgoc-${{ needs.tag.outputs.tag }}-vmem-macos-arm64.tar.gz
+          name: libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64
+          path: libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz
 
   build-windows:
     name: Build (Windows)
@@ -169,7 +169,7 @@ jobs:
       - name: Build libgoc
         shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target goc --parallel $(nproc)
         timeout-minutes: 10
 
@@ -180,12 +180,12 @@ jobs:
           cp build/libgoc.a dist/
           cp include/goc.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-vmem-windows-x86_64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz libgoc.a goc.h
 
       - uses: actions/upload-artifact@v4
         with:
-          name: libgoc-${{ needs.tag.outputs.tag }}-vmem-windows-x86_64
-          path: libgoc-${{ needs.tag.outputs.tag }}-vmem-windows-x86_64.tar.gz
+          name: libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64
+          path: libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz
 
   release:
     name: Publish GitHub Release
@@ -204,6 +204,6 @@ jobs:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: ${{ needs.tag.outputs.tag }}
           files: |
-            libgoc-${{ needs.tag.outputs.tag }}-vmem-linux-x86_64.tar.gz
-            libgoc-${{ needs.tag.outputs.tag }}-vmem-macos-arm64.tar.gz
-            libgoc-${{ needs.tag.outputs.tag }}-vmem-windows-x86_64.tar.gz
+            libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz
+            libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz
+            libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz

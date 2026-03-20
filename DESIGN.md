@@ -111,7 +111,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
-When `-DLIBGOC_VMEM=ON` (the default), `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE` compile definition on the `goc` library target **and** on every per-phase test executable. This ensures that `src/internal.h`'s canary macros are disabled and that `test_p8_safety.c` detects the vmem build at compile time (P8.1 uses `#ifdef LIBGOC_VMEM_ENABLED` to skip the canary-abort test in vmem builds, where the canary is a no-op).
+When `-DLIBGOC_VMEM=ON` is passed, `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE` compile definition on the `goc` library target **and** on every per-phase test executable. This ensures that `src/internal.h`'s canary macros are disabled and that `test_p8_safety.c` detects the vmem build at compile time (P8.1 uses `#ifdef LIBGOC_VMEM_ENABLED` to skip the canary-abort test in vmem builds, where the canary is a no-op). By default (canary mode), `LIBGOC_VMEM_ENABLED` is **not** defined and canary protection is active.
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
@@ -290,8 +290,10 @@ struct goc_chan {
     size_t       buf_size;
     size_t       buf_head;
     size_t       buf_count;
-    goc_entry*   takers;      /* linked list */
-    goc_entry*   putters;
+    goc_entry*   takers;      /* head of parked-taker linked list */
+    goc_entry*   takers_tail; /* tail of takers list; NULL = unknown (invalidated by removal) */
+    goc_entry*   putters;     /* head of parked-putter linked list */
+    goc_entry*   putters_tail;/* tail of putters list; NULL = unknown */
     uv_mutex_t*  lock;        /* malloc-allocated; destroyed by goc_shutdown after pool drain */
     int          closed;
     size_t       dead_count;  /* cancelled entries still physically on takers/putters lists */
@@ -398,11 +400,11 @@ typedef struct goc_entry {
 
 Each fiber stack is created and managed by minicoro. Stack allocation, alignment, and guard-page setup are handled internally by minicoro — libgoc does not call `posix_memalign` or `mprotect` directly for fiber stacks.
 
-Per-fiber stack size uses minicoro's default (passed as `0` to `mco_desc_init`), which adapts to the active allocator. Avoid large stack allocations and deep recursion inside fiber entry functions — see [minicoro Limitations](#minicoro-limitations).
+Per-fiber stack size is controlled by the `LIBGOC_STACK_SIZE` CMake option (default `0`, passed to `mco_desc_init` as the `stack_size` argument). When `0`, minicoro uses its built-in default, which adapts to the active allocator. Avoid large stack allocations and deep recursion inside fiber entry functions — see [minicoro Limitations](#minicoro-limitations).
 
-**Conditional stack overflow detection.** When virtual memory is disabled (`-DLIBGOC_VMEM=OFF`), libgoc writes a sentinel canary word at the lowest address of each fiber stack immediately after `mco_create` returns. The worker loop checks the canary *before* every `mco_resume` call. If the canary has been overwritten, the runtime calls `abort()` with a diagnostic message identifying the corrupted fiber. This converts silent heap corruption into a deterministic, debuggable crash.
+**Conditional stack overflow detection.** By default (canary mode), libgoc writes a sentinel canary word at the lowest address of each fiber stack immediately after `mco_create` returns. The worker loop checks the canary *before* every `mco_resume` call. If the canary has been overwritten, the runtime calls `abort()` with a diagnostic message identifying the corrupted fiber. This converts silent heap corruption into a deterministic, debuggable crash.
 
-With virtual memory enabled (default), stacks can grow dynamically and overflow detection is disabled for performance. The canary logic compiles to no-ops via conditional macros in `src/internal.h`. Stack protection is only meaningful with canary-protected stacks.
+With virtual memory enabled (`-DLIBGOC_VMEM=ON`), stacks can grow dynamically and overflow detection is disabled for performance. The canary logic compiles to no-ops via conditional macros in `src/internal.h`. Stack protection is only meaningful with canary-protected stacks.
 
 ```c
 /* Non-virtual memory mode: canary protection enabled */
@@ -474,21 +476,9 @@ The join channel may be ignored if no join is needed — the channel is GC-alloc
 
 ### Suspend / Resume
 
-Fibers suspend by calling `mco_yield` and are resumed by the pool worker calling `mco_resume`. The GC root window for the fiber's stack must remain live for the **entire suspension window** — from the moment the fiber parks until it is resumed. Roots are added before yield and removed after resume on the worker side.
+Fibers suspend by calling `mco_yield` and are resumed by the pool worker calling `mco_resume`. Each fiber's stack must be scanned by the GC while the fiber is suspended — its local variables may hold pointers to GC-managed objects. Rather than calling `GC_add_roots`/`GC_remove_roots` around every yield (which would exhaust BDW-GC's fixed internal root-set table when large numbers of fibers are created), libgoc registers a `GC_push_other_roots` callback (see **GC Fiber Stack Roots** below) that scans all live fiber stacks at each GC mark phase.
 
-```c
-/* inside goc_take / goc_put, on a pool thread */
-GC_add_roots(stack_base, stack_base + stack_size);
-mco_yield(coro);   /* suspend — fiber stack now a GC root */
-
-/* --- fiber is parked here; GC may run --- */
-
-/* resume — mco_resume returns here when fiber is rescheduled */
-GC_remove_roots(stack_base, stack_base + stack_size);
-/* registers are live again; stack no longer needs to be an explicit root */
-```
-
-> **`goc_entry` as a GC root across fiber exit:** The `goc_entry` itself (not just the stack) must remain a GC root from fiber launch until *after* the fiber's final resume returns on the scheduler side. To close this window, the scheduler loop holds `goc_entry* entry` as a **local variable on the scheduler stack** and calls `GC_add_roots(&entry, &entry + 1)` *before* `mco_resume`. `GC_remove_roots` is called only *after* `mco_resume` returns.
+Each fiber's stack is registered once at birth (in `goc_go_on`, `src/fiber.c`) and unregistered once at death (in `pool_worker_fn` before `mco_destroy`, `src/pool.c`).
 
 ---
 
@@ -498,7 +488,7 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switch
 
 **C++ exceptions are not supported.** The C++ exception mechanism maintains internal unwinding state that is not preserved across a coroutine context switch. Throwing an exception that propagates across a `mco_yield` / `mco_resume` boundary is undefined behaviour and will typically corrupt the exception handler chain or crash. In mixed C/C++ codebases all fiber entry functions must be declared `extern "C"` and must not allow any C++ exception to escape them.
 
-**Stack management.** By default, libgoc enables minicoro's virtual memory allocator for dynamic stack growth. When virtual memory is disabled (`-DLIBGOC_VMEM=OFF`), libgoc uses canary-protected stacks with overflow detection. If stack overflow is detected, the runtime calls `abort()` immediately with a diagnostic message. Avoid large stack-allocated buffers and deep recursion inside fibers regardless of stack mode — use `goc_malloc`-allocated buffers on the GC heap for large data.
+**Stack management.** By default, libgoc uses canary-protected stacks with overflow detection. This is the portable default and encourages library authors to develop with a platform-independent mindset. The virtual memory allocator can be enabled with `-DLIBGOC_VMEM=ON` for dynamic stack growth — useful when individual fibers need large or variable stacks. If stack overflow is detected in canary mode, the runtime calls `abort()` immediately with a diagnostic message. Avoid large stack-allocated buffers and deep recursion inside fibers regardless of stack mode — use `goc_malloc`-allocated buffers on the GC heap for large data.
 
 **`src/minicoro.c` must be compiled without `-DGC_THREADS`.** minicoro declares a `static MCO_THREAD_LOCAL mco_current_co` variable (a `thread_local` TLS slot) to track the running coroutine per thread. When Boehm GC is compiled with `GC_THREADS` it wraps `pthread_create` and invokes `GC_call_with_stack_base` during thread startup, which walks TLS descriptors. If minicoro's TLS block is visible to that walk before `mco_current_co` is initialised on a new thread, the GC faults with a SIGSEGV inside its own startup code — even if no minicoro function has yet been called. The fix is to compile `src/minicoro.c` in its own isolated translation unit with `-UGC_THREADS`, which `CMakeLists.txt` enforces via `set_source_files_properties`. minicoro never calls any GC function, so the flag is irrelevant to its correctness regardless.
 
@@ -510,7 +500,7 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switch
 
 ### `goc_take(ch)` — fiber context only
 
-> **Must only be called from within a fiber.** The slow path calls `mco_running()` and asserts the result is non-NULL; calling `goc_take` from a bare OS thread aborts with a diagnostic message rather than silently crashing inside `GC_add_roots`.
+> **Must only be called from within a fiber.** The slow path calls `mco_running()` and asserts the result is non-NULL; calling `goc_take` from a bare OS thread aborts with a diagnostic message rather than silently crashing.
 
 ```
 assert(mco_running() != NULL)   /* fiber-context guard */
@@ -529,16 +519,14 @@ else:
     /* current_pool = ((goc_entry*)mco_get_user_data(mco_running()))->pool */
     entry.stack_canary_ptr = mco_running()->stack_base   /* required: pool worker checks this on re-resume */
     push onto ch->takers
-    GC_add_roots(stack)
     uv_mutex_unlock
     mco_yield → suspend
 
     /* resumes here */
-    GC_remove_roots(stack)
     return {*result_slot, entry->ok}
 ```
 
-`goc_put` is the exact mirror, with the same fiber-context assert, the same `stack_canary_ptr` initialization, and the same GC root registration (`GC_add_roots` / `GC_remove_roots`) in its slow path. The `current_pool` retrieval is identical. Do not omit either `stack_canary_ptr` or GC root registration from `goc_put` — the pool worker dereferences `stack_canary_ptr` on every resume (including re-resumes after a channel wake), and the fiber's stack must remain a GC root for the entire duration it is parked.
+`goc_put` is the exact mirror, with the same fiber-context assert and the same `stack_canary_ptr` initialization in its slow path. The `current_pool` retrieval is identical. Do not omit `stack_canary_ptr` from `goc_put` — the pool worker dereferences it on every resume (including re-resumes after a channel wake).
 
 ### `goc_take_cb(ch, cb, ud)` — any context
 
@@ -645,7 +633,9 @@ bool wake(goc_chan* ch, goc_entry* e, void* value) {
 }
 ```
 
-At the **top of `goc_take` and `goc_put`**, immediately after acquiring the lock, if `dead_count >= GOC_DEAD_COUNT_THRESHOLD`, walk both `takers` and `putters` and unlink every entry where `cancelled == 1`, then reset `dead_count` to 0. This amortises list cleanup without requiring inline removal at cancellation time.
+At the **top of `goc_take` and `goc_put`**, immediately after acquiring the lock, if `dead_count >= GOC_DEAD_COUNT_THRESHOLD`, walk both `takers` and `putters` and unlink every entry where `cancelled == 1`, then reset `dead_count` to 0. This amortises list cleanup without requiring inline removal at cancellation time. `compact_dead_entries` also repairs both tail pointers, so that append is O(1) again after a compaction sweep.
+
+> **O(1) tail append via `chan_list_append`.** All slow-path append sites (`goc_take`, `goc_put`, `goc_alts`, `goc_take_cb`, `goc_put_cb`) use the `chan_list_append` helper (declared in `channel_internal.h`) instead of walking to the tail. The helper appends in O(1) when `takers_tail` / `putters_tail` is valid; it falls back to an O(N) repair walk only when the tail pointer has been invalidated by a prior removal. Removal operations in `chan_put_to_taker` and `chan_take_from_putter` invalidate the tail pointer when they remove the last remaining entry (detected by `next == NULL` after removal). Without this optimisation, `bench_spawn_idle` with N fibers all parking on a single channel performed O(N²) work during the spawn phase (N entries each requiring a full traversal), making 200k fibers take hundreds of seconds instead of tens.
 
 > **`e->next` must be saved before calling `wake()` in the splice helpers, and before any dispatch call in `goc_close`.** `chan_put_to_taker` and `chan_take_from_putter` both splice the woken entry out of its list with `*pp = e->next`. For `GOC_FIBER` entries, `wake()` calls `post_to_run_queue`, which enqueues the entry on the pool's run queue. On a multi-core system a pool thread may dequeue and resume the fiber *immediately* — before `wake()` even returns. That fiber's `mco_yield` call site resumes and the function continues to its return, deallocating the stack frame that contains the `goc_entry` (stack-allocated in `goc_take`/`goc_put` slow paths). Any subsequent read of `e->next` would be a use-after-free and a potential SIGSEGV. The fix is to snapshot `next = e->next` *before* calling `wake()`, while `ch->lock` is still held (the lock prevents concurrent modification of the list), then use `next` for the splice after `wake()` returns. The same hazard applies to `goc_close`, which iterates `ch->takers` and `ch->putters` and calls `post_to_run_queue` directly. For `goc_alts`-parked entries the `goc_entry` is GC-heap allocated, so a resumed fiber can allow the GC to collect the entry while `goc_close`'s loop is still running — `e->next` after dispatch is equally a use-after-free. `goc_close`'s loops are therefore written as `while (e != NULL) { goc_entry* next = e->next; ..dispatch..; e = next; }`. This pattern must be preserved in any future modification of these helpers and of `goc_close`.
 
@@ -695,7 +685,6 @@ Each worker thread runs a loop:
 while not shutdown:
     wait on work_sem
     goc_entry* entry = runq_pop()
-    GC_add_roots(&entry, &entry + 1)   /* entry reachable for entire mco_resume window */
     if *entry->stack_canary_ptr != GOC_STACK_CANARY:
         abort()                        /* stack overflow — deterministic crash, not silent corruption
                                           applies to ALL entry kinds: launch entries AND goc_alts
@@ -712,11 +701,12 @@ while not shutdown:
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
 
     GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
-    GC_remove_roots(&entry, &entry + 1)
     lock(drain_mutex); active_count--; unlock(drain_mutex)
     /* active_count is decremented unconditionally.  The lock is released before
        checking MCO_DEAD to avoid holding drain_mutex across mco_destroy. */
     if mco_status(coro) == MCO_DEAD:
+        fe = mco_get_user_data(coro)
+        goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
         mco_destroy(coro)
         lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
@@ -732,6 +722,19 @@ while not shutdown:
 > **GC Stack Bottom Redirect.** When `mco_resume` switches the CPU stack pointer (RSP) from the worker OS thread's stack into the fiber's stack, the Boehm GC stop-the-world handler captures that fiber-stack RSP as the "bottom of the stack to scan". GC then tries to scan from that RSP all the way up to the worker thread's registered OS-stack bottom — a range potentially spanning the entire virtual address space between the two stacks. That range contains unmapped pages, causing SIGSEGV inside the GC marker thread on every collection cycle.
 >
 > **Fix:** Before `mco_resume`, call `GC_get_my_stackbottom` to save the worker's current OS-thread stack bottom, then `GC_set_stackbottom(NULL, &fiber_sb)` to redirect GC's scan to `[fiber_RSP, fiber_stack_top]` — the actual fiber stack. After `mco_resume` returns (fiber has yielded or exited), restore the original OS thread stack bottom with `GC_set_stackbottom(NULL, &orig_sb)`. This keeps the GC scan range valid for the entire duration of fiber execution and eliminates the inter-stack SIGSEGV.
+
+> **GC Fiber Stack Roots.** While a fiber is suspended between `mco_yield` and the next `mco_resume`, its stack is not associated with any OS-thread stack that the GC scans automatically. The fiber's local variables may hold pointers to GC-managed objects, so the fiber stack must be treated as a GC root during the suspension window.
+>
+> **Why not `GC_add_roots`?** BDW-GC's `GC_add_roots` / `GC_remove_roots` store entries in a fixed internal table (`MAX_ROOT_SETS` ≈ 2048). Benchmarks that spawn large numbers of fibers (e.g. `bench_spawn_idle` with 200 000 fibers) exhaust this table, causing BDW-GC to abort with `"Too many root sets"`.
+>
+> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that iterates a lock-free linked list of live fiber stacks and calls `GC_push_all_eager` for each live entry during every GC mark phase. The list is manipulated with atomic CAS operations only — no mutex — because BDW-GC's stop-the-world suspends threads via SIGPWR on Linux; a mutex in the callback would deadlock if a stopped thread held it. Each fiber registers on birth (`goc_go_on`, O(1) CAS-prepend) and unregisters on death (`pool_worker_fn` before `mco_destroy`, O(1) CAS to NULL via the stored handle). Dead nodes remain in the list but are skipped by the callback; memory overhead is one `malloc`'d node per fiber lifetime.
+>
+> **Exact-SP scanning and `goc_entry` liveness.** Each `fiber_root_node` stores three fields set at registration time:
+> - `coro` (`_Atomic(mco_coro*)`) — set to NULL on unregistration (O(1) CAS).
+> - `scan_from` (`_Atomic(void*)`) — cached saved RSP/SP of the suspended fiber, initialised by `mco_get_suspended_sp` at birth and updated by `goc_fiber_root_update_sp` (called in `pool_worker_fn` after each `mco_resume` returns with `MCO_SUSPENDED`). The callback reads this cached value instead of calling `mco_get_suspended_sp` per GC cycle, avoiding 200k random cache misses to vmem-allocated `mco_coro` structs.
+> - `entry` (`goc_entry*`) — the fiber's initial GC-allocated entry; explicitly pushed via `GC_push_all_eager(&n->entry, …)`. This is required because the run queue node that holds a reference to `goc_entry*` is `malloc`'d (not GC-managed), making the entry unreachable to the conservative scanner without this explicit push.
+>
+> **Shutdown cleanup.** `goc_shutdown()` frees all nodes in `fiber_root_head` and resets the head to NULL. Without this cleanup, nodes from a completed `goc_init/shutdown` cycle accumulate in the static list, and subsequent cycles pay O(N_accumulated) per GC mark phase.
 
 The invariant is:
 
@@ -1128,11 +1131,12 @@ uv_tcp_init(goc_scheduler(), server);
 `goc_init` must be called exactly once, as the first call in `main()`. Calling it more than once is undefined behaviour. It performs the following steps:
 
 1. **`gc.c`** — Call `GC_INIT()` then `GC_allow_register_threads()` unconditionally. `GC_INIT()` performs all one-time GC setup; `GC_allow_register_threads()` enables multi-thread stack registration and must follow it. This must happen before any `goc_malloc` call.
-2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
-3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
-4. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
-5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `gc_pthread_create` so thread registration is handled by Boehm's wrapper (on POSIX: `GC_pthread_create`; on Windows: a trampoline). All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
-6. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
+2. **`gc.c`** — Register the `push_fiber_roots` callback via `GC_set_push_other_roots`. This replaces per-fiber `GC_add_roots` / `GC_remove_roots` calls (which would exhaust BDW-GC's fixed root-set table) with a single callback that scans all live fiber stacks at each GC mark phase. Must run after `GC_INIT()` and before any fiber is created.
+3. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 6) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
+4. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 6). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
+5. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
+6. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `gc_pthread_create` so thread registration is handled by Boehm's wrapper (on POSIX: `GC_pthread_create`; on Windows: a trampoline). All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
+7. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
 
 ---
 
@@ -1298,7 +1302,7 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 
 | Test | Description |
 |---|---|
-| P8.1 | Stack overflow: an `overflow_fiber` corrupts its own canary word then parks on `goc_take`; a `sender_fiber` calls `goc_put` to wake it; `pool_worker_fn` checks the canary before the next `mco_resume`, finds it corrupted, and calls `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. Two fibers are used (rather than a fiber + `goc_take_sync` from the OS thread) to guarantee the victim parks before the sender runs — with `goc_take_sync`, a race exists where the OS thread parks first and the fiber's `goc_put` rendezvouses immediately without ever suspending, so the canary check never fires. **Skipped when `LIBGOC_VMEM_ENABLED` is defined** (vmem builds); only exercised in canary builds (`-DLIBGOC_VMEM=OFF`). |
+| P8.1 | Stack overflow: an `overflow_fiber` corrupts its own canary word then parks on `goc_take`; a `sender_fiber` calls `goc_put` to wake it; `pool_worker_fn` checks the canary before the next `mco_resume`, finds it corrupted, and calls `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. Two fibers are used (rather than a fiber + `goc_take_sync` from the OS thread) to guarantee the victim parks before the sender runs — with `goc_take_sync`, a race exists where the OS thread parks first and the fiber's `goc_put` rendezvouses immediately without ever suspending, so the canary check never fires. **Skipped when `LIBGOC_VMEM_ENABLED` is defined** (vmem builds, `-DLIBGOC_VMEM=ON`); only exercised in canary builds (the default). |
 | P8.2 | `goc_take` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.3 | `goc_put` called from a bare OS thread (not a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT` |
 | P8.4 | `goc_alts` called with more than one `GOC_ALT_DEFAULT` arm (from within a fiber) → `abort()`; verified via `fork` + `waitpid` asserting `SIGABRT`. A fiber is spawned via `goc_go()` to provide fiber context. |
@@ -1356,10 +1360,10 @@ Runs a build matrix across four configurations:
 
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — vmem build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 skipped (vmem build) |
-| `macos-latest` | *(none — vmem build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 skipped (vmem build) |
-| `windows-latest` | *(none — vmem build)* | P1–P7, P9 via `ctest --timeout 120`; P8 self-skips (no `fork`) |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=OFF` (canary build) | All phases (P1–P9) via `ctest --timeout 120`; P8.1 exercises canary abort |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P9) via `ctest --timeout 120`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9 via `ctest --timeout 120`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P9) via `ctest --timeout 120`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 
@@ -1377,9 +1381,9 @@ Triggered on every push to `main` that touches `src/`, `include/`, `CMakeLists.t
 
 1. **`tag`** — Creates a UTC timestamp tag in the format `yyyy.MM.dd.HH.mm` (e.g. `2026.03.18.12.05`) and pushes it to the repository.
 
-2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode and packages it alongside `include/goc.h`:
-   - Linux: `libgoc-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
-   - macOS: `libgoc-macos-arm64.tar.gz` (`libgoc.a` + `goc.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
-   - Windows: `libgoc-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
+2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside `include/goc.h`:
+   - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
+   - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
+   - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
 
 3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

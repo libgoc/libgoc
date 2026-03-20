@@ -12,10 +12,11 @@ endif()
 # Build options
 # ---------------------------------------------------------------------------
 option(LIBGOC_SHARED   "Build a shared library (libgoc.so / .dylib / .dll)" OFF)
-option(LIBGOC_VMEM     "Use minicoro virtual memory allocator (recommended)" ON)
+option(LIBGOC_VMEM     "Use minicoro virtual memory allocator (off by default; canary-protected stacks are the default)" OFF)
 option(LIBGOC_ASAN     "Build an instrumented copy of goc with AddressSanitizer" OFF)
 option(LIBGOC_TSAN     "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE "Instrument goc and tests for code coverage" OFF)
+set(LIBGOC_STACK_SIZE "0" CACHE STRING "Default fiber stack size in bytes (0 = let minicoro decide)")
 
 # ---------------------------------------------------------------------------
 # Mutual-exclusion guards
@@ -101,10 +102,11 @@ endif()
 add_library(goc STATIC ${GOC_SOURCES})
 goc_configure_target(goc)
 
-# Pass virtual memory flag to source code
+# Pass virtual memory flag and stack size to source code
 if(LIBGOC_VMEM)
     target_compile_definitions(goc PRIVATE LIBGOC_VMEM_ENABLED)
 endif()
+target_compile_definitions(goc PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 
 # ---------------------------------------------------------------------------
 # Optional shared library: goc_shared  (-DLIBGOC_SHARED=ON)
@@ -116,6 +118,7 @@ if(LIBGOC_SHARED)
     if(LIBGOC_VMEM)
         target_compile_definitions(goc_shared PRIVATE LIBGOC_VMEM_ENABLED)
     endif()
+    target_compile_definitions(goc_shared PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -129,6 +132,7 @@ if(LIBGOC_ASAN)
     if(LIBGOC_VMEM)
         target_compile_definitions(goc_asan PRIVATE LIBGOC_VMEM_ENABLED)
     endif()
+    target_compile_definitions(goc_asan PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -142,6 +146,7 @@ if(LIBGOC_TSAN)
     if(LIBGOC_VMEM)
         target_compile_definitions(goc_tsan PRIVATE LIBGOC_VMEM_ENABLED)
     endif()
+    target_compile_definitions(goc_tsan PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 endif()
 
 # ---------------------------------------------------------------------------
@@ -187,6 +192,7 @@ foreach(test_src IN LISTS TEST_SOURCES)
     if(LIBGOC_VMEM)
         target_compile_definitions(${test_name} PRIVATE LIBGOC_VMEM_ENABLED)
     endif()
+    target_compile_definitions(${test_name} PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

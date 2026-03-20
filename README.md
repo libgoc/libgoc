@@ -406,7 +406,7 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for fiber switching.
 
 **C++ exceptions are not supported.** Throwing a C++ exception that unwinds across a `mco_yield` / `mco_resume` boundary is undefined behaviour — the exception mechanism's internal state is not preserved across a coroutine switch. In mixed C/C++ codebases, all fiber entry functions must be declared `extern "C"` and must not allow any C++ exception to propagate out of them.
 
-**Stack management.** By default, libgoc uses minicoro's virtual memory allocator, which allows fiber stacks to grow dynamically and eliminates stack overflow concerns. When virtual memory is disabled (`-DLIBGOC_VMEM=OFF`), libgoc uses canary-protected stacks with overflow detection. If stack overflow is detected, the runtime calls `abort()` immediately with a diagnostic message. This turns silent heap corruption into a deterministic, debuggable crash. Avoid large stack-allocated buffers and deep recursion inside fibers; use `goc_malloc`-allocated buffers on the GC heap for large data instead.
+**Stack management.** By default, libgoc uses canary-protected stacks with overflow detection. This is the portable default: canary stacks work on all platforms including restricted environments where virtual memory is unavailable, and encourage library authors to develop with a portability mindset. libgoc provides a GC heap (`goc_malloc`) for off-stack data, so fixed-size stacks are practical for most use cases. If stack overflow is detected, the runtime calls `abort()` immediately with a diagnostic message. For use cases that need large or variable stacks, the virtual memory allocator can be enabled with `-DLIBGOC_VMEM=ON`. Avoid large stack-allocated buffers and deep recursion inside fibers regardless of stack mode; use `goc_malloc`-allocated buffers on the GC heap for large data instead.
 
 **`src/minicoro.c` must be compiled without `-DGC_THREADS`.** The build system enforces this with `-UGC_THREADS` on that translation unit. This avoids a TLS interaction between minicoro and Boehm's thread wrapper during thread startup.
 
@@ -822,22 +822,29 @@ cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
 ---
 
-### Virtual memory allocator
+### Stack allocator
 
-libgoc uses minicoro's virtual memory allocator by default, which enables dynamic stack growth and eliminates stack overflow concerns for most applications. This can be disabled for debugging or profiling if needed.
+By default, libgoc uses canary-protected fixed-size stacks. Canary stacks are portable across all supported platforms (Linux, macOS, Windows, and restricted environments), lighter in both time and space than virtual memory stacks, and encourage a portability-first development mindset. libgoc's GC heap (`goc_malloc`) handles off-stack data, making fixed-size stacks practical for the vast majority of use cases.
 
 ```sh
-# Default: virtual memory enabled (recommended)
+# Default: canary-protected stacks (recommended, portable)
 cmake -B build
 
-# Disable virtual memory (canary-protected stacks)
-cmake -B build -DLIBGOC_VMEM=OFF
+# Enable virtual memory allocator (dynamic stack growth)
+cmake -B build -DLIBGOC_VMEM=ON
 ```
 
-With virtual memory disabled (`-DLIBGOC_VMEM=OFF`), fibers use canary-protected stacks with overflow detection. Stack overflow will abort the process with a diagnostic message. This mode is useful for:
-- Debugging stack usage patterns
-- Profiling with deterministic memory layout
-- Environments without virtual memory support
+With canary stacks (default), fibers use a fixed-size stack with a sentinel word written at the lowest address. If the canary is overwritten (stack overflow), the runtime calls `abort()` with a diagnostic message — turning silent heap corruption into a deterministic crash.
+
+With virtual memory enabled (`-DLIBGOC_VMEM=ON`), fibers can grow their stacks dynamically. This eliminates stack overflow concerns but is heavier in space and time, and is not supported on all platforms.
+
+#### Configurable stack size
+
+The default fiber stack size can be set at build time via the `LIBGOC_STACK_SIZE` CMake option (in bytes). The default is `0`, which lets minicoro choose (56 KB for canary, ~2 MB for vmem):
+
+```sh
+cmake -B build -DLIBGOC_STACK_SIZE=131072   # 128 KB
+```
 
 ---
 

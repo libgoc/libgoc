@@ -16,6 +16,36 @@ bool wake(goc_chan* ch, goc_entry* e, void* value);
 void compact_dead_entries(goc_chan* ch);
 void chan_set_on_close(goc_chan* ch, void (*on_close)(void*), void* ud);
 
+/* --------------------------------------------------------------------------
+ * chan_list_append — O(1) tail append.
+ *
+ * Appends `e` to the waiter list headed by `*head` / `*tail`.
+ * When `*tail` is NULL (unknown or empty), falls back to an O(N) traversal
+ * that also repairs `*tail`.  This lazy repair keeps the common append path
+ * O(1) while remaining correct after removals that only invalidate the tail
+ * pointer rather than repairing it.
+ * Must be called with ch->lock held.  `e->next` need not be NULL on entry.
+ * -------------------------------------------------------------------------- */
+static inline void chan_list_append(goc_entry** head, goc_entry** tail,
+                                    goc_entry* e)
+{
+    e->next = NULL;
+    if (*tail) {
+        (*tail)->next = e;
+        *tail = e;
+    } else if (*head == NULL) {
+        /* Empty list */
+        *head = e;
+        *tail = e;
+    } else {
+        /* tail was invalidated by a prior removal; walk to find real tail */
+        goc_entry* cur = *head;
+        while (cur->next) cur = cur->next;
+        cur->next = e;
+        *tail = e;
+    }
+}
+
 static inline int chan_put_to_buffer(goc_chan* ch, void* val) {
     if (ch->buf_count >= ch->buf_size) return 0;
     size_t tail = (ch->buf_head + ch->buf_count) % ch->buf_size;
@@ -38,6 +68,8 @@ static inline int chan_put_to_taker(goc_chan* ch, void* val) {
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
+            /* Invalidate tail when we remove the last entry. */
+            if (*pp == NULL) ch->takers_tail = NULL;
             continue;
         }
         /* Save e->next before calling wake(). For GOC_FIBER entries, wake() calls
@@ -51,9 +83,12 @@ static inline int chan_put_to_taker(goc_chan* ch, void* val) {
         goc_entry* next = e->next;
         if (wake(ch, e, val)) {
             *pp = next;
+            /* Invalidate tail when we remove the last entry. */
+            if (next == NULL) ch->takers_tail = NULL;
             return 1;
         }
         *pp = next;
+        if (next == NULL) ch->takers_tail = NULL;
     }
     return 0;
 }
@@ -64,6 +99,7 @@ static inline int chan_take_from_putter(goc_chan* ch, void** out) {
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
+            if (*pp == NULL) ch->putters_tail = NULL;
             continue;
         }
         void* val = e->put_val;
@@ -76,9 +112,11 @@ static inline int chan_take_from_putter(goc_chan* ch, void** out) {
         if (wake(ch, e, NULL)) {
             *out = val;
             *pp = next;
+            if (next == NULL) ch->putters_tail = NULL;
             return 1;
         }
         *pp = next;
+        if (next == NULL) ch->putters_tail = NULL;
     }
     return 0;
 }

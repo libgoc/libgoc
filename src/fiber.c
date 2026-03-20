@@ -61,7 +61,7 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
     entry->pool     = pool;
 
     /* 4. Initialise the minicoro descriptor with the trampoline and stack size. */
-    mco_desc desc   = mco_desc_init(fiber_trampoline, 0); /* 0 = use minicoro's default (adapts to active allocator) */
+    mco_desc desc   = mco_desc_init(fiber_trampoline, LIBGOC_STACK_SIZE); /* 0 = use minicoro's default */
     desc.user_data  = entry;
 
     /* 5. Create the coroutine. */
@@ -70,6 +70,15 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
         fprintf(stderr, "libgoc: mco_create failed (%d)\n", rc);
         abort();
     }
+
+    /* 6. Register the fiber stack so BDW-GC scans it while the fiber is
+     *    suspended.  Uses a GC_push_other_roots callback (gc.c) instead of
+     *    GC_add_roots to avoid exhausting BDW-GC's fixed root-set table when
+     *    large numbers of fibers are created (e.g. bench_spawn_idle).
+     *    Unregistered in pool.c before mco_destroy when the fiber reaches
+     *    MCO_DEAD. */
+    void* fiber_stack_top  = (char*)entry->coro->stack_base + entry->coro->stack_size;
+    entry->fiber_root_handle = goc_fiber_root_register(entry->coro, fiber_stack_top, entry);
 
     /* 6. Record the canary pointer (lowest word of the fiber stack). */
     goc_stack_canary_init(entry);

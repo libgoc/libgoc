@@ -21,11 +21,11 @@
  * 4. Spawn idle tasks — spawn a large number of fibers that immediately park
  *    on a shared channel, then wake them all by closing it.  Measures fiber
  *    creation overhead and the cost of blocking/unblocking many lightweight
- *    tasks.  (Currently disabled — see comment in main.)
+ *    tasks.
  *
  * 5. Prime sieve — a classic concurrent pipeline where each stage filters
  *    multiples of a discovered prime.  Stresses long chains of fibers and
- *    sustained channel traffic.  (Currently disabled — see comment in main.)
+ *    sustained channel traffic.
  *
  * Building
  * --------
@@ -525,11 +525,6 @@ static void bench_prime_sieve(size_t max) {
 /* =========================================================================
  * main
  * =========================================================================
- *
- * Benchmarks 3–5 are compiled but disabled: the implementations are
- * complete and use the current API.  They will be re-enabled once the
- * full benchmark suite is tuned and any remaining runtime issues are
- * resolved under all pool-thread counts.
  */
 int main(void) {
     goc_init();
@@ -539,14 +534,14 @@ int main(void) {
     size_t ring_hops      = 500000;
     size_t select_workers = 8;
     size_t select_tasks   = 200000;
-    // size_t spawn_count    = 200000;
-    // size_t prime_max      = 20000;
+    size_t spawn_count    = 200000;
+    size_t prime_max      = 20000;
 
     bench_ping_pong(ping_rounds);
     bench_ring(ring_nodes, ring_hops);
     bench_fan_in(select_workers, select_tasks);
-    // bench_spawn_idle(spawn_count);
-    // bench_prime_sieve(prime_max);
+    bench_spawn_idle(spawn_count);
+    bench_prime_sieve(prime_max);
 
     goc_shutdown();
     return 0;

@@ -15,29 +15,39 @@ build are required to run them.
 
 ## Building and Running
 
+### vmem mode (default — virtual-memory-backed stacks)
+
 ```sh
-# Build (compiles libgoc.a via CMake, then compiles bench-libgoc)
+# Build
 make build
 
-# Single run (uses current GOC_POOL_THREADS, or the default pool size)
+# Single run
 make run
 
-# Multi-pool testing — runs with GOC_POOL_THREADS = 1, 2, 4, 8
+# Multi-pool testing (GOC_POOL_THREADS = 1, 2, 4, 8)
 make run-all
+```
+
+### canary mode (fixed stacks with stack-overflow detection)
+
+```sh
+# Rebuild libgoc with -DLIBGOC_VMEM=OFF, then run
+cmake -S ../.. -B ../../build-bench -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=OFF
+cmake --build ../../build-bench --target goc
+make build run-all
 ```
 
 ## Benchmarks
 
-All five benchmarks are **implemented** in `bench.c`.  Benchmarks 1–3 are
-currently enabled; benchmarks 4 and 5 are compiled but disabled in `main()`.
+All five benchmarks are **implemented and enabled** in `bench.c`.
 
 | # | Name | Status |
 |---|------|--------|
 | 1 | **Channel ping-pong** — two fibers exchange a token back and forth | ✅ enabled |
 | 2 | **Ring** — a token is forwarded around a ring of N fibers | ✅ enabled |
 | 3 | **Selective receive / fan-out / fan-in** — producer → N workers → `goc_alts` collector | ✅ enabled |
-| 4 | **Spawn idle tasks** — spawn many fibers that park immediately, then wake them | 🚧 disabled |
-| 5 | **Prime sieve** — concurrent Eratosthenes pipeline | 🚧 disabled |
+| 4 | **Spawn idle tasks** — spawn many fibers that park immediately, then wake them | ✅ enabled |
+| 5 | **Prime sieve** — concurrent Eratosthenes pipeline | ✅ enabled |
 
 ## Output Format
 
@@ -47,35 +57,94 @@ All benchmarks produce a single line per run:
 <description>: <count> <unit> in <ms>ms (<rate> <unit>/s)
 ```
 
-Example:
+Example (vmem mode, pool=1):
 
 ```
-Channel ping-pong: 200000 round trips in 120ms (1658644 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 751ms (665623 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 716ms (279139 msg/s)
+Channel ping-pong: 200000 round trips in 85ms (2343156 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2248408 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 642ms (311113 msg/s)
+Spawn idle tasks: 200000 fibers in 10334ms (19353 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 952ms (2375 primes/s)
 ```
 
 ## Multi-Pool Testing
 
-`make run-all` tests performance at different `GOC_POOL_THREADS` settings:
+`make run-all` tests performance at different `GOC_POOL_THREADS` settings.
+
+### vmem mode (`-DLIBGOC_VMEM=ON`, default)
 
 ```
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 120ms (1658644 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 751ms (665623 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 716ms (279139 msg/s)
+Channel ping-pong: 200000 round trips in 85ms (2343156 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2248408 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 642ms (311113 msg/s)
+Spawn idle tasks: 200000 fibers in 10334ms (19353 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 952ms (2375 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 105ms (1895838 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 301ms (1657377 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 440ms (454532 msg/s)
+Spawn idle tasks: 200000 fibers in 7939ms (25190 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1651ms (1370 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 333ms (599752 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 944ms (529457 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 547ms (365187 msg/s)
+Spawn idle tasks: 200000 fibers in 10526ms (18999 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1686ms (1342 primes/s)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 588ms (339584 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 2037ms (245396 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1142ms (175014 msg/s)
+Channel ping-pong: 200000 round trips in 430ms (464624 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 808ms (618487 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 933ms (214316 msg/s)
+Spawn idle tasks: 200000 fibers in 12828ms (15590 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1580ms (1431 primes/s)
 ```
 
-Note that single-threaded (pool size 1) performance can be higher than
-multi-threaded for benchmarks that are inherently sequential (e.g. ping-pong),
-because cross-thread wakeups add latency when the two fibers are forced onto
-different OS threads.  Each `mco_resume` call is bracketed by
-`GC_set_stackbottom` to redirect BDW-GC's stack scan to the active fiber stack,
-which adds a small but measurable per-resume cost.
+### canary mode (`-DLIBGOC_VMEM=OFF`)
+
+```
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 84ms (2353892 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 215ms (2322813 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 637ms (313967 msg/s)
+Spawn idle tasks: 200000 fibers in 10885ms (18373 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 749ms (3017 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 105ms (1892095 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 297ms (1678839 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 437ms (456951 msg/s)
+Spawn idle tasks: 200000 fibers in 8053ms (24834 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 648ms (3486 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 151ms (1319020 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 502ms (995646 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 456ms (437770 msg/s)
+Spawn idle tasks: 200000 fibers in 8836ms (22633 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 747ms (3026 primes/s)
+
+=== Pool Size: 8 ===
+GOC_POOL_THREADS=8
+Channel ping-pong: 200000 round trips in 252ms (790813 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 439ms (1138495 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 562ms (355597 msg/s)
+Spawn idle tasks: 200000 fibers in 9996ms (20007 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1561ms (1449 primes/s)
+```
+
+Note that pool=1 typically shows the best channel throughput for libgoc because
+all fibers run cooperatively on one OS thread with no cross-thread wakeup cost.
+Canary mode outperforms vmem at pool=4 and pool=8 because fixed-size stacks
+have lower GC scan overhead than virtual-memory-backed stacks when many fibers
+are suspended simultaneously.

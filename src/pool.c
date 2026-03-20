@@ -200,9 +200,6 @@ static void* pool_worker_fn(void* arg) {
             continue;
         }
 
-        /* Keep the entry pointer GC-rooted for the duration of the resume. */
-        GC_add_roots(&entry, &entry + 1);
-
         /* Canary check — abort on stack overflow before corrupting anything. */
         goc_stack_canary_check(entry->stack_canary_ptr);
 
@@ -236,7 +233,6 @@ static void* pool_worker_fn(void* arg) {
         mco_resume(coro);
 
         GC_set_stackbottom(NULL, &orig_sb);
-        GC_remove_roots(&entry, &entry + 1);
 
         /* If the fiber just parked (called goc_take, goc_put, or goc_alts slow
          * path and set fiber_entry->parked = 0 before yielding), set it back
@@ -245,6 +241,11 @@ static void* pool_worker_fn(void* arg) {
         goc_entry* fe = (goc_entry*)mco_get_user_data(coro);
         if (fe != NULL)
             atomic_store_explicit(&fe->parked, 1, memory_order_release);
+
+        /* Update the cached fiber SP so the next GC cycle scans only the
+         * used portion of the stack instead of the full vmem allocation. */
+        if (mco_status(coro) == MCO_SUSPENDED && fe != NULL)
+            goc_fiber_root_update_sp(fe->fiber_root_handle, coro);
 
         /* Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
          * be re-posted to a run queue via post_to_run_queue(), which increments
@@ -266,6 +267,11 @@ static void* pool_worker_fn(void* arg) {
          * live_count == 0 while fibers are merely parked, causing a premature
          * GOC_DRAIN_OK return and pool teardown. */
         if (mco_status(coro) == MCO_DEAD) {
+            /* Unregister the fiber stack registered at birth (fiber.c).
+             * fe is still valid here — mco_get_user_data returns the entry
+             * set at creation, and mco_destroy has not yet been called. */
+            if (fe != NULL)
+                goc_fiber_root_unregister(fe->fiber_root_handle);
             mco_destroy(coro);
 
             pthread_mutex_lock(&pool->drain_mutex);

@@ -99,24 +99,32 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
 void compact_dead_entries(goc_chan* ch)
 {
     /* Compact takers */
+    goc_entry* last_taker = NULL;
     goc_entry** pp = &ch->takers;
     while (*pp) {
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
             *pp = e->next;   /* unlink */
-        else
+        else {
+            last_taker = e;
             pp = &e->next;
+        }
     }
+    ch->takers_tail = last_taker;
 
     /* Compact putters */
+    goc_entry* last_putter = NULL;
     pp = &ch->putters;
     while (*pp) {
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
             *pp = e->next;
-        else
+        else {
+            last_putter = e;
             pp = &e->next;
+        }
     }
+    ch->putters_tail = last_putter;
 
     ch->dead_count = 0;
 }
@@ -294,9 +302,7 @@ goc_val_t* goc_take(goc_chan* ch)
     goc_stack_canary_init(&e);
 
     /* Append to takers list */
-    goc_entry** pp = &ch->takers;
-    while (*pp) pp = &(*pp)->next;
-    *pp = &e;
+    chan_list_append(&ch->takers, &ch->takers_tail, &e);
 
     /* Set parked = 0 on the fiber's initial entry while ch->lock is still held.
      * wake() and goc_close() will spin until pool_worker_fn sets it back to 1
@@ -305,15 +311,9 @@ goc_val_t* goc_take(goc_chan* ch)
     goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
     atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
 
-    void* stack_base = e.coro->stack_base;
-    void* stack_top  = (char*)stack_base + e.coro->stack_size;
-    GC_add_roots(stack_base, stack_top);
-
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
-
-    GC_remove_roots(stack_base, stack_top);
 
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
     r->val = local_result; r->ok = e.ok;
@@ -373,23 +373,15 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     goc_stack_canary_init(&e);
 
     /* Append to putters list */
-    goc_entry** pp = &ch->putters;
-    while (*pp) pp = &(*pp)->next;
-    *pp = &e;
+    chan_list_append(&ch->putters, &ch->putters_tail, &e);
 
     /* Same yield-gate as goc_take slow path. */
     goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
     atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
 
-    void* stack_base = e.coro->stack_base;
-    void* stack_top  = (char*)stack_base + e.coro->stack_size;
-    GC_add_roots(stack_base, stack_top);
-
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
-
-    GC_remove_roots(stack_base, stack_top);
 
     return e.ok;
 }
@@ -440,9 +432,7 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     goc_sync_init(&e.sync_obj);
     e.sync_sem_ptr = &e.sync_obj;
 
-    goc_entry** pp = &ch->takers;
-    while (*pp) pp = &(*pp)->next;
-    *pp = &e;
+    chan_list_append(&ch->takers, &ch->takers_tail, &e);
 
     uv_mutex_unlock(ch->lock);
     goc_sync_wait(&e.sync_obj);
@@ -498,9 +488,7 @@ goc_status_t goc_put_sync(goc_chan* ch, void* val)
     goc_sync_init(&e.sync_obj);
     e.sync_sem_ptr = &e.sync_obj;
 
-    goc_entry** pp = &ch->putters;
-    while (*pp) pp = &(*pp)->next;
-    *pp = &e;
+    chan_list_append(&ch->putters, &ch->putters_tail, &e);
 
     uv_mutex_unlock(ch->lock);
     goc_sync_wait(&e.sync_obj);
@@ -592,9 +580,7 @@ void goc_take_cb(goc_chan* ch,
     }
 
     /* Slow path: park */
-    goc_entry** pp = &ch->takers;
-    while (*pp) pp = &(*pp)->next;
-    *pp = e;
+    chan_list_append(&ch->takers, &ch->takers_tail, e);
 
     uv_mutex_unlock(ch->lock);
 }
@@ -642,9 +628,7 @@ void goc_put_cb(goc_chan* ch, void* val,
     }
 
     /* Slow path: park */
-    goc_entry** pp = &ch->putters;
-    while (*pp) pp = &(*pp)->next;
-    *pp = e;
+    chan_list_append(&ch->putters, &ch->putters_tail, e);
 
     uv_mutex_unlock(ch->lock);
 }

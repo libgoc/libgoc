@@ -13,7 +13,9 @@ struct goc_chan {
     size_t       buf_head;
     size_t       buf_count;
     goc_entry*   takers;
+    goc_entry*   takers_tail;  /* last node in takers list; NULL when empty */
     goc_entry*   putters;
+    goc_entry*   putters_tail; /* last node in putters list; NULL when empty */
     uv_mutex_t*  lock;         /* plain malloc; not GC-heap (libuv constraint) */
     int          closed;
     size_t       dead_count;

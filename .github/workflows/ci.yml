@@ -29,11 +29,11 @@ jobs:
       matrix:
         include:
           # Virtual memory mode (recommended) - all platforms
-          - { os: ubuntu-latest,  cmake_flags: "",                  name: "Ubuntu (vmem)" }
-          - { os: macos-latest,   cmake_flags: "",                  name: "macOS (vmem)" }
-          - { os: windows-latest, cmake_flags: "",                  name: "Windows (vmem)" }
-          # Canary mode - Ubuntu only (for stack protection validation)
-          - { os: ubuntu-latest,  cmake_flags: "-DLIBGOC_VMEM=OFF", name: "Ubuntu (canary)" }
+          - { os: ubuntu-latest,  cmake_flags: "",                   name: "Ubuntu (canary)" }
+          - { os: macos-latest,   cmake_flags: "",                   name: "macOS (canary)" }
+          - { os: windows-latest, cmake_flags: "",                   name: "Windows (canary)" }
+          # Virtual memory mode - Ubuntu only
+          - { os: ubuntu-latest,  cmake_flags: "-DLIBGOC_VMEM=ON",  name: "Ubuntu (vmem)" }
 
     env:
       BDWGC_VERSION: "8.2.6"
