@@ -688,32 +688,28 @@ The default pool is created by `goc_init` with `max(4, hardware_concurrency)` wo
 Each worker thread runs a loop:
 
 ```
-/* [Fix 3] orig_sb and last_fiber_stack_top are computed once at thread start. */
-orig_sb = GC_get_my_stackbottom()
-last_fiber_stack_top = NULL
+/* [Fix 3] orig_sb is computed once at thread start; fiber_sb reuses the struct. */
+GC_get_my_stackbottom(&orig_sb)
+fiber_sb = orig_sb
 
 while not shutdown:
     wait on work_sem
-    goc_entry* entry = runq_pop()        /* [Fix 4] returns recycled node to free-list */
+    goc_entry* entry = runq_pop(pool)        /* [Fix 4] returns recycled node to free-list */
     if *entry->stack_canary_ptr != GOC_STACK_CANARY:
         abort()                        /* stack overflow — deterministic crash, not silent corruption
                                           applies to ALL entry kinds: launch entries AND goc_alts
                                           park entries; stack_canary_ptr must never be NULL */
     mco_coro* coro = entry->coro       /* snapshot handle before resume — see note below */
 
-    /* [Fix 3] Redirect GC stack scan to fiber stack — skip GC_set_stackbottom
-       when the same fiber stack is resumed back-to-back on this worker. */
-    fiber_stack_top = coro->stack_base + coro->stack_size
-    changed_sb = (fiber_stack_top != last_fiber_stack_top)
-    if changed_sb:
-        last_fiber_stack_top = fiber_stack_top
-        fiber_sb.mem_base = fiber_stack_top
-        GC_set_stackbottom(NULL, &fiber_sb)
+    /* [Fix 3] Redirect GC stack scan to fiber stack.
+       orig_sb was captured once at thread start; no per-iteration
+       GC_get_my_stackbottom call needed. */
+    fiber_sb.mem_base = coro->stack_base + coro->stack_size
+    GC_set_stackbottom(NULL, &fiber_sb)
 
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
 
-    if changed_sb:
-        GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
+    GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
 
     /* [Fix 1] active_count is _Atomic — no drain_mutex needed here. */
     atomic_fetch_sub(&active_count, 1)
