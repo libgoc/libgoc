@@ -14,8 +14,10 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <gc.h>
+#include <gc/gc_mark.h>
 #include "../include/goc.h"
 #include "chan_type.h"
 #include "internal.h"
@@ -73,6 +75,83 @@ int gc_pthread_join(pthread_t t, void** retval)
 }
 
 #endif /* _WIN32 */
+
+/* ---------------------------------------------------------------------------
+ * Fiber stack root push  (replaces GC_add_roots / GC_remove_roots)
+ *
+ * Problem: GC_add_roots / GC_remove_roots use a fixed internal table
+ * (MAX_ROOT_SETS ≈ 2048 in BDW-GC 8.2.6).  Benchmarks that spawn large
+ * numbers of fibers (e.g. bench_spawn_idle with 200,000 fibers) exhaust
+ * the table, causing BDW-GC to abort with "Too many root sets".
+ *
+ * Solution: maintain a lock-free linked list of live fiber stack ranges
+ * and register a GC_push_other_roots callback that iterates the list and
+ * calls GC_push_all_eager for each live entry.  This bypasses the root-set
+ * table entirely — the callback is called during each GC mark phase.
+ *
+ * Thread-safety / stop-the-world:
+ *   BDW-GC stops the world (via SIGPWR on Linux) before calling the callback.
+ *   A pthread_mutex in the callback would deadlock if a stopped thread held
+ *   it.  Instead the list uses only atomic operations:
+ *     - register: malloc a node, store fields, CAS-prepend to head.
+ *     - unregister: scan the list and CAS stack_base from base to NULL.
+ *   Nodes are never removed from the list; dead entries (stack_base == NULL)
+ *   are skipped by the callback.  Memory overhead: one malloc'd node per
+ *   fiber lifetime.
+ * --------------------------------------------------------------------------- */
+
+typedef struct fiber_root_node fiber_root_node;
+struct fiber_root_node {
+    _Atomic(void*)              stack_base; /* NULL = dead / unregistered */
+    void*                       stack_top;
+    _Atomic(fiber_root_node*)   next;
+};
+
+static _Atomic(fiber_root_node*) fiber_root_head = NULL;
+static GC_push_other_roots_proc  prev_push_roots  = NULL;
+
+static void push_fiber_roots(void)
+{
+    fiber_root_node* n = atomic_load_explicit(&fiber_root_head, memory_order_acquire);
+    while (n) {
+        void* base = atomic_load_explicit(&n->stack_base, memory_order_acquire);
+        if (base != NULL)
+            GC_push_all_eager(base, n->stack_top);
+        n = atomic_load_explicit(&n->next, memory_order_acquire);
+    }
+    if (prev_push_roots)
+        prev_push_roots();
+}
+
+void* goc_fiber_root_register(void* base, void* top)
+{
+    fiber_root_node* n = malloc(sizeof(fiber_root_node));
+    atomic_init(&n->stack_base, base);
+    n->stack_top = top;
+    fiber_root_node* head;
+    do {
+        head = atomic_load_explicit(&fiber_root_head, memory_order_relaxed);
+        atomic_store_explicit(&n->next, head, memory_order_relaxed);
+    } while (!atomic_compare_exchange_weak_explicit(
+                 &fiber_root_head, &head, n,
+                 memory_order_release, memory_order_relaxed));
+    return n;
+}
+
+void goc_fiber_root_unregister(void* handle)
+{
+    fiber_root_node* n = (fiber_root_node*)handle;
+    void* expected = atomic_load_explicit(&n->stack_base, memory_order_relaxed);
+    atomic_compare_exchange_strong_explicit(
+        &n->stack_base, &expected, NULL,
+        memory_order_acq_rel, memory_order_acquire);
+}
+
+void goc_fiber_roots_init(void)
+{
+    prev_push_roots = GC_get_push_other_roots();
+    GC_set_push_other_roots(push_fiber_roots);
+}
 
 /* ---------------------------------------------------------------------------
  * Live-channels registry
@@ -199,6 +278,9 @@ void goc_init(void) {
 
     /* Step 1 — Initialise Boehm GC. */
     GC_INIT();
+
+    /* Step 1.1 — Register fiber-stack push callback (replaces GC_add_roots). */
+    goc_fiber_roots_init();
 
     /* Step 2 — Allow worker threads to register themselves with the GC. */
     GC_allow_register_threads();

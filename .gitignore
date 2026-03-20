@@ -72,3 +72,4 @@ build_orig/
 # Go module cache (accidentally committed)
 root/
 pr.md
+bench/libgoc/gc_fix.md

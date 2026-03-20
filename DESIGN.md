@@ -474,21 +474,9 @@ The join channel may be ignored if no join is needed — the channel is GC-alloc
 
 ### Suspend / Resume
 
-Fibers suspend by calling `mco_yield` and are resumed by the pool worker calling `mco_resume`. The GC root window for the fiber's stack must remain live for the **entire suspension window** — from the moment the fiber parks until it is resumed. Roots are added before yield and removed after resume on the worker side.
+Fibers suspend by calling `mco_yield` and are resumed by the pool worker calling `mco_resume`. Each fiber's stack must be scanned by the GC while the fiber is suspended — its local variables may hold pointers to GC-managed objects. Rather than calling `GC_add_roots`/`GC_remove_roots` around every yield (which would exhaust BDW-GC's fixed internal root-set table when large numbers of fibers are created), libgoc registers a `GC_push_other_roots` callback (see **GC Fiber Stack Roots** below) that scans all live fiber stacks at each GC mark phase.
 
-```c
-/* inside goc_take / goc_put, on a pool thread */
-GC_add_roots(stack_base, stack_base + stack_size);
-mco_yield(coro);   /* suspend — fiber stack now a GC root */
-
-/* --- fiber is parked here; GC may run --- */
-
-/* resume — mco_resume returns here when fiber is rescheduled */
-GC_remove_roots(stack_base, stack_base + stack_size);
-/* registers are live again; stack no longer needs to be an explicit root */
-```
-
-> **`goc_entry` as a GC root across fiber exit:** The `goc_entry` itself (not just the stack) must remain a GC root from fiber launch until *after* the fiber's final resume returns on the scheduler side. To close this window, the scheduler loop holds `goc_entry* entry` as a **local variable on the scheduler stack** and calls `GC_add_roots(&entry, &entry + 1)` *before* `mco_resume`. `GC_remove_roots` is called only *after* `mco_resume` returns.
+Each fiber's stack is registered once at birth (in `goc_go_on`, `src/fiber.c`) and unregistered once at death (in `pool_worker_fn` before `mco_destroy`, `src/pool.c`).
 
 ---
 
@@ -510,7 +498,7 @@ libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switch
 
 ### `goc_take(ch)` — fiber context only
 
-> **Must only be called from within a fiber.** The slow path calls `mco_running()` and asserts the result is non-NULL; calling `goc_take` from a bare OS thread aborts with a diagnostic message rather than silently crashing inside `GC_add_roots`.
+> **Must only be called from within a fiber.** The slow path calls `mco_running()` and asserts the result is non-NULL; calling `goc_take` from a bare OS thread aborts with a diagnostic message rather than silently crashing.
 
 ```
 assert(mco_running() != NULL)   /* fiber-context guard */
@@ -529,16 +517,14 @@ else:
     /* current_pool = ((goc_entry*)mco_get_user_data(mco_running()))->pool */
     entry.stack_canary_ptr = mco_running()->stack_base   /* required: pool worker checks this on re-resume */
     push onto ch->takers
-    GC_add_roots(stack)
     uv_mutex_unlock
     mco_yield → suspend
 
     /* resumes here */
-    GC_remove_roots(stack)
     return {*result_slot, entry->ok}
 ```
 
-`goc_put` is the exact mirror, with the same fiber-context assert, the same `stack_canary_ptr` initialization, and the same GC root registration (`GC_add_roots` / `GC_remove_roots`) in its slow path. The `current_pool` retrieval is identical. Do not omit either `stack_canary_ptr` or GC root registration from `goc_put` — the pool worker dereferences `stack_canary_ptr` on every resume (including re-resumes after a channel wake), and the fiber's stack must remain a GC root for the entire duration it is parked.
+`goc_put` is the exact mirror, with the same fiber-context assert and the same `stack_canary_ptr` initialization in its slow path. The `current_pool` retrieval is identical. Do not omit `stack_canary_ptr` from `goc_put` — the pool worker dereferences it on every resume (including re-resumes after a channel wake).
 
 ### `goc_take_cb(ch, cb, ud)` — any context
 
@@ -695,7 +681,6 @@ Each worker thread runs a loop:
 while not shutdown:
     wait on work_sem
     goc_entry* entry = runq_pop()
-    GC_add_roots(&entry, &entry + 1)   /* entry reachable for entire mco_resume window */
     if *entry->stack_canary_ptr != GOC_STACK_CANARY:
         abort()                        /* stack overflow — deterministic crash, not silent corruption
                                           applies to ALL entry kinds: launch entries AND goc_alts
@@ -712,11 +697,12 @@ while not shutdown:
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
 
     GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
-    GC_remove_roots(&entry, &entry + 1)
     lock(drain_mutex); active_count--; unlock(drain_mutex)
     /* active_count is decremented unconditionally.  The lock is released before
        checking MCO_DEAD to avoid holding drain_mutex across mco_destroy. */
     if mco_status(coro) == MCO_DEAD:
+        fe = mco_get_user_data(coro)
+        goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
         mco_destroy(coro)
         lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
@@ -732,6 +718,12 @@ while not shutdown:
 > **GC Stack Bottom Redirect.** When `mco_resume` switches the CPU stack pointer (RSP) from the worker OS thread's stack into the fiber's stack, the Boehm GC stop-the-world handler captures that fiber-stack RSP as the "bottom of the stack to scan". GC then tries to scan from that RSP all the way up to the worker thread's registered OS-stack bottom — a range potentially spanning the entire virtual address space between the two stacks. That range contains unmapped pages, causing SIGSEGV inside the GC marker thread on every collection cycle.
 >
 > **Fix:** Before `mco_resume`, call `GC_get_my_stackbottom` to save the worker's current OS-thread stack bottom, then `GC_set_stackbottom(NULL, &fiber_sb)` to redirect GC's scan to `[fiber_RSP, fiber_stack_top]` — the actual fiber stack. After `mco_resume` returns (fiber has yielded or exited), restore the original OS thread stack bottom with `GC_set_stackbottom(NULL, &orig_sb)`. This keeps the GC scan range valid for the entire duration of fiber execution and eliminates the inter-stack SIGSEGV.
+
+> **GC Fiber Stack Roots.** While a fiber is suspended between `mco_yield` and the next `mco_resume`, its stack is not associated with any OS-thread stack that the GC scans automatically. The fiber's local variables may hold pointers to GC-managed objects, so the fiber stack must be treated as a GC root during the suspension window.
+>
+> **Why not `GC_add_roots`?** BDW-GC's `GC_add_roots` / `GC_remove_roots` store entries in a fixed internal table (`MAX_ROOT_SETS` ≈ 2048). Benchmarks that spawn large numbers of fibers (e.g. `bench_spawn_idle` with 200 000 fibers) exhaust this table, causing BDW-GC to abort with `"Too many root sets"`.
+>
+> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that iterates a lock-free linked list of live fiber stacks and calls `GC_push_all_eager` for each live entry during every GC mark phase. The list is manipulated with atomic CAS operations only — no mutex — because BDW-GC's stop-the-world suspends threads via SIGPWR on Linux; a mutex in the callback would deadlock if a stopped thread held it. Each fiber registers on birth (`goc_go_on`, O(1) CAS-prepend) and unregisters on death (`pool_worker_fn` before `mco_destroy`, O(1) CAS to NULL via the stored handle). Dead nodes remain in the list but are skipped by the callback; memory overhead is one `malloc`'d node per fiber lifetime.
 
 The invariant is:
 
@@ -1128,11 +1120,12 @@ uv_tcp_init(goc_scheduler(), server);
 `goc_init` must be called exactly once, as the first call in `main()`. Calling it more than once is undefined behaviour. It performs the following steps:
 
 1. **`gc.c`** — Call `GC_INIT()` then `GC_allow_register_threads()` unconditionally. `GC_INIT()` performs all one-time GC setup; `GC_allow_register_threads()` enables multi-thread stack registration and must follow it. This must happen before any `goc_malloc` call.
-2. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 5) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
-3. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 5). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
-4. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
-5. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `gc_pthread_create` so thread registration is handled by Boehm's wrapper (on POSIX: `GC_pthread_create`; on Windows: a trampoline). All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
-6. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
+2. **`gc.c`** — Register the `push_fiber_roots` callback via `GC_set_push_other_roots`. This replaces per-fiber `GC_add_roots` / `GC_remove_roots` calls (which would exhaust BDW-GC's fixed root-set table) with a single callback that scans all live fiber stacks at each GC mark phase. Must run after `GC_INIT()` and before any fiber is created.
+3. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`). Must be fully initialised before the loop thread is spawned (step 6) — the loop thread could indirectly trigger `goc_chan_make`, which acquires `g_live_mutex`. `goc_chan_make` is responsible for appending to it; `goc_close` removes entries. Required by `goc_shutdown`.
+4. **`pool.c`** — Initialise the global pool registry (a `malloc`-allocated list protected by a `uv_mutex_t`). Must be fully initialised before the loop thread is spawned (step 6). Read `GOC_POOL_THREADS` from the environment; default to `max(4, hardware_concurrency)`. Every subsequent `goc_pool_make` call appends to this registry; `goc_pool_destroy` removes the entry. `goc_shutdown` iterates the registry to drain and destroy any pools that remain at teardown time.
+5. **`mutex.c`** — Initialise the global RW-mutex registry (a `malloc`-allocated list protected by a `uv_mutex_t`). `goc_mutex_make` appends to this registry so `goc_shutdown` can destroy the internal `uv_mutex_t` lock for every live `goc_mutex`.
+6. **`loop.c`** — Call `loop_init()`. Internally this: allocates and initialises `g_loop`; malloc-allocates and initialises both `uv_async_t` handles (`g_wakeup` via atomic release store, `g_shutdown_async`); calls `cb_queue_init()` to allocate the MPSC sentinel node (must precede thread spawn and requires GC already up); then spawns the dedicated loop thread via `gc_pthread_create` so thread registration is handled by Boehm's wrapper (on POSIX: `GC_pthread_create`; on Windows: a trampoline). All shared state the loop thread can reach (`g_live_mutex`, pool registry, async handles, callback queue) is fully initialised at this point. It runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime.
+7. **`pool.c`** — Call `goc_pool_make(N)` for the default pool, storing the result globally. This spawns the worker threads; done last so workers start only after the full runtime is up.
 
 ---
 

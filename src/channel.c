@@ -305,15 +305,9 @@ goc_val_t* goc_take(goc_chan* ch)
     goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
     atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
 
-    void* stack_base = e.coro->stack_base;
-    void* stack_top  = (char*)stack_base + e.coro->stack_size;
-    GC_add_roots(stack_base, stack_top);
-
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
-
-    GC_remove_roots(stack_base, stack_top);
 
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
     r->val = local_result; r->ok = e.ok;
@@ -381,15 +375,9 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
     atomic_store_explicit(&fiber_entry->parked, 0, memory_order_release);
 
-    void* stack_base = e.coro->stack_base;
-    void* stack_top  = (char*)stack_base + e.coro->stack_size;
-    GC_add_roots(stack_base, stack_top);
-
     uv_mutex_unlock(ch->lock);
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
-
-    GC_remove_roots(stack_base, stack_top);
 
     return e.ok;
 }

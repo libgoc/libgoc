@@ -71,6 +71,16 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
         abort();
     }
 
+    /* 6. Register the fiber stack so BDW-GC scans it while the fiber is
+     *    suspended.  Uses a GC_push_other_roots callback (gc.c) instead of
+     *    GC_add_roots to avoid exhausting BDW-GC's fixed root-set table when
+     *    large numbers of fibers are created (e.g. bench_spawn_idle).
+     *    Unregistered in pool.c before mco_destroy when the fiber reaches
+     *    MCO_DEAD. */
+    void* fiber_stack_base = entry->coro->stack_base;
+    void* fiber_stack_top  = (char*)fiber_stack_base + entry->coro->stack_size;
+    entry->fiber_root_handle = goc_fiber_root_register(fiber_stack_base, fiber_stack_top);
+
     /* 6. Record the canary pointer (lowest word of the fiber stack). */
     goc_stack_canary_init(entry);
 

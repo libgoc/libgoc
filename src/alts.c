@@ -390,11 +390,6 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
         }
     }
 
-    /* Register fiber stack as a GC root for the suspension window. */
-    void *stack_base = running->stack_base;
-    void *stack_top  = (char *)stack_base + running->stack_size;
-    GC_add_roots(stack_base, stack_top);
-
     /* Set parked = 0 on the fiber's initial entry while all channel locks are
      * still held.  wake() / goc_close() spin on this flag (via pool_worker_fn
      * setting it back to 1 after mco_resume returns) to avoid resuming the
@@ -416,7 +411,6 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     /* Phase 7 — On resume                                                 */
     /* ------------------------------------------------------------------ */
-    GC_remove_roots(stack_base, stack_top);
 
     /* Cancel all losing entries (woken == 0). */
     goc_entry *winner = NULL;

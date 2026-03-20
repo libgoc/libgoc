@@ -102,6 +102,7 @@ struct goc_entry {
     goc_pool*          pool;            /* pool on which the fiber runs */
     mco_coro*          coro;            /* the fiber's coroutine handle */
     uint32_t*          stack_canary_ptr;/* points to lowest stack word; checked before resume */
+    void*              fiber_root_handle; /* opaque handle returned by goc_fiber_root_register */
 
     /* Result delivery */
     void**             result_slot;     /* where the delivered value is written */
@@ -193,6 +194,11 @@ struct goc_entry {
 /* gc.c → used by channel.c */
 void chan_register(goc_chan* ch);
 void chan_unregister(goc_chan* ch);
+
+/* gc.c → used by fiber.c, pool.c */
+void* goc_fiber_root_register(void* base, void* top);
+void  goc_fiber_root_unregister(void* handle);
+void  goc_fiber_roots_init(void);
 
 /* pool.c → used by fiber.c, channel.c */
 void post_to_run_queue(goc_pool* pool, goc_entry* entry);
