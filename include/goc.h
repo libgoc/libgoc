@@ -72,7 +72,7 @@ typedef struct {
 } goc_alt_op;
 
 typedef struct {
-    size_t    index;
+    goc_chan* ch;
     goc_val_t value;
 } goc_alts_result;
 
@@ -194,10 +194,12 @@ void goc_close(goc_chan* ch);
  * goc_take() — Receive a value from ch (fiber context).
  *
  * Parks the calling fiber until a value is available or the channel is closed.
- * Returns {val, GOC_OK} on success, {NULL, GOC_CLOSED} if the channel is
- * closed and empty.
+ * Returns a GC-managed pointer to {val, GOC_OK} on success, or {NULL,
+ * GOC_CLOSED} if the channel is closed and empty. The returned pointer is
+ * valid until the next GC cycle; callers that need to retain it across a
+ * yield should store it on the GC heap or in a GC root.
  */
-goc_val_t goc_take(goc_chan* ch);
+goc_val_t* goc_take(goc_chan* ch);
 
 /**
  * goc_put() — Send val to ch (fiber context).
@@ -221,21 +223,21 @@ goc_status_t goc_put(goc_chan* ch, void* val);
  * Blocks the calling OS thread until a value is available or the channel is
  * closed. Must not be called from a fiber; 
  * calling from fiber context aborts with a diagnostic message.
- * Returns {val, GOC_OK} or {NULL, GOC_CLOSED}.
+ * Returns a GC-managed pointer to {val, GOC_OK} or {NULL, GOC_CLOSED}.
  */
-goc_val_t goc_take_sync(goc_chan* ch);
+goc_val_t* goc_take_sync(goc_chan* ch);
 
 /**
  * goc_take_try() — Non-blocking receive (any context).
  *
- * Returns immediately with one of:
+ * Returns immediately with a GC-managed pointer to one of:
  *   {val,  GOC_OK}     — a value was available and has been dequeued.
  *   {NULL, GOC_CLOSED} — the channel is closed and empty.
  *   {NULL, GOC_EMPTY}  — the channel is open but has no value ready.
  *
  * Never parks the caller.
  */
-goc_val_t goc_take_try(goc_chan* ch);
+goc_val_t* goc_take_try(goc_chan* ch);
 
 /**
  * goc_put_sync() — Blocking send to ch (OS thread context).
@@ -327,13 +329,15 @@ goc_chan* goc_write_lock(goc_mutex* mx);
  *
  * Parks the calling fiber until exactly one arm fires.
  *
- * Returns {index, {val, ok}} identifying the arm that fired.  For put arms,
- * value.val is NULL; value.ok is GOC_OK or GOC_CLOSED.
+ * Returns a GC-managed pointer to {ch, {val, ok}} identifying the arm that
+ * fired.  ch is the channel pointer from the winning arm, or NULL when the
+ * GOC_ALT_DEFAULT arm fires.  For put arms, value.val is NULL; value.ok is
+ * GOC_OK or GOC_CLOSED.
  *
  * Must only be called from within a fiber; calling from OS thread context
  * aborts with a diagnostic message.
  */
-goc_alts_result goc_alts(goc_alt_op* ops, size_t n);
+goc_alts_result* goc_alts(goc_alt_op* ops, size_t n);
 
 /**
  * goc_alts_sync() — Select over multiple channel operations (OS thread context).
@@ -342,7 +346,7 @@ goc_alts_result goc_alts(goc_alt_op* ops, size_t n);
  * parking a fiber. Must not be called from a fiber;
  * calling from fiber context aborts with a diagnostic message.
  */
-goc_alts_result goc_alts_sync(goc_alt_op* ops, size_t n);
+goc_alts_result* goc_alts_sync(goc_alt_op* ops, size_t n);
 
 /* -------------------------------------------------------------------------
  * Timeout
@@ -374,6 +378,17 @@ goc_chan* goc_timeout(uint64_t ms);
  * not explicitly destroyed first.
  */
 goc_pool* goc_pool_make(size_t threads);
+
+/**
+ * goc_default_pool() — Return the default thread pool created by goc_init().
+ *
+ * The default pool is created during goc_init() with a thread count of
+ * max(4, hardware_concurrency) unless overridden by the GOC_POOL_THREADS
+ * environment variable.  The returned pointer is valid from goc_init() until
+ * goc_shutdown() returns.  Callers may pass this pool to goc_go_on() to
+ * explicitly target the default pool.
+ */
+goc_pool* goc_default_pool(void);
 
 /**
  * goc_pool_destroy() — Drain and destroy pool.

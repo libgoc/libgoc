@@ -143,13 +143,13 @@ static void test_p3_1(void) {
     goc_chan* join = goc_go(send_fiber_fn, &args);
     ASSERT(join != NULL);
 
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT((uintptr_t)v.val == 0xDEADBEEFUL);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT((uintptr_t)v->val == 0xDEADBEEFUL);
 
     /* Wait for the fiber to finish. */
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     goc_close(ch);
     TEST_PASS();
@@ -189,13 +189,13 @@ static void test_p3_2(void) {
     ASSERT(join != NULL);
 
     /* Wait for the fiber to finish filling before draining. */
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     for (int i = 0; i < P3_2_COUNT; i++) {
-        goc_val_t v = goc_take_sync(ch);
-        ASSERT(v.ok == GOC_OK);
-        ASSERT((uintptr_t)v.val == (uintptr_t)i);
+        goc_val_t* v = goc_take_sync(ch);
+        ASSERT(v->ok == GOC_OK);
+        ASSERT((uintptr_t)v->val == (uintptr_t)i);
     }
 
     goc_close(ch);
@@ -215,9 +215,9 @@ static void test_p3_3(void) {
     goc_chan* ch = goc_chan_make(4);
     ASSERT(ch != NULL);
 
-    goc_val_t v = goc_take_try(ch);
-    ASSERT(v.ok == GOC_EMPTY);
-    ASSERT(v.val == NULL);
+    goc_val_t* v = goc_take_try(ch);
+    ASSERT(v->ok == GOC_EMPTY);
+    ASSERT(v->val == NULL);
 
     goc_close(ch);
     TEST_PASS();
@@ -239,9 +239,9 @@ static void test_p3_4(void) {
     goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)99);
     ASSERT(st == GOC_OK);
 
-    goc_val_t v = goc_take_try(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT((uintptr_t)v.val == 99);
+    goc_val_t* v = goc_take_try(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT((uintptr_t)v->val == 99);
 
     goc_close(ch);
     TEST_PASS();
@@ -262,9 +262,9 @@ static void test_p3_5(void) {
 
     goc_close(ch);
 
-    goc_val_t v = goc_take_try(ch);
-    ASSERT(v.ok == GOC_CLOSED);
-    ASSERT(v.val == NULL);
+    goc_val_t* v = goc_take_try(ch);
+    ASSERT(v->ok == GOC_CLOSED);
+    ASSERT(v->val == NULL);
 
     TEST_PASS();
 done:;
@@ -284,9 +284,9 @@ static void test_p3_6(void) {
 
     goc_close(ch);
 
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_CLOSED);
-    ASSERT(v.val == NULL);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_CLOSED);
+    ASSERT(v->val == NULL);
 
     TEST_PASS();
 done:;
@@ -302,7 +302,7 @@ done:;
 
 typedef struct {
     goc_chan*    ch;
-    goc_val_t    result;
+    goc_val_t*   result;
     done_t*      parked; /* signalled just before the blocking call */
 } sync_taker_args_t;
 
@@ -336,8 +336,8 @@ static void test_p3_7(void) {
     goc_close(ch);
     pthread_join(tid, NULL);
 
-    ASSERT(args.result.ok == GOC_CLOSED);
-    ASSERT(args.result.val == NULL);
+    ASSERT(args.result->ok == GOC_CLOSED);
+    ASSERT(args.result->val == NULL);
 
     done_destroy(&parked);
     TEST_PASS();
@@ -355,7 +355,7 @@ done:;
 typedef struct {
     goc_chan*    ch;
     done_t*      ready;   /* signalled when the fiber is about to take */
-    goc_val_t    result;  /* filled in by the fiber after goc_take returns */
+    goc_val_t*   result;  /* filled in by the fiber after goc_take returns */
     done_t*      done;    /* signalled after the fiber records the result */
 } take_fiber_args_t;
 
@@ -397,11 +397,11 @@ static void test_p3_8(void) {
     /* Wait for the fiber to record its result. */
     done_wait(&done_sem);
 
-    ASSERT(args.result.ok == GOC_OK);
-    ASSERT((uintptr_t)args.result.val == 0xCAFEUL);
+    ASSERT(args.result->ok == GOC_OK);
+    ASSERT((uintptr_t)args.result->val == 0xCAFEUL);
 
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     goc_close(ch);
     done_destroy(&ready);
@@ -470,7 +470,7 @@ done:;
 typedef struct {
     goc_chan*  ch;
     done_t*    parked;   /* signalled before goc_take */
-    goc_val_t  result;
+    goc_val_t* result;
     done_t*    done;     /* signalled after goc_take returns */
 } parked_taker_args_t;
 
@@ -509,11 +509,11 @@ static void test_p3_10(void) {
     /* Wait for the fiber to record its result. */
     done_wait(&done_sem);
 
-    ASSERT(args.result.ok == GOC_CLOSED);
-    ASSERT(args.result.val == NULL);
+    ASSERT(args.result->ok == GOC_CLOSED);
+    ASSERT(args.result->val == NULL);
 
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     done_destroy(&parked);
     done_destroy(&done_sem);
@@ -571,8 +571,8 @@ static void test_p3_11(void) {
 
     ASSERT(args.result == GOC_CLOSED);
 
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     done_destroy(&parked);
     done_destroy(&done_sem);
@@ -601,23 +601,23 @@ static void test_p3_12(void) {
     ASSERT(join != NULL);
 
     /* Wait for the fiber to finish filling. */
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     /* Close with values still in the ring. */
     goc_close(ch);
 
     /* Drain: expect all N values with GOC_OK. */
     for (int i = 0; i < P3_12_COUNT; i++) {
-        goc_val_t v = goc_take_sync(ch);
-        ASSERT(v.ok == GOC_OK);
-        ASSERT((uintptr_t)v.val == (uintptr_t)i);
+        goc_val_t* v = goc_take_sync(ch);
+        ASSERT(v->ok == GOC_OK);
+        ASSERT((uintptr_t)v->val == (uintptr_t)i);
     }
 
     /* The next take must return GOC_CLOSED. */
-    goc_val_t last = goc_take_sync(ch);
-    ASSERT(last.ok == GOC_CLOSED);
-    ASSERT(last.val == NULL);
+    goc_val_t* last = goc_take_sync(ch);
+    ASSERT(last->ok == GOC_CLOSED);
+    ASSERT(last->val == NULL);
 
     TEST_PASS();
 done:;
@@ -648,13 +648,13 @@ static void drain_fiber_fn(void* arg) {
     a->order_ok   = true;
 
     for (;;) {
-        goc_val_t v = goc_take(a->ch);
-        if (v.ok == GOC_CLOSED) {
+        goc_val_t* v = goc_take(a->ch);
+        if (v->ok == GOC_CLOSED) {
             a->got_closed = true;
             break;
         }
-        if (v.ok == GOC_OK) {
-            if ((uintptr_t)v.val != (uintptr_t)a->ok_count) {
+        if (v->ok == GOC_OK) {
+            if ((uintptr_t)v->val != (uintptr_t)a->ok_count) {
                 a->order_ok = false;
             }
             a->ok_count++;
@@ -673,8 +673,8 @@ static void test_p3_13(void) {
     goc_chan* fill_join = goc_go(fill_fiber_fn, &fill);
     ASSERT(fill_join != NULL);
 
-    goc_val_t fjv = goc_take_sync(fill_join);
-    ASSERT(fjv.ok == GOC_CLOSED);
+    goc_val_t* fjv = goc_take_sync(fill_join);
+    ASSERT(fjv->ok == GOC_CLOSED);
 
     /* Close with values in the ring. */
     goc_close(ch);
@@ -697,8 +697,8 @@ static void test_p3_13(void) {
     ASSERT(drain.got_closed == true);
     ASSERT(drain.order_ok == true);
 
-    goc_val_t djv = goc_take_sync(drain_join);
-    ASSERT(djv.ok == GOC_CLOSED);
+    goc_val_t* djv = goc_take_sync(drain_join);
+    ASSERT(djv->ok == GOC_CLOSED);
 
     done_destroy(&done_sem);
     TEST_PASS();
@@ -726,12 +726,12 @@ static void test_p3_14(void) {
     goc_chan* join = goc_go(null_sender_fn, ch);
     ASSERT(join != NULL);
 
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT(v.val == NULL);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT(v->val == NULL);
 
-    goc_val_t jv = goc_take_sync(join);
-    ASSERT(jv.ok == GOC_CLOSED);
+    goc_val_t* jv = goc_take_sync(join);
+    ASSERT(jv->ok == GOC_CLOSED);
 
     goc_close(ch);
     TEST_PASS();

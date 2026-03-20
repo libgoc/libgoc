@@ -110,37 +110,37 @@ static goc_alts_result alts_try_immediate(goc_alt_op *ops, size_t *indices, size
             void *val = NULL;
             if (chan_take_from_buffer(ch, &val)) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = val, .ok = GOC_OK } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = val, .ok = GOC_OK } };
             }
             if (chan_take_from_putter(ch, &val)) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = val, .ok = GOC_OK } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = val, .ok = GOC_OK } };
             }
             if (ch->closed && ch->buf_count == 0) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = NULL, .ok = GOC_CLOSED } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = NULL, .ok = GOC_CLOSED } };
             }
             uv_mutex_unlock(ch->lock);
         } else { /* GOC_ALT_PUT */
             uv_mutex_lock(ch->lock);
             if (ch->closed) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = NULL, .ok = GOC_CLOSED } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = NULL, .ok = GOC_CLOSED } };
             }
             if (chan_put_to_buffer(ch, ops[i].put_val)) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = NULL, .ok = GOC_OK } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = NULL, .ok = GOC_OK } };
             }
             if (chan_put_to_taker(ch, ops[i].put_val)) {
                 uv_mutex_unlock(ch->lock);
-                return (goc_alts_result){ .index = i, .value = { .val = NULL, .ok = GOC_OK } };
+                return (goc_alts_result){ .ch = ch, .value = { .val = NULL, .ok = GOC_OK } };
             }
             uv_mutex_unlock(ch->lock);
         }
     }
 
-    /* No arm immediately ready */
-    return (goc_alts_result){ .index = (size_t)-1, .value = { .val = NULL, .ok = GOC_EMPTY } };
+    /* No arm immediately ready — use ch == NULL as sentinel */
+    return (goc_alts_result){ .ch = NULL, .value = { .val = NULL, .ok = GOC_EMPTY } };
 }
 
 /* -------------------------------------------------------------------------
@@ -196,7 +196,7 @@ static size_t alts_dedup_sort_channels(goc_alt_op *ops, size_t n,
  *
  * assert(mco_running() != NULL)
  * ------------------------------------------------------------------------- */
-goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
+goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     /* Fiber-context guard                                                  */
     /* ------------------------------------------------------------------ */
@@ -224,14 +224,18 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
     /* Phase 2 — Non-blocking scan                                         */
     /* ------------------------------------------------------------------ */
     goc_alts_result immediate = alts_try_immediate(ops, indices, n_nondefault);
-    if (immediate.index != (size_t)-1) {
-        return immediate;
+    if (immediate.ch != NULL) {
+        goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+        *res = immediate;
+        return res;
     }
 
     /* Default arm fires if no non-default arm was immediately ready. */
     if (default_idx != (size_t)-1) {
-        return (goc_alts_result){ .index = default_idx,
-                                  .value = { .val = NULL, .ok = GOC_OK } };
+        goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+        res->ch    = ops[default_idx].ch; /* NULL for GOC_ALT_DEFAULT arms */
+        res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+        return res;
     }
 
     /* ------------------------------------------------------------------ */
@@ -316,22 +320,25 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = val, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
+                return res;
             }
             if (chan_take_from_putter(ch, &val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = val, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
+                return res;
             }
             if (ch->closed && ch->buf_count == 0) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_CLOSED } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
+                return res;
             }
 
         } else { /* GOC_ALT_PUT */
@@ -339,22 +346,25 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_CLOSED } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
+                return res;
             }
             if (chan_put_to_taker(ch, ops[i].put_val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+                return res;
             }
             if (chan_put_to_buffer(ch, ops[i].put_val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+                return res;
             }
         }
     }
@@ -429,8 +439,10 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
 
     /* winner must not be NULL — the runtime guarantees exactly one wake */
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
-    return (goc_alts_result){ .index = winner->arm_idx,
-                              .value = { .val = result_val, .ok = winner->ok } };
+    goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+    res->ch    = ops[winner->arm_idx].ch;
+    res->value = (goc_val_t){ .val = result_val, .ok = winner->ok };
+    return res;
 }
 
 /* -------------------------------------------------------------------------
@@ -441,7 +453,7 @@ goc_alts_result goc_alts(goc_alt_op *ops, size_t n) {
  *   - Entries use GOC_SYNC and share a single goc_sync_t on the OS stack.
  *   - Yield is replaced by goc_sync_wait; goc_sync_destroy is called after.
  * ------------------------------------------------------------------------- */
-goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
+goc_alts_result* goc_alts_sync(goc_alt_op *ops, size_t n) {
     if (mco_running() != NULL) {
         fprintf(stderr, "goc_alts_sync: cannot be called from fiber context\n");
         abort();
@@ -459,13 +471,17 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
     /* Phase 2 — Non-blocking scan                                         */
     /* ------------------------------------------------------------------ */
     goc_alts_result immediate = alts_try_immediate(ops, indices, n_nondefault);
-    if (immediate.index != (size_t)-1) {
-        return immediate;
+    if (immediate.ch != NULL) {
+        goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+        *res = immediate;
+        return res;
     }
 
     if (default_idx != (size_t)-1) {
-        return (goc_alts_result){ .index = default_idx,
-                                  .value = { .val = NULL, .ok = GOC_OK } };
+        goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+        res->ch    = ops[default_idx].ch; /* NULL for GOC_ALT_DEFAULT arms */
+        res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+        return res;
     }
 
     /* ------------------------------------------------------------------ */
@@ -554,24 +570,27 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = val, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
+                return res;
             }
             if (chan_take_from_putter(ch, &val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = val, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
+                return res;
             }
             if (ch->closed && ch->buf_count == 0) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_CLOSED } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
+                return res;
             }
 
         } else { /* GOC_ALT_PUT */
@@ -580,24 +599,27 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_CLOSED } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
+                return res;
             }
             if (chan_put_to_taker(ch, ops[i].put_val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+                return res;
             }
             if (chan_put_to_buffer(ch, ops[i].put_val)) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                return (goc_alts_result){ .index = i,
-                                          .value = { .val = NULL, .ok = GOC_OK } };
+                goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+                res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
+                return res;
             }
         }
     }
@@ -660,6 +682,8 @@ goc_alts_result goc_alts_sync(goc_alt_op *ops, size_t n) {
     }
 
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
-    return (goc_alts_result){ .index = winner->arm_idx,
-                              .value = { .val = result_val, .ok = winner->ok } };
+    goc_alts_result* res = goc_malloc(sizeof(goc_alts_result));
+    res->ch    = ops[winner->arm_idx].ch;
+    res->value = (goc_val_t){ .val = result_val, .ok = winner->ok };
+    return res;
 }

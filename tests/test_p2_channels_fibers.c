@@ -147,9 +147,9 @@ static void test_p2_2(void) {
      * Put 1 value synchronously from an OS thread to confirm buffering works. */
     goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)42);
     ASSERT(st == GOC_OK);
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT((uintptr_t)v.val == 42);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT((uintptr_t)v->val == 42);
     goc_close(ch);
     TEST_PASS();
 done:;
@@ -293,8 +293,8 @@ static void test_p2_4(void) {
     done_wait(&done);
 
     /* Join channel must be closed (fiber has returned). */
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     done_destroy(&done);
     TEST_PASS();
@@ -328,8 +328,8 @@ static void test_p2_5(void) {
 
     ASSERT(probe.received_arg == probe.expected_arg);
 
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     done_destroy(&done);
     TEST_PASS();
@@ -362,8 +362,8 @@ static void test_p2_6(void) {
 
     ASSERT(probe.in_fiber_flag == true);
 
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     done_destroy(&done);
     TEST_PASS();
@@ -423,8 +423,8 @@ static void test_p2_7(void) {
     ASSERT(join != NULL);
 
     /* Block the main thread until the join channel is closed. */
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     /* Fiber must have signalled before we could unblock. */
     /* (done_wait would return immediately if already signalled) */
@@ -461,8 +461,8 @@ typedef struct {
  */
 static void waiter_fiber_fn(void* arg) {
     waiter_fiber_args_t* a = (waiter_fiber_args_t*)arg;
-    goc_val_t v = goc_take(a->join);
-    a->saw_closed = (v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take(a->join);
+    a->saw_closed = (v->ok == GOC_CLOSED);
     done_signal(a->done);
 }
 
@@ -512,11 +512,11 @@ static void test_p2_8(void) {
     ASSERT(wargs.saw_closed == true);
 
     /* Clean up both join channels. */
-    goc_val_t v;
+    goc_val_t* v;
     v = goc_take_sync(target_join);
-    ASSERT(v.ok == GOC_CLOSED);
+    ASSERT(v->ok == GOC_CLOSED);
     v = goc_take_sync(waiter_join);
-    ASSERT(v.ok == GOC_CLOSED);
+    ASSERT(v->ok == GOC_CLOSED);
 
     done_destroy(&done);
     TEST_PASS();

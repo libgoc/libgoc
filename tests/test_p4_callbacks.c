@@ -271,9 +271,9 @@ typedef struct {
 
 static void taker_fiber_fn(void* arg) {
     taker_args_t* a = (taker_args_t*)arg;
-    goc_val_t v = goc_take(a->ch);
-    if (v.ok == GOC_OK) {
-        a->out = (uintptr_t)v.val;
+    goc_val_t* v = goc_take(a->ch);
+    if (v->ok == GOC_OK) {
+        a->out = (uintptr_t)v->val;
     }
     done_signal(a->done);
 }
@@ -354,9 +354,9 @@ static void test_p4_4(void) {
     goc_put_cb(ch, (void*)(uintptr_t)77, NULL, NULL);
 
     /* The value should now be in the ring buffer. Take it synchronously. */
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT((uintptr_t)v.val == 77);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT((uintptr_t)v->val == 77);
 
     goc_close(ch);
     TEST_PASS();
@@ -432,9 +432,9 @@ static void test_p4_6(void) {
     ASSERT(result.ok == GOC_OK);
 
     /* Now drain the buffered value with a synchronous take. */
-    goc_val_t v = goc_take_sync(ch);
-    ASSERT(v.ok == GOC_OK);
-    ASSERT((uintptr_t)v.val == 123);
+    goc_val_t* v = goc_take_sync(ch);
+    ASSERT(v->ok == GOC_OK);
+    ASSERT((uintptr_t)v->val == 123);
 
     goc_close(ch);
     done_destroy(&done);

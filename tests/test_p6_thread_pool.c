@@ -162,8 +162,8 @@ static void test_p6_1(void) {
     ASSERT(args.ran == true);
 
     /* Join channel must close once the fiber exits. */
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     /* Destroy the pool — must not crash or hang. */
     goc_pool_destroy(pool);
@@ -318,14 +318,14 @@ static void test_p6_3(void) {
     done_wait(&short_done);
     ASSERT(sargs.ran == true);
 
-    goc_val_t sv = goc_take_sync(short_join);
-    ASSERT(sv.ok == GOC_CLOSED);
+    goc_val_t* sv = goc_take_sync(short_join);
+    ASSERT(sv->ok == GOC_CLOSED);
 
     /* Unblock the long fiber so the pool can be destroyed cleanly. */
     goc_close(blocker);
 
-    goc_val_t lv = goc_take_sync(long_join);
-    ASSERT(lv.ok == GOC_CLOSED);
+    goc_val_t* lv = goc_take_sync(long_join);
+    ASSERT(lv->ok == GOC_CLOSED);
 
     goc_pool_destroy(pool);
 
@@ -402,8 +402,8 @@ static void test_p6_4(void) {
     done_wait(&done);
 
     /* Wait for the fiber to fully exit (join channel closes). */
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     /* Traverse the list; every node must be present and in order. */
     p6_node_t* node = args.result;
@@ -438,7 +438,7 @@ done:;
 typedef struct {
     goc_chan*       channels[P6_5_ARM_COUNT];
     int             winner_idx;
-    goc_alts_result result;
+    goc_alts_result* result;
     done_t*         done;
 } p6_5_args_t;
 
@@ -497,12 +497,12 @@ static void test_p6_5(void) {
 
     done_wait(&done);
 
-    ASSERT((int)args.result.index == args.winner_idx);
-    ASSERT(args.result.value.ok  == GOC_OK);
-    ASSERT((uintptr_t)args.result.value.val == 0xABCD);
+    ASSERT(args.result->ch == args.channels[args.winner_idx]);
+    ASSERT(args.result->value.ok  == GOC_OK);
+    ASSERT((uintptr_t)args.result->value.val == 0xABCD);
 
-    goc_val_t v = goc_take_sync(join);
-    ASSERT(v.ok == GOC_CLOSED);
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
 
     for (int i = 0; i < P6_5_ARM_COUNT; i++) {
         goc_close(args.channels[i]);

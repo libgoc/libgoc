@@ -241,7 +241,7 @@ void goc_close(goc_chan* ch)
 /* --------------------------------------------------------------------------
  * goc_take  (fiber context only)
  * -------------------------------------------------------------------------- */
-goc_val_t goc_take(goc_chan* ch)
+goc_val_t* goc_take(goc_chan* ch)
 {
     if (mco_running() == NULL) {
         fprintf(stderr, "goc_take called from OS thread\n");
@@ -261,19 +261,25 @@ goc_val_t goc_take(goc_chan* ch)
     /* Fast path: buffered value */
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     /* Fast path: parked putter */
     if (chan_take_from_putter(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     /* Fast path: closed and empty */
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ NULL, GOC_CLOSED };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = NULL; r->ok = GOC_CLOSED;
+        return r;
     }
 
     /* Slow path: park on this channel */
@@ -309,7 +315,9 @@ goc_val_t goc_take(goc_chan* ch)
 
     GC_remove_roots(stack_base, stack_top);
 
-    return (goc_val_t){ local_result, e.ok };
+    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    r->val = local_result; r->ok = e.ok;
+    return r;
 }
 
 /* --------------------------------------------------------------------------
@@ -389,7 +397,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
 /* --------------------------------------------------------------------------
  * goc_take_sync  (OS thread context)
  * -------------------------------------------------------------------------- */
-goc_val_t goc_take_sync(goc_chan* ch)
+goc_val_t* goc_take_sync(goc_chan* ch)
 {
     if (mco_running() != NULL) {
         fprintf(stderr, "goc_take_sync called from fiber\n");
@@ -403,19 +411,25 @@ goc_val_t goc_take_sync(goc_chan* ch)
     /* Fast path: buffered value */
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     /* Fast path: parked putter */
     if (chan_take_from_putter(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     /* Fast path: closed and empty */
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ NULL, GOC_CLOSED };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = NULL; r->ok = GOC_CLOSED;
+        return r;
     }
 
     /* Slow path: park via condvar */
@@ -434,7 +448,9 @@ goc_val_t goc_take_sync(goc_chan* ch)
     goc_sync_wait(&e.sync_obj);
     goc_sync_destroy(&e.sync_obj);
 
-    return (goc_val_t){ e.cb_result, e.ok };
+    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    r->val = e.cb_result; r->ok = e.ok;
+    return r;
 }
 
 /* --------------------------------------------------------------------------
@@ -496,7 +512,7 @@ goc_status_t goc_put_sync(goc_chan* ch, void* val)
 /* --------------------------------------------------------------------------
  * goc_take_try  (non-blocking, any context)
  * -------------------------------------------------------------------------- */
-goc_val_t goc_take_try(goc_chan* ch)
+goc_val_t* goc_take_try(goc_chan* ch)
 {
     uv_mutex_lock(ch->lock);
 
@@ -504,22 +520,30 @@ goc_val_t goc_take_try(goc_chan* ch)
 
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     if (chan_take_from_putter(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ val, GOC_OK };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = val; r->ok = GOC_OK;
+        return r;
     }
 
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        return (goc_val_t){ NULL, GOC_CLOSED };
+        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        r->val = NULL; r->ok = GOC_CLOSED;
+        return r;
     }
 
     /* Open but empty */
     uv_mutex_unlock(ch->lock);
-    return (goc_val_t){ NULL, GOC_EMPTY };
+    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    r->val = NULL; r->ok = GOC_EMPTY;
+    return r;
 }
 
 /* --------------------------------------------------------------------------

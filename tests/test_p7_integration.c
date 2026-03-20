@@ -154,9 +154,9 @@ static void test_p7_1_producer_fn(void* arg) {
 static void test_p7_1_transformer_fn(void* arg) {
     p7_1_transformer_args_t* a = (p7_1_transformer_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->src_ch);
-        if (v.ok != GOC_OK) break;
-        uintptr_t doubled = (uintptr_t)v.val * 2;
+        goc_val_t* v = goc_take(a->src_ch);
+        if (v->ok != GOC_OK) break;
+        uintptr_t doubled = (uintptr_t)v->val * 2;
         goc_status_t st = goc_put(a->dst_ch, (void*)doubled);
         if (st != GOC_OK) break;
     }
@@ -170,9 +170,9 @@ static void test_p7_1_consumer_fn(void* arg) {
     p7_1_consumer_args_t* a = (p7_1_consumer_args_t*)arg;
     uintptr_t sum = 0;
     for (;;) {
-        goc_val_t v = goc_take(a->dst_ch);
-        if (v.ok != GOC_OK) break;
-        sum += (uintptr_t)v.val;
+        goc_val_t* v = goc_take(a->dst_ch);
+        if (v->ok != GOC_OK) break;
+        sum += (uintptr_t)v->val;
     }
     a->sum = sum;
     done_signal(a->done);
@@ -286,9 +286,9 @@ static void test_p7_2_producer_fn(void* arg) {
 static void test_p7_2_worker_fn(void* arg) {
     p7_2_worker_args_t* a = (p7_2_worker_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->work_ch);
-        if (v.ok != GOC_OK) break;
-        uintptr_t result = (uintptr_t)v.val * 2;
+        goc_val_t* v = goc_take(a->work_ch);
+        if (v->ok != GOC_OK) break;
+        uintptr_t result = (uintptr_t)v->val * 2;
         goc_put(a->result_ch, (void*)result);
     }
     /* Signal that this worker is done by putting a sentinel onto the gate. */
@@ -335,7 +335,7 @@ static void test_p7_2(void) {
 
     /* Wait for all workers to finish (each puts one sentinel onto gate_ch). */
     for (int i = 0; i < P7_2_NWORKERS; i++) {
-        goc_val_t g = goc_take_sync(gate_ch);
+        goc_val_t* g = goc_take_sync(gate_ch);
         /* GOC_OK (value delivered) or GOC_CLOSED both signal worker done. */
         (void)g;
     }
@@ -346,9 +346,9 @@ static void test_p7_2(void) {
     /* Drain result_ch and accumulate. */
     uintptr_t sum = 0;
     for (;;) {
-        goc_val_t v = goc_take_sync(result_ch);
-        if (v.ok != GOC_OK) break;
-        sum += (uintptr_t)v.val;
+        goc_val_t* v = goc_take_sync(result_ch);
+        if (v->ok != GOC_OK) break;
+        sum += (uintptr_t)v->val;
     }
 
     /* Wait for producer and all worker fibers. */
@@ -410,9 +410,9 @@ static void test_p7_3(void) {
 
     uintptr_t sum = 0;
     for (;;) {
-        goc_val_t v = goc_take_sync(ch);
-        if (v.ok != GOC_OK) break;
-        sum += (uintptr_t)v.val;
+        goc_val_t* v = goc_take_sync(ch);
+        if (v->ok != GOC_OK) break;
+        sum += (uintptr_t)v->val;
     }
 
     goc_take_sync(pjoin);
@@ -476,9 +476,9 @@ static void test_p7_4(void) {
     memset(seen, 0, sizeof seen);
 
     for (int i = 0; i < P7_4_NSENDERS; i++) {
-        goc_val_t v = goc_take_sync(ch);
-        ASSERT(v.ok == GOC_OK);
-        uintptr_t id = (uintptr_t)v.val;
+        goc_val_t* v = goc_take_sync(ch);
+        ASSERT(v->ok == GOC_OK);
+        uintptr_t id = (uintptr_t)v->val;
         ASSERT(id < P7_4_NSENDERS);
         ASSERT(seen[id] == 0);   /* no duplicate */
         seen[id] = 1;
@@ -587,7 +587,7 @@ static void test_p7_5(void) {
         { .ch = result_ch, .op_kind = GOC_ALT_TAKE },   /* index 0: data */
         { .ch = tch,       .op_kind = GOC_ALT_TAKE },   /* index 1: timeout */
     };
-    goc_alts_result r = goc_alts_sync(ops, 2);
+    goc_alts_result* r = goc_alts_sync(ops, 2);
 
     /* Close result_ch unconditionally — ensures that any fiber still parked
      * as a putter (e.g., the fast fiber if the timeout won on a slow runner)
@@ -609,9 +609,9 @@ static void test_p7_5(void) {
     goc_take_sync(tch);
 
     /* The fast fiber must have won: correct index and value. */
-    ASSERT(r.index == 0);
-    ASSERT(r.value.ok == GOC_OK);
-    ASSERT((uintptr_t)r.value.val == 0xFADE);
+    ASSERT(r->ch == result_ch);
+    ASSERT(r->value.ok == GOC_OK);
+    ASSERT((uintptr_t)r->value.val == 0xFADE);
 
     TEST_PASS();
 done:;

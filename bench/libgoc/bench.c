@@ -19,12 +19,12 @@ typedef struct {
 static void player_loop_fn(void* arg, goc_chan* ret_ch, goc_chan* break_ch) {
     ping_pong_args_t* a = (ping_pong_args_t*)arg;
 
-    goc_val_t v = goc_take(a->recv);
-    if (v.ok != GOC_OK) {
+    goc_val_t* v = goc_take(a->recv);
+    if (v->ok != GOC_OK) {
         goc_close(break_ch);
         return;
     }
-    size_t n = (size_t)(uintptr_t)v.val;
+    size_t n = (size_t)(uintptr_t)v->val;
     if (n >= a->rounds) {
         goc_close(a->send);
         goc_put(ret_ch, NULL);
@@ -37,10 +37,10 @@ static void player_loop_fn(void* arg, goc_chan* ret_ch, goc_chan* break_ch) {
 static void player_fn(void* arg) {
     ping_pong_args_t* a = (ping_pong_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->recv);
-        if (v.ok != GOC_OK)
+        goc_val_t* v = goc_take(a->recv);
+        if (v->ok != GOC_OK)
             return;
-        size_t n = (size_t)(uintptr_t)v.val;
+        size_t n = (size_t)(uintptr_t)v->val;
         if (n >= a->rounds) {
             goc_close(a->send);
             return;
@@ -83,12 +83,12 @@ typedef struct {
 static void ring_node_fn(void* arg) {
     ring_node_args_t* a = (ring_node_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->recv);
-        if (v.ok != GOC_OK) {
+        goc_val_t* v = goc_take(a->recv);
+        if (v->ok != GOC_OK) {
             goc_close(a->send);
             return;
         }
-        size_t n = (size_t)(uintptr_t)v.val;
+        size_t n = (size_t)(uintptr_t)v->val;
         if (n == 0) {
             goc_close(a->send);
             return;
@@ -139,12 +139,12 @@ typedef struct {
 static void fan_out_worker_fn(void* arg) {
     fan_out_worker_args_t* a = (fan_out_worker_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->in);
-        if (v.ok != GOC_OK) {
+        goc_val_t* v = goc_take(a->in);
+        if (v->ok != GOC_OK) {
             goc_close(a->out);
             return;
         }
-        goc_put(a->out, v.val);
+        goc_put(a->out, v->val);
     }
 }
 
@@ -168,12 +168,17 @@ static void fan_in_fn(void* arg) {
 
     size_t received = 0;
     while (received < a->tasks && n_active > 0) {
-        goc_alts_result r = goc_alts(ops, n_active);
-        if (r.value.ok == GOC_OK) {
+        goc_alts_result* r = goc_alts(ops, n_active);
+        if (r->value.ok == GOC_OK) {
             received++;
         } else {
             /* channel closed — remove it by swapping with the last active slot */
-            ops[r.index] = ops[n_active - 1];
+            for (size_t k = 0; k < n_active; k++) {
+                if (ops[k].ch == r->ch) {
+                    ops[k] = ops[n_active - 1];
+                    break;
+                }
+            }
             n_active--;
         }
     }
@@ -272,12 +277,12 @@ typedef struct {
 static void filter_fn(void* arg) {
     filter_args_t* a = (filter_args_t*)arg;
     for (;;) {
-        goc_val_t v = goc_take(a->in);
-        if (v.ok != GOC_OK) {
+        goc_val_t* v = goc_take(a->in);
+        if (v->ok != GOC_OK) {
             goc_close(a->out);
             return;
         }
-        size_t n = (size_t)(uintptr_t)v.val;
+        size_t n = (size_t)(uintptr_t)v->val;
         if (n % a->prime != 0)
             goc_put(a->out, (void*)(uintptr_t)n);
     }
@@ -301,10 +306,10 @@ static void sieve_fn(void* arg) {
     size_t    count = 0;
 
     for (;;) {
-        goc_val_t v = goc_take(ch);
-        if (v.ok != GOC_OK)
+        goc_val_t* v = goc_take(ch);
+        if (v->ok != GOC_OK)
             break;
-        size_t prime = (size_t)(uintptr_t)v.val;
+        size_t prime = (size_t)(uintptr_t)v->val;
         count++;
 
         goc_chan*     next   = goc_chan_make(0);
@@ -327,10 +332,10 @@ static void bench_prime_sieve(size_t max) {
 
     uint64_t t0 = uv_hrtime();
     goc_go(sieve_fn, args);
-    goc_val_t r = goc_take_sync(result_ch);
+    goc_val_t* r = goc_take_sync(result_ch);
     uint64_t t1 = uv_hrtime();
 
-    size_t count = (size_t)(uintptr_t)r.val;
+    size_t count = (size_t)(uintptr_t)r->val;
     double s     = (double)(t1 - t0) / 1e9;
     double rate  = (double)count / s;
     printf("Prime sieve: %zu primes up to %zu in %.3fs (%.0f primes/s)\n",

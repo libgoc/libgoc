@@ -95,3 +95,11 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
 goc_chan* goc_go(void (*fn)(void*), void* arg) {
     return goc_go_on(g_default_pool, fn, arg);
 }
+
+/* ---------------------------------------------------------------------------
+ * goc_default_pool — return the default pool created by goc_init
+ * --------------------------------------------------------------------------- */
+
+goc_pool* goc_default_pool(void) {
+    return g_default_pool;
+}
