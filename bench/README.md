@@ -101,42 +101,6 @@ Spawn idle tasks: 200000 goroutines in 406ms (492388 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 160ms (14136 primes/s)
 ```
 
-### libgoc vmem — `-DLIBGOC_VMEM=ON` — (`make run-all`)
-
-```
-=== Pool Size: 1 ===
-GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 85ms (2343156 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 222ms (2248408 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 642ms (311113 msg/s)
-Spawn idle tasks: 200000 fibers in 10334ms (19353 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 952ms (2375 primes/s)
-
-=== Pool Size: 2 ===
-GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 105ms (1895838 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 301ms (1657377 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 440ms (454532 msg/s)
-Spawn idle tasks: 200000 fibers in 7939ms (25190 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1651ms (1370 primes/s)
-
-=== Pool Size: 4 ===
-GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 333ms (599752 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 944ms (529457 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 547ms (365187 msg/s)
-Spawn idle tasks: 200000 fibers in 10526ms (18999 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1686ms (1342 primes/s)
-
-=== Pool Size: 8 ===
-GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 430ms (464624 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 808ms (618487 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 933ms (214316 msg/s)
-Spawn idle tasks: 200000 fibers in 12828ms (15590 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1580ms (1431 primes/s)
-```
-
 ### libgoc canary — (default) — (`make run-all`)
 
 ```
@@ -173,6 +137,42 @@ Spawn idle tasks: 200000 fibers in 9996ms (20007 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 1561ms (1449 primes/s)
 ```
 
+### libgoc vmem — `-DLIBGOC_VMEM=ON` — (`make run-all`)
+
+```
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 85ms (2343156 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2248408 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 642ms (311113 msg/s)
+Spawn idle tasks: 200000 fibers in 10334ms (19353 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 952ms (2375 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 105ms (1895838 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 301ms (1657377 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 440ms (454532 msg/s)
+Spawn idle tasks: 200000 fibers in 7939ms (25190 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1651ms (1370 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 333ms (599752 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 944ms (529457 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 547ms (365187 msg/s)
+Spawn idle tasks: 200000 fibers in 10526ms (18999 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1686ms (1342 primes/s)
+
+=== Pool Size: 8 ===
+GOC_POOL_THREADS=8
+Channel ping-pong: 200000 round trips in 430ms (464624 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 808ms (618487 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 933ms (214316 msg/s)
+Spawn idle tasks: 200000 fibers in 12828ms (15590 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1580ms (1431 primes/s)
+```
+
 ## Report
 
 All numbers are operations per second (higher is better).
@@ -180,56 +180,56 @@ All numbers are operations per second (higher is better).
 ### Channel ping-pong (round trips/s)
 
 ```
-Pool  Go           libgoc vmem  libgoc canary
-----  -----------  -----------  -------------
-   1  2,280,645    2,343,156    2,353,892
-   2  2,224,597    1,895,838    1,892,095
-   4  2,228,437      599,752    1,319,020
-   8  2,257,564      464,624      790,813
+Pool  Go           libgoc canary  libgoc vmem
+----  -----------  -------------  -----------
+   1  2,280,645      2,353,892    2,343,156
+   2  2,224,597      1,892,095    1,895,838
+   4  2,228,437      1,319,020      599,752
+   8  2,257,564        790,813      464,624
 ```
 
 ### Ring (hops/s)
 
 ```
-Pool  Go           libgoc vmem  libgoc canary
-----  -----------  -----------  -------------
-   1  2,243,222    2,248,408    2,322,813
-   2  2,284,381    1,657,377    1,678,839
-   4  2,240,562      529,457      995,646
-   8  2,250,942      618,487    1,138,495
+Pool  Go           libgoc canary  libgoc vmem
+----  -----------  -------------  -----------
+   1  2,243,222      2,322,813    2,248,408
+   2  2,284,381      1,678,839    1,657,377
+   4  2,240,562        995,646      529,457
+   8  2,250,942      1,138,495      618,487
 ```
 
 ### Selective receive / fan-out / fan-in (msg/s)
 
 ```
-Pool  Go        libgoc vmem  libgoc canary
-----  --------  -----------  -------------
-   1   599,056      311,113        313,967
-   2   650,773      454,532        456,951
-   4   661,967      365,187        437,770
-   8   657,846      214,316        355,597
+Pool  Go        libgoc canary  libgoc vmem
+----  --------  -------------  -----------
+   1   599,056        313,967      311,113
+   2   650,773        456,951      454,532
+   4   661,967        437,770      365,187
+   8   657,846        355,597      214,316
 ```
 
 ### Spawn idle tasks (tasks/s)
 
 ```
-Pool  Go        libgoc vmem  libgoc canary
-----  --------  -----------  -------------
-   1   188,282       19,353         18,373
-   2   350,786       25,190         24,834
-   4   416,456       18,999         22,633
-   8   492,388       15,590         20,007
+Pool  Go        libgoc canary  libgoc vmem
+----  --------  -------------  -----------
+   1   188,282         18,373       19,353
+   2   350,786         24,834       25,190
+   4   416,456         22,633       18,999
+   8   492,388         20,007       15,590
 ```
 
 ### Prime sieve (primes/s)
 
 ```
-Pool  Go        libgoc vmem  libgoc canary
-----  --------  -----------  -------------
-   1    1,919        2,375          3,017
-   2    3,962        1,370          3,486
-   4    7,647        1,342          3,026
-   8   14,136        1,431          1,449
+Pool  Go        libgoc canary  libgoc vmem
+----  --------  -------------  -----------
+   1    1,919          3,017        2,375
+   2    3,962          3,486        1,370
+   4    7,647          3,026        1,342
+   8   14,136          1,449        1,431
 ```
 
 ## Summary
