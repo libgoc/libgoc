@@ -719,7 +719,7 @@ while not shutdown:
     atomic_fetch_sub(&active_count, 1)
     if mco_status(coro) == MCO_DEAD:
         fe = mco_get_user_data(coro)
-        goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
+        goc_fiber_root_unregister(fe->fiber_root_handle)  /* clear bitmap slot; fix 5 */
         mco_destroy(coro)
         lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
@@ -740,14 +740,18 @@ while not shutdown:
 >
 > **Why not `GC_add_roots`?** BDW-GC's `GC_add_roots` / `GC_remove_roots` store entries in a fixed internal table (`MAX_ROOT_SETS` ≈ 2048). Benchmarks that spawn large numbers of fibers (e.g. `bench_spawn_idle` with 200 000 fibers) exhaust this table, causing BDW-GC to abort with `"Too many root sets"`.
 >
-> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that iterates a lock-free linked list of live fiber stacks and calls `GC_push_all_eager` for each live entry during every GC mark phase. The list is manipulated with atomic CAS operations only — no mutex — because BDW-GC's stop-the-world suspends threads via SIGPWR on Linux; a mutex in the callback would deadlock if a stopped thread held it. Each fiber registers on birth (`goc_go_on`, O(1) CAS-prepend) and unregisters on death (`pool_worker_fn` before `mco_destroy`, O(1) CAS to NULL via the stored handle). Dead nodes remain in the list but are skipped by the callback; memory overhead is one `malloc`'d node per fiber lifetime.
+> **Fix:** `goc_init` registers a `GC_push_other_roots` callback (`push_fiber_roots` in `src/gc.c`) that scans all live fiber stacks and calls `GC_push_all_eager` for each during every GC mark phase.  Live fibers are tracked with a **flat array + atomic bitmap** (Fix 5): the slot array is divided into CHUNK_SIZE-slot chunks allocated on demand; a parallel `_Atomic(uint64_t)` bitmap encodes liveness (1 = slot in use).  The `push_fiber_roots` callback iterates bitmap words — skipping dead 64-slot regions in a single comparison — then visits only the set bits.  This avoids pointer-chasing through dead linked-list nodes and immediately reclaims slots of exited fibers for reuse.
 >
-> **Exact-SP scanning and `goc_entry` liveness.** Each `fiber_root_node` stores three fields set at registration time:
-> - `coro` (`_Atomic(mco_coro*)`) — set to NULL on unregistration (O(1) CAS).
-> - `scan_from` (`_Atomic(void*)`) — cached saved RSP/SP of the suspended fiber, initialised by `mco_get_suspended_sp` at birth and updated by `goc_fiber_root_update_sp` (called in `pool_worker_fn` after each `mco_resume` returns with `MCO_SUSPENDED`). The callback reads this cached value instead of calling `mco_get_suspended_sp` per GC cycle, avoiding 200k random cache misses to vmem-allocated `mco_coro` structs.
-> - `entry` (`goc_entry*`) — the fiber's initial GC-allocated entry; explicitly pushed via `GC_push_all_eager(&n->entry, …)`. This is required because the run queue node that holds a reference to `goc_entry*` is `malloc`'d (not GC-managed), making the entry unreachable to the conservative scanner without this explicit push.
+> **Thread-safety.** Registration and unregistration use `fiber_root_mutex` (a plain `uv_mutex_t`).  Growth (adding a new chunk) uses `calloc` — not `GC_malloc` — so the GC cannot be triggered while the mutex is held.  The `push_fiber_roots` callback reads the chunk pointer array and bitmap WITHOUT holding `fiber_root_mutex` (a mutex in the callback would deadlock if a stopped thread held it).  Growth publishes the new chunk pointer to `fiber_root_chunks[c]` before atomically incrementing `fiber_root_num_chunks` with a `memory_order_release` fence; the callback's `memory_order_acquire` load of `num_chunks` guarantees it sees a consistent snapshot.  Unregistration clears the bitmap bit with `memory_order_release` via `atomic_fetch_and`.
 >
-> **Shutdown cleanup.** `goc_shutdown()` frees all nodes in `fiber_root_head` and resets the head to NULL. Without this cleanup, nodes from a completed `goc_init/shutdown` cycle accumulate in the static list, and subsequent cycles pay O(N_accumulated) per GC mark phase.
+> **Handle.** `goc_fiber_root_register` returns the slot index cast to `void*`.  This keeps the handle valid across potential future growth (which appends new chunks without moving old ones).
+>
+> **Slot fields.** Each `fiber_root_slot` stores three fields:
+> - `scan_from` (`_Atomic(void*)`) — cached saved RSP/SP of the suspended fiber, initialised by `mco_get_suspended_sp` at birth and updated by `goc_fiber_root_update_sp` (called in `pool_worker_fn` after each `mco_resume` returns with `MCO_SUSPENDED`).
+> - `stack_top` (`void*`) — high end of the fiber stack (constant after init).
+> - `entry` (`goc_entry*`) — the fiber's GC-allocated entry; explicitly pushed via `GC_push_all_eager(&s->entry, …)` to keep it alive (the run queue node referencing it is `malloc`'d, not GC-managed).
+>
+> **Shutdown cleanup.** `goc_shutdown()` frees all chunk arrays, zeros the used bitmap words, resets `fiber_root_num_chunks` to 0, and destroys `fiber_root_mutex`.
 
 The invariant is:
 

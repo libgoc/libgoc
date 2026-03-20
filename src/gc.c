@@ -77,62 +77,103 @@ int gc_pthread_join(pthread_t t, void** retval)
 #endif /* _WIN32 */
 
 /* ---------------------------------------------------------------------------
- * Fiber stack root push  (replaces GC_add_roots / GC_remove_roots)
+ * [Fix 5] Fiber stack root push — flat array + bitmap
  *
  * Problem: GC_add_roots / GC_remove_roots use a fixed internal table
  * (MAX_ROOT_SETS ≈ 2048 in BDW-GC 8.2.6).  Benchmarks that spawn large
  * numbers of fibers (e.g. bench_spawn_idle with 200,000 fibers) exhaust
  * the table, causing BDW-GC to abort with "Too many root sets".
  *
- * Solution: maintain a lock-free linked list of live fiber stack ranges
- * and register a GC_push_other_roots callback that iterates the list and
- * calls GC_push_all_eager for each live entry.  This bypasses the root-set
- * table entirely — the callback is called during each GC mark phase.
+ * Original fix: maintain a lock-free linked list of live fiber stack ranges.
+ * Drawback: dead nodes accumulate (never freed until goc_shutdown); the
+ * push_fiber_roots callback must walk the entire list on every GC mark phase.
+ *
+ * Fix 5: replace the linked list with a flat array of slots divided into
+ * CHUNK_SIZE-slot chunks, plus a parallel atomic bitmap.  Benefits:
+ *   1. Slot reuse — freed slots (cleared bitmap bit) are immediately
+ *      reclaimed by the next registration.
+ *   2. Cache-friendly GC scan — bitmap word iteration skips 64 dead slots
+ *      in a single comparison, avoiding pointer-chasing through dead nodes.
+ *   3. Smaller slots — no 'coro' or 'next' pointer needed per slot; the
+ *      bitmap encodes liveness.
  *
  * Thread-safety / stop-the-world:
  *   BDW-GC stops the world (via SIGPWR on Linux) before calling the callback.
  *   A pthread_mutex in the callback would deadlock if a stopped thread held
- *   it.  Instead the list uses only atomic operations:
- *     - register: malloc a node, store fields, CAS-prepend to head.
- *     - unregister: scan the list and CAS stack_base from base to NULL.
- *   Nodes are never removed from the list; dead entries (stack_base == NULL)
- *   are skipped by the callback.  Memory overhead: one malloc'd node per
- *   fiber lifetime.
+ *   it.  The callback therefore reads fiber_root_chunks / fiber_root_bitmap /
+ *   fiber_root_num_chunks WITHOUT holding fiber_root_mutex.
+ *
+ *   Registration and unregistration use fiber_root_mutex (a plain uv_mutex_t).
+ *   Growth (adding a new chunk) uses plain malloc — NOT GC_malloc — so the GC
+ *   cannot be triggered while the mutex is held.  Growth publishes the new
+ *   chunk pointer to fiber_root_chunks[c] BEFORE atomically incrementing
+ *   fiber_root_num_chunks; the acquire load of num_chunks in the callback
+ *   paired with the release fence before the increment guarantees the callback
+ *   always sees a consistent (chunk pointer, bitmap) pair.
+ *
+ *   Unregistration clears the bitmap bit with memory_order_release via
+ *   atomic_fetch_and, so the callback (running after stop-the-world) sees the
+ *   cleared bit if the unregister completed before the GC cycle started.
+ *
+ * Handle returned by goc_fiber_root_register: the slot index cast to void*.
+ * Using the index (rather than a pointer into the array) keeps handles valid
+ * across potential future realloc of the chunk pointer array.
  * --------------------------------------------------------------------------- */
 
-typedef struct fiber_root_node fiber_root_node;
-struct fiber_root_node {
-    _Atomic(mco_coro*)          coro;       /* NULL = dead / unregistered */
-    goc_entry*                  entry;      /* GC root: keeps the fiber's goc_entry alive */
-    void*                       stack_top;  /* high end of fiber stack (const after init) */
-    _Atomic(void*)              scan_from;  /* low end of scan range; updated post-yield */
-    _Atomic(fiber_root_node*)   next;
-};
+#define FIBER_ROOT_CHUNK_SIZE  1024
+#define FIBER_ROOT_CHUNK_WORDS (FIBER_ROOT_CHUNK_SIZE / 64)
+#define FIBER_ROOT_MAX_CHUNKS  256   /* 256 × 1024 = 262 144 max simultaneous fibers */
 
-static _Atomic(fiber_root_node*) fiber_root_head = NULL;
-static GC_push_other_roots_proc  prev_push_roots  = NULL;
+typedef struct {
+    goc_entry*      entry;      /* GC root: keeps the fiber's goc_entry alive */
+    void*           stack_top;  /* high end of fiber stack (const after init) */
+    _Atomic(void*)  scan_from;  /* low end of scan range; updated post-yield */
+} fiber_root_slot;
+
+/* fiber_root_chunks[c] is malloc'd (not GC-heap) for the same reason as the
+ * run queue nodes: we must not call GC_malloc while holding fiber_root_mutex
+ * (the GC callback cannot acquire that mutex during stop-the-world). */
+static fiber_root_slot*   fiber_root_chunks[FIBER_ROOT_MAX_CHUNKS];
+
+/* Flat bitmap: bit (c * CHUNK_SIZE + i) set ⇒ slot i of chunk c is in use.
+ * Static storage — zero-initialised at program start. */
+static _Atomic(uint64_t)  fiber_root_bitmap[FIBER_ROOT_MAX_CHUNKS * FIBER_ROOT_CHUNK_WORDS];
+
+static _Atomic(size_t)    fiber_root_num_chunks = 0;
+static uv_mutex_t         fiber_root_mutex;
+static GC_push_other_roots_proc prev_push_roots = NULL;
 
 static void push_fiber_roots(void)
 {
-    fiber_root_node* n = atomic_load_explicit(&fiber_root_head, memory_order_acquire);
-    while (n) {
-        mco_coro* co = atomic_load_explicit(&n->coro, memory_order_acquire);
-        if (co != NULL) {
-            /* Keep the goc_entry alive.  The run queue that holds goc_entry*
-             * references is malloc'd (not GC-managed), so the GC won't find
-             * those references during its normal scan.  Pushing n->entry here
-             * ensures the entry is always reachable while the fiber is live. */
-            GC_push_all_eager(&n->entry, (char*)&n->entry + sizeof(goc_entry*));
+    /* Called during GC stop-the-world.  All app threads are suspended.
+     * Acquire load of num_chunks establishes happens-before with the release
+     * fence written before the chunk-pointer store in goc_fiber_root_register,
+     * guaranteeing fiber_root_chunks[c] is visible for every c < nc. */
+    size_t nc = atomic_load_explicit(&fiber_root_num_chunks, memory_order_acquire);
+    for (size_t c = 0; c < nc; c++) {
+        fiber_root_slot* chunk     = fiber_root_chunks[c];
+        size_t           base_word = c * FIBER_ROOT_CHUNK_WORDS;
+        for (size_t w = 0; w < FIBER_ROOT_CHUNK_WORDS; w++) {
+            uint64_t bword = atomic_load_explicit(
+                &fiber_root_bitmap[base_word + w], memory_order_relaxed);
+            while (bword) {
+                int    bit    = __builtin_ctzll(bword);
+                size_t offset = (size_t)w * 64 + (size_t)bit;
+                fiber_root_slot* s = &chunk[offset];
 
-            /* Scan the used portion of the fiber stack.  scan_from is the
-             * fiber's saved SP at the last yield (updated by pool_worker_fn
-             * after each mco_resume via goc_fiber_root_update_sp).  Scanning
-             * [scan_from, stack_top] covers all live frames without touching
-             * uncommitted vmem pages beyond the actual stack usage. */
-            void* scan_from = atomic_load_explicit(&n->scan_from, memory_order_acquire);
-            GC_push_all_eager(scan_from, n->stack_top);
+                /* Push goc_entry* so the GC keeps the entry alive.  The run
+                 * queue that references it is malloc'd (not GC-managed). */
+                GC_push_all_eager(&s->entry,
+                                  (char*)&s->entry + sizeof(goc_entry*));
+
+                /* Scan the used portion of the fiber stack. */
+                void* scan_from = atomic_load_explicit(
+                    &s->scan_from, memory_order_relaxed);
+                GC_push_all_eager(scan_from, s->stack_top);
+
+                bword &= bword - 1; /* clear lowest set bit */
+            }
         }
-        n = atomic_load_explicit(&n->next, memory_order_acquire);
     }
     if (prev_push_roots)
         prev_push_roots();
@@ -140,32 +181,77 @@ static void push_fiber_roots(void)
 
 void* goc_fiber_root_register(mco_coro* coro, void* top, goc_entry* entry)
 {
-    fiber_root_node* n = malloc(sizeof(fiber_root_node));
-    atomic_store_explicit(&n->coro, coro, memory_order_relaxed);
-    n->entry     = entry;
-    n->stack_top = top;
-    /* Initialise scan_from to the fiber's initial SP (set by _mco_makectx).
-     * This is correct for a never-resumed fiber; updated post-yield by
-     * goc_fiber_root_update_sp so subsequent GC scans use the exact SP. */
+    uv_mutex_lock(&fiber_root_mutex);
+
+    /* Scan bitmap for a free slot (bit == 0). */
+    size_t nc          = atomic_load_explicit(&fiber_root_num_chunks,
+                                              memory_order_relaxed);
+    size_t total_words = nc * FIBER_ROOT_CHUNK_WORDS;
+    size_t slot_idx    = (size_t)-1;
+
+    for (size_t w = 0; w < total_words; w++) {
+        uint64_t bword = atomic_load_explicit(&fiber_root_bitmap[w],
+                                              memory_order_relaxed);
+        if (bword != UINT64_MAX) {
+            int bit = __builtin_ctzll(~bword);
+            /* Under the mutex no other thread can be in register, so
+             * atomic_fetch_or is sufficient (no CAS retry needed). */
+            atomic_fetch_or_explicit(&fiber_root_bitmap[w],
+                                     (uint64_t)1 << bit,
+                                     memory_order_relaxed);
+            slot_idx = w * 64 + (size_t)bit;
+            break;
+        }
+    }
+
+    if (slot_idx == (size_t)-1) {
+        /* All existing slots taken — allocate a new chunk. */
+        size_t c = nc;
+        assert(c < FIBER_ROOT_MAX_CHUNKS);
+        fiber_root_slot* new_chunk = calloc(FIBER_ROOT_CHUNK_SIZE,
+                                            sizeof(fiber_root_slot));
+        assert(new_chunk != NULL);
+
+        /* Publish chunk pointer BEFORE incrementing num_chunks.  Paired with
+         * the acquire load in push_fiber_roots. */
+        fiber_root_chunks[c] = new_chunk;
+        atomic_thread_fence(memory_order_release);
+        atomic_fetch_add_explicit(&fiber_root_num_chunks, 1,
+                                  memory_order_relaxed);
+
+        /* Claim slot 0 of the new chunk. */
+        size_t base_word = c * FIBER_ROOT_CHUNK_WORDS;
+        atomic_fetch_or_explicit(&fiber_root_bitmap[base_word],
+                                 (uint64_t)1,
+                                 memory_order_relaxed);
+        slot_idx = c * FIBER_ROOT_CHUNK_SIZE;
+    }
+
+    /* Write slot data.  Visible to the GC callback only after the bitmap bit
+     * is set (which happened above, under the mutex). */
+    size_t           chunk_idx = slot_idx / FIBER_ROOT_CHUNK_SIZE;
+    size_t           offset    = slot_idx % FIBER_ROOT_CHUNK_SIZE;
+    fiber_root_slot* s         = &fiber_root_chunks[chunk_idx][offset];
+    s->entry     = entry;
+    s->stack_top = top;
     void* initial_sp = mco_get_suspended_sp(coro);
-    atomic_store_explicit(&n->scan_from,
+    atomic_store_explicit(&s->scan_from,
                           initial_sp ? initial_sp : coro->stack_base,
                           memory_order_relaxed);
-    fiber_root_node* head;
-    do {
-        head = atomic_load_explicit(&fiber_root_head, memory_order_relaxed);
-        atomic_store_explicit(&n->next, head, memory_order_relaxed);
-    } while (!atomic_compare_exchange_weak_explicit(
-                 &fiber_root_head, &head, n,
-                 memory_order_release, memory_order_relaxed));
-    return n;
+
+    uv_mutex_unlock(&fiber_root_mutex);
+    return (void*)(uintptr_t)slot_idx;
 }
 
 void goc_fiber_root_unregister(void* handle)
 {
-    fiber_root_node* n = (fiber_root_node*)handle;
-    /* Atomically clear the coro pointer so push_fiber_roots skips this node. */
-    atomic_store_explicit(&n->coro, NULL, memory_order_release);
+    size_t   slot_idx = (size_t)(uintptr_t)handle;
+    size_t   w        = slot_idx / 64;
+    uint64_t mask     = ~((uint64_t)1 << (slot_idx % 64));
+    /* release ordering ensures prior slot writes are visible before the bit
+     * is cleared, so the GC callback cannot observe a partially-written slot
+     * for a newly recycled index. */
+    atomic_fetch_and_explicit(&fiber_root_bitmap[w], mask, memory_order_release);
 }
 
 void goc_fiber_root_update_sp(void* handle, mco_coro* coro)
@@ -174,14 +260,18 @@ void goc_fiber_root_update_sp(void* handle, mco_coro* coro)
      * Updates the cached scan_from so the next GC scan uses the exact SP
      * instead of rescanning the full stack.  No-op if SP is unavailable. */
     void* saved_sp = mco_get_suspended_sp(coro);
-    if (saved_sp != NULL) {
-        fiber_root_node* n = (fiber_root_node*)handle;
-        atomic_store_explicit(&n->scan_from, saved_sp, memory_order_release);
-    }
+    if (saved_sp == NULL)
+        return;
+    size_t           slot_idx  = (size_t)(uintptr_t)handle;
+    size_t           chunk_idx = slot_idx / FIBER_ROOT_CHUNK_SIZE;
+    size_t           offset    = slot_idx % FIBER_ROOT_CHUNK_SIZE;
+    fiber_root_slot* s         = &fiber_root_chunks[chunk_idx][offset];
+    atomic_store_explicit(&s->scan_from, saved_sp, memory_order_release);
 }
 
 void goc_fiber_roots_init(void)
 {
+    uv_mutex_init(&fiber_root_mutex);
     prev_push_roots = GC_get_push_other_roots();
     GC_set_push_other_roots(push_fiber_roots);
 }
@@ -400,20 +490,21 @@ void goc_shutdown(void) {
     /* B.3 — Shut down the event loop and join the loop thread. */
     loop_shutdown();
 
-    /* B.4 — Free all fiber root nodes accumulated during this lifecycle.
+    /* B.4 — Free all fiber root chunks accumulated during this lifecycle.
      *
-     * fiber_root_head is a static global that persists across goc_init /
-     * goc_shutdown cycles within the same process.  If not reset here, dead
-     * nodes accumulate and push_fiber_roots iterates an ever-growing list in
-     * subsequent runs.  All pools have been drained (B.1), so no live fiber
-     * holds a reference to any node; plain free() is safe.
+     * All pools have been drained (B.1), so no fiber holds a live slot.
+     * No mutex needed — no concurrent register/unregister can be in flight.
+     * Reset state (chunk pointers, bitmap, num_chunks) so a subsequent
+     * goc_init/goc_shutdown cycle starts clean.
      */
-    fiber_root_node* n = atomic_exchange_explicit(&fiber_root_head, NULL,
-                                                  memory_order_acquire);
-    while (n) {
-        fiber_root_node* next = atomic_load_explicit(&n->next,
-                                                     memory_order_relaxed);
-        free(n);
-        n = next;
+    size_t nc = atomic_load_explicit(&fiber_root_num_chunks, memory_order_relaxed);
+    for (size_t c = 0; c < nc; c++) {
+        free(fiber_root_chunks[c]);
+        fiber_root_chunks[c] = NULL;
     }
+    size_t nwords = nc * FIBER_ROOT_CHUNK_WORDS;
+    for (size_t w = 0; w < nwords; w++)
+        atomic_store_explicit(&fiber_root_bitmap[w], 0, memory_order_relaxed);
+    atomic_store_explicit(&fiber_root_num_chunks, 0, memory_order_relaxed);
+    uv_mutex_destroy(&fiber_root_mutex);
 }

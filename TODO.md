@@ -18,9 +18,8 @@
   - [x] Fix 1: `active_count` → `_Atomic size_t`; remove `drain_mutex` from hot path in `post_to_run_queue` and `pool_worker_fn`
   - [x] Fix 3: cache last fiber stack top per worker; skip `GC_set_stackbottom` when unchanged
   - [x] Fix 4: per-pool `goc_runq_node` free-list; eliminate `malloc`/`free` on every dispatch
-  - [ ] Fix 5: compact fiber root list in `gc.c` (flat array + bitmap instead of linked list)
+  - [x] Fix 5: compact fiber root list in `gc.c` (flat array + bitmap instead of linked list)
   - [ ] Fix 2: per-worker run queues with work-stealing
-  - [ ] Fix 6: `goc_entry` slab allocator
 
 ### Chores
 
