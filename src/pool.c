@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdbool.h>
 #include <time.h>
 #include <errno.h>
 #include <pthread.h>
@@ -57,17 +56,17 @@ struct goc_pool {
     size_t          thread_count;
     goc_runq        runq;
     uv_sem_t        work_sem;
-    _Atomic int         shutdown;
-    pthread_mutex_t     drain_mutex;    /* protects live_count + drain_cond only */
-    pthread_cond_t      drain_cond;
-    _Atomic size_t      active_count;   /* [Fix 1] fibers queued or executing; atomic —
-                                           no mutex needed, drain only watches live_count */
-    size_t              live_count;     /* fibers still alive; decremented only on MCO_DEAD */
-
-    /* [Fix 4] Per-pool recycled runq node free-list.
-     * Eliminates malloc/free on the hot post_to_run_queue / runq_pop path. */
-    uv_mutex_t          node_freelist_lock;
-    goc_runq_node*      node_freelist_head;
+    _Atomic int     shutdown;
+    pthread_mutex_t drain_mutex;
+    pthread_cond_t  drain_cond;
+    size_t          active_count; /* fibers currently queued or executing; decremented
+                                     unconditionally after every mco_resume (yield or exit).
+                                     Used only for internal scheduling accounting. */
+    size_t          live_count;   /* fibers still alive on this pool; incremented exactly
+                                     once per fiber at birth (pool_fiber_born), decremented
+                                     only when mco_status == MCO_DEAD.  This is the correct
+                                     drain signal: a parked fiber still has live_count > 0
+                                     even though active_count has already been decremented. */
 };
 
 /* -------------------------------------------------------------------------
@@ -142,31 +141,6 @@ static void registry_remove(goc_pool* pool) {
 }
 
 /* -------------------------------------------------------------------------
- * [Fix 4] node_alloc / node_free — per-pool runq node recycler
- *
- * Eliminates the malloc/free round-trip that occurred on every
- * post_to_run_queue / runq_pop cycle.  A pool-local free-list is protected
- * by a dedicated mutex (node_freelist_lock) that is separate from the
- * drain_mutex so it never contends with drain/destroy operations.
- * ---------------------------------------------------------------------- */
-
-static goc_runq_node* node_alloc(goc_pool* pool) {
-    uv_mutex_lock(&pool->node_freelist_lock);
-    goc_runq_node* n = pool->node_freelist_head;
-    if (n != NULL)
-        pool->node_freelist_head = n->next;
-    uv_mutex_unlock(&pool->node_freelist_lock);
-    return (n != NULL) ? n : malloc(sizeof(goc_runq_node));
-}
-
-static void node_free(goc_pool* pool, goc_runq_node* n) {
-    uv_mutex_lock(&pool->node_freelist_lock);
-    n->next = pool->node_freelist_head;
-    pool->node_freelist_head = n;
-    uv_mutex_unlock(&pool->node_freelist_lock);
-}
-
-/* -------------------------------------------------------------------------
  * runq_push / runq_pop — two-lock MPMC operations
  * ---------------------------------------------------------------------- */
 
@@ -177,8 +151,8 @@ static void node_free(goc_pool* pool, goc_runq_node* n) {
  * Called by multiple threads to enqueue work.
  * ---------------------------------------------------------------------- */
 
-static void runq_push(goc_pool* pool, goc_runq* q, goc_entry* entry) {
-    goc_runq_node* node = node_alloc(pool);
+static void runq_push(goc_runq* q, goc_entry* entry) {
+    goc_runq_node* node = malloc(sizeof(goc_runq_node));
     node->entry = entry;
     node->next  = NULL;
 
@@ -195,7 +169,7 @@ static void runq_push(goc_pool* pool, goc_runq* q, goc_entry* entry) {
  * Called by worker threads to dequeue work.
  * ---------------------------------------------------------------------- */
 
-static goc_entry* runq_pop(goc_pool* pool, goc_runq* q) {
+static goc_entry* runq_pop(goc_runq* q) {
     uv_mutex_lock(&q->head_lock);
     goc_runq_node* sentinel = q->head;
     goc_runq_node* next     = sentinel->next;
@@ -206,7 +180,7 @@ static goc_entry* runq_pop(goc_pool* pool, goc_runq* q) {
     goc_entry* entry = next->entry;
     q->head          = next;
     uv_mutex_unlock(&q->head_lock);
-    node_free(pool, sentinel);   /* return to pool free-list instead of free() */
+    free(sentinel);  /* malloc'd in runq_push; must be freed explicitly */
     return entry;
 }
 
@@ -226,7 +200,7 @@ static void* pool_worker_fn(void* arg) {
     while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
         uv_sem_wait(&pool->work_sem);
 
-        goc_entry* entry = runq_pop(pool, &pool->runq);
+        goc_entry* entry = runq_pop(&pool->runq);
         if (entry == NULL) {
             /* Spurious wake (e.g. shutdown signal); re-check loop condition. */
             continue;
@@ -279,8 +253,18 @@ static void* pool_worker_fn(void* arg) {
         if (mco_status(coro) == MCO_SUSPENDED && fe != NULL)
             goc_fiber_root_update_sp(fe->fiber_root_handle, coro);
 
-        /* [Fix 1] active_count is now _Atomic size_t; no mutex needed. */
-        atomic_fetch_sub_explicit(&pool->active_count, 1, memory_order_relaxed);
+        /* Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
+         * be re-posted to a run queue via post_to_run_queue(), which increments
+         * active_count before the next resume.  If a fiber yields without being
+         * re-queued (a bug in the channel / alts layer), active_count will reach
+         * zero prematurely and goc_pool_destroy will return with live coroutines.
+         * The canary check above and the assert(winner != NULL) in alts.c are the
+         * primary guards against this happening silently.
+         * Note: live_count is NOT touched here — it is managed by pool_fiber_born
+         * (increment) and the MCO_DEAD branch below (decrement). */
+        pthread_mutex_lock(&pool->drain_mutex);
+        pool->active_count--;
+        pthread_mutex_unlock(&pool->drain_mutex);
 
         /* Decrement live_count and broadcast only when the fiber has actually
          * exited.  A parked fiber (MCO_SUSPENDED) still counts as live — it will
@@ -311,12 +295,17 @@ static void* pool_worker_fn(void* arg) {
  * ---------------------------------------------------------------------- */
 
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
-    /* [Fix 1] active_count is _Atomic size_t — no drain_mutex needed here.
-     * drain_mutex is now exclusively used to protect live_count and the
-     * drain_cond condition variable. */
-    atomic_fetch_add_explicit(&pool->active_count, 1, memory_order_relaxed);
+    pthread_mutex_lock(&pool->drain_mutex);
+    pool->active_count++;
+    /* live_count is NOT incremented here.  It is incremented exactly once per
+     * fiber, at birth, by pool_fiber_born() (called from goc_go_on in fiber.c).
+     * Re-queuing a parked fiber via wake() must not inflate live_count, because
+     * live_count is the drain signal: it reaches zero only when every fiber has
+     * run to MCO_DEAD.  Incrementing it on every re-queue caused it to grow
+     * unboundedly and goc_pool_destroy to block forever. */
+    pthread_mutex_unlock(&pool->drain_mutex);
 
-    runq_push(pool, &pool->runq, entry);
+    runq_push(&pool->runq, entry);
     uv_sem_post(&pool->work_sem);
 }
 
@@ -387,13 +376,9 @@ goc_pool* goc_pool_make(size_t threads) {
     pthread_mutex_init(&pool->drain_mutex, NULL);
     pthread_cond_init(&pool->drain_cond, NULL);
 
-    atomic_store_explicit(&pool->active_count, 0, memory_order_relaxed);
+    pool->active_count = 0;
     pool->live_count   = 0;
     atomic_store(&pool->shutdown, 0);
-
-    /* [Fix 4] Initialise the node free-list. */
-    uv_mutex_init(&pool->node_freelist_lock);
-    pool->node_freelist_head = NULL;
 
     pool->thread_count = threads;
     pool->threads = malloc(threads * sizeof(pthread_t));
@@ -446,15 +431,6 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 6. Drain and release any remaining runq nodes (malloc'd; must be freed). */
     goc_runq_node* n = pool->runq.head;
-    while (n != NULL) {
-        goc_runq_node* next = n->next;
-        free(n);
-        n = next;
-    }
-
-    /* 6a. [Fix 4] Drain and free the node free-list. */
-    uv_mutex_destroy(&pool->node_freelist_lock);
-    n = pool->node_freelist_head;
     while (n != NULL) {
         goc_runq_node* next = n->next;
         free(n);
@@ -526,15 +502,6 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
 
     /* Drain runq nodes (malloc'd; must be freed explicitly). */
     goc_runq_node* n = pool->runq.head;
-    while (n != NULL) {
-        goc_runq_node* next = n->next;
-        free(n);
-        n = next;
-    }
-
-    /* [Fix 4] Drain and free the node free-list. */
-    uv_mutex_destroy(&pool->node_freelist_lock);
-    n = pool->node_freelist_head;
     while (n != NULL) {
         goc_runq_node* next = n->next;
         free(n);
