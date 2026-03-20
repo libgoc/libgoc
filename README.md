@@ -13,21 +13,6 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - **C developers** who want a Go-style concurrency runtime without switching to Go.
 - **Language implementors** targeting C/C++ as a compilation target, or writing multithreaded interpreters.
 
-**Also see:**
-- [Design Doc](./DESIGN.md)
-- [Benchmarks](/bench)
-- [TODO](./TODO.md)
-
-**Pre-built static libraries** for Linux (x86-64), macOS (arm64), and Windows (x86-64) are available on the [Releases page](https://github.com/divs1210/libgoc/releases).
-
-**Platform:** Linux, macOS, and Windows.
-
-> ⚠️ This library is in active development!
-> - API stable ✅
-> - Core functionality complete ✅
-> - Stress testing underway ⚠️
-> - Clear optimization path 📈
-
 **Dependencies:**
 
 | | |
@@ -37,6 +22,26 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | Boehm GC | garbage collection; **must be built with POSIX thread support** (`--enable-threads=posix`); linked automatically, initialised by `goc_init` |
 
 > See [minicoro limitations](#minicoro-limitations) in the Public API section for fiber stack constraints.
+
+**Pre-built static libraries** for:
+- Linux (x86-64)
+- macOS (arm64)
+- Windows (x86-64)
+
+are available on the [Releases page](https://github.com/divs1210/libgoc/releases).
+
+> This library is in active development ⚠️
+> - ✅ API stable
+> - ✅ Core functionality complete
+> - ⚠️ Stress testing underway
+> - 📈 Clear optimization path
+
+**Also see:**
+- [Design Doc](./DESIGN.md)
+- [Benchmarks](/bench)
+- [TODO](./TODO.md)
+
+
 
 ---
 

@@ -39,14 +39,6 @@ make -C libgoc run
 make -C libgoc run-all
 ```
 
-## Output Format
-
-Both implementations use consistent integer millisecond formatting:
-
-- **Time**: Integer milliseconds (e.g., `234ms`, `1567ms`)
-- **Rates**: Floating-point operations per second (e.g., `1234567 ops/s`)
-- **Organization**: Clear section headers for multi-pool runs
-
 ## Benchmark Status
 
 | # | Benchmark | Go | libgoc |
@@ -54,8 +46,15 @@ Both implementations use consistent integer millisecond formatting:
 | 1 | Channel ping-pong | ✅ | ✅ |
 | 2 | Ring | ✅ | ✅ |
 | 3 | Selective receive / fan-out / fan-in | ✅ | ✅ |
+<<<<<<< divs1210/issue19
 | 4 | Spawn idle tasks | ✅ | ✅ |
 | 5 | Prime sieve | ✅ | ✅ |
+=======
+| 4 | Spawn idle tasks | ✅ | 🚧 |
+| 5 | Prime sieve | ✅ | 🚧 |
+
+🚧 — Implemented in `bench/libgoc/bench.c` but disabled in `main()`.
+>>>>>>> main
 
 ## Runs
 
@@ -180,6 +179,7 @@ Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 562ms (3
 Spawn idle tasks: 200000 fibers in 9996ms (20007 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 1561ms (1449 primes/s)
 ```
+<<<<<<< divs1210/issue19
 
 ## Report
 
@@ -194,6 +194,14 @@ Pool  Go           libgoc vmem  libgoc canary
    2  2,224,597    1,895,838    1,892,095
    4  2,228,437      599,752    1,319,020
    8  2,257,564      464,624      790,813
+=======
+Benchmark           Pool  Go (ops/s)   libgoc (ops/s)  Ratio (libgoc/Go)
+------------------  ----  -----------  --------------  -----------------
+Channel ping-pong      1  2,280,645      1,658,644          0.73×
+Channel ping-pong      2  2,224,597        679,017          0.31×
+Channel ping-pong      4  2,228,437        448,940          0.20×
+Channel ping-pong      8  2,257,564        339,584          0.15×
+>>>>>>> main
 ```
 
 ### Ring (hops/s)
