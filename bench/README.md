@@ -228,7 +228,8 @@ This report evaluates the performance of **libgoc canary** and **libgoc vmem** r
 | **2** | 3,962 | 3,486 **(0.88x)** | 1,370 **(0.35x)** |
 | **4** | 7,647 | 3,026 **(0.40x)** | 1,342 **(0.18x)** |
 | **8** | 14,136 | 1,449 **(0.10x)** | 1,431 **(0.10x)** |
-```
+
+---
 
 ## Summary
 
