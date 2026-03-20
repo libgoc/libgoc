@@ -221,13 +221,7 @@ static void* pool_worker_fn(void* arg) {
      * start — it never changes during the worker's lifetime. */
     struct GC_stack_base orig_sb;
     GC_get_my_stackbottom(&orig_sb);
-
-    /* [Fix 3] Cache the last fiber stack top seen on this worker.
-     * GC_set_stackbottom acquires an internal GC mutex; skipping it when
-     * the same fiber stack is resumed back-to-back eliminates contention
-     * across all pool threads. */
-    void*               last_fiber_stack_top = NULL;
-    struct GC_stack_base fiber_sb            = orig_sb;
+    struct GC_stack_base fiber_sb = orig_sb;
 
     while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
         uv_sem_wait(&pool->work_sem);
@@ -263,22 +257,14 @@ static void* pool_worker_fn(void* arg) {
          * stack) before resuming, so it scans only [RSP, fiber_stack_top].
          * Restore the original bottom after mco_resume returns.
          *
-         * [Fix 3] Skip GC_set_stackbottom when the fiber stack top is the
-         * same as the last resume on this worker.  Ping-pong and ring
-         * workloads frequently return to the same fiber on the same worker,
-         * making this a common fast path. */
-        void* fiber_stack_top = (char*)coro->stack_base + coro->stack_size;
-        bool  changed_sb      = (fiber_stack_top != last_fiber_stack_top);
-        if (changed_sb) {
-            last_fiber_stack_top = fiber_stack_top;
-            fiber_sb.mem_base    = fiber_stack_top;
-            GC_set_stackbottom(NULL, &fiber_sb);
-        }
+         * [Fix 3] orig_sb is captured once at thread start (above) instead
+         * of calling GC_get_my_stackbottom on every iteration. */
+        fiber_sb.mem_base = (char*)coro->stack_base + coro->stack_size;
+        GC_set_stackbottom(NULL, &fiber_sb);
 
         mco_resume(coro);
 
-        if (changed_sb)
-            GC_set_stackbottom(NULL, &orig_sb);
+        GC_set_stackbottom(NULL, &orig_sb);
 
         /* If the fiber just parked (called goc_take, goc_put, or goc_alts slow
          * path and set fiber_entry->parked = 0 before yielding), set it back
