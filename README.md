@@ -33,7 +33,7 @@ are available on the [Releases page](https://github.com/divs1210/libgoc/releases
 > This library is in active development ⚠️
 > - ✅ API stable
 > - ✅ Core functionality complete
-> - ⚠️ Stress testing underway
+> - ✅ Stress testing done
 > - 📈 Clear optimization path
 
 **Also see:**
