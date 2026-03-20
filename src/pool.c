@@ -215,8 +215,27 @@ static void* pool_worker_fn(void* arg) {
          * resume regardless of what happened to `entry`. */
         mco_coro* coro = entry->coro;
 
+        /* Redirect the GC's stack scan for this thread to the fiber's stack.
+         *
+         * When mco_resume switches the stack pointer into the fiber's stack,
+         * the GC stop-the-world handler sees a thread RSP that is far below
+         * the worker thread's registered stack bottom.  The resulting scan
+         * range [RSP-in-fiber-stack, OS-thread-stack-top] spans a huge region
+         * of virtual address space containing unmapped pages, causing SIGSEGV
+         * inside the GC marker.
+         *
+         * Fix: tell the GC the new "stack bottom" (high end of the fiber
+         * stack) before resuming, so it scans only [RSP, fiber_stack_top].
+         * Restore the original bottom after mco_resume returns. */
+        struct GC_stack_base orig_sb;
+        GC_get_my_stackbottom(&orig_sb);
+        struct GC_stack_base fiber_sb;
+        fiber_sb.mem_base = (char*)coro->stack_base + coro->stack_size;
+        GC_set_stackbottom(NULL, &fiber_sb);
+
         mco_resume(coro);
 
+        GC_set_stackbottom(NULL, &orig_sb);
         GC_remove_roots(&entry, &entry + 1);
 
         /* If the fiber just parked (called goc_take, goc_put, or goc_alts slow
