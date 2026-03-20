@@ -1,7 +1,6 @@
 [![CI](https://github.com/divs1210/libgoc/actions/workflows/ci.yml/badge.svg)](https://github.com/divs1210/libgoc/actions/workflows/ci.yml)
 [![CD](https://github.com/divs1210/libgoc/actions/workflows/cd.yml/badge.svg)](https://github.com/divs1210/libgoc/actions/workflows/cd.yml)
-> 🚨 This library is in active development!
-> Expect rough edges and API changes.
+
 # libgoc
 > A Go-style CSP concurrency runtime for C: threadpools, stackful coroutines, channels, select, async I/O, and garbage collection in one coherent API.
 
@@ -14,11 +13,20 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - **C developers** who want a Go-style concurrency runtime without switching to Go.
 - **Language implementors** targeting C/C++ as a compilation target, or writing multithreaded interpreters.
 
-See the [Design Doc](./DESIGN.md) for implementation details and [TODO](./TODO.md) for planned future work.
+**Also see:**
+- [Design Doc](./DESIGN.md)
+- [Benchmarks](/bench)
+- [TODO](./TODO.md)
 
 **Pre-built static libraries** for Linux (x86-64), macOS (arm64), and Windows (x86-64) are available on the [Releases page](https://github.com/divs1210/libgoc/releases).
 
 **Platform:** Linux, macOS, and Windows.
+
+> ⚠️ This library is in active development!
+> - API stable ✅
+> - Core functionality complete ✅
+> - Stress testing underway ⚠️
+> - Clear optimization path 📈
 
 **Dependencies:**
 
