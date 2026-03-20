@@ -240,6 +240,44 @@ goc_val_t* goc_take_sync(goc_chan* ch);
 goc_val_t* goc_take_try(goc_chan* ch);
 
 /**
+ * goc_take_all() — Receive from every channel in chs[] (fiber context).
+ *
+ * chs : array of n channel pointers.
+ * n   : number of channels (0 is allowed; returns an empty GC array).
+ *
+ * Calls goc_take() on each channel in order, parking the calling fiber
+ * on each one until a value arrives or the channel is closed.
+ *
+ * Returns a GC-managed array of n goc_val_t* results, one per channel,
+ * in the same order as chs[].  Each element follows the same semantics
+ * as a direct goc_take() call: {val, GOC_OK} on success or
+ * {NULL, GOC_CLOSED} if the channel was closed.
+ *
+ * Must only be called from within a fiber; calling from an OS thread
+ * aborts with a diagnostic message (same constraint as goc_take).
+ */
+goc_val_t** goc_take_all(goc_chan** chs, size_t n);
+
+/**
+ * goc_take_all_sync() — Receive from every channel in chs[] (OS thread context).
+ *
+ * chs : array of n channel pointers.
+ * n   : number of channels (0 is allowed; returns an empty GC array).
+ *
+ * Calls goc_take_sync() on each channel in order, blocking the calling
+ * OS thread on each one until a value arrives or the channel is closed.
+ *
+ * Returns a GC-managed array of n goc_val_t* results, one per channel,
+ * in the same order as chs[].  Each element follows the same semantics
+ * as a direct goc_take_sync() call: {val, GOC_OK} on success or
+ * {NULL, GOC_CLOSED} if the channel was closed.
+ *
+ * Must not be called from a fiber; calling from fiber context aborts
+ * with a diagnostic message (same constraint as goc_take_sync).
+ */
+goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n);
+
+/**
  * goc_put_sync() — Blocking send to ch (OS thread context).
  *
  * Blocks the calling OS thread until the value has been delivered or the

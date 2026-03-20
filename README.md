@@ -456,6 +456,7 @@ These functions may suspend the calling fiber. **Call only from inside a fiber**
 |---|---|---|
 | `goc_take` | `goc_val_t* goc_take(goc_chan* ch)` | Receive the next value from `ch`. Blocks until a value is available or the channel is closed. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
 | `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
+| `goc_take_all` | `goc_val_t** goc_take_all(goc_chan** chs, size_t n)` | Receive from every channel in `chs[0..n-1]` in order, suspending on each one in turn. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must only be called from a fiber. |
 
 ```c
 static void consumer(void* arg) {
@@ -464,6 +465,15 @@ static void consumer(void* arg) {
     while ((v = goc_take(ch))->ok == GOC_OK)
         printf("got %ld\n", (intptr_t)v->val);
     // channel closed
+}
+```
+
+```c
+// Wait for results from multiple channels at once (fiber context):
+goc_val_t** results = goc_take_all(chs, n);
+for (size_t i = 0; i < n; i++) {
+    if (results[i]->ok == GOC_OK)
+        process(results[i]->val);
 }
 ```
 
@@ -477,12 +487,22 @@ Blocks the calling OS thread (not a fiber). Calling these from a fiber is a runt
 |---|---|---|
 | `goc_take_sync` | `goc_val_t* goc_take_sync(goc_chan* ch)` | Receive a value, blocking the OS thread. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. |
 | `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
+| `goc_take_all_sync` | `goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)` | Receive from every channel in `chs[0..n-1]` in order, blocking the OS thread on each one in turn. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take_sync` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must not be called from a fiber. |
 
 ```c
 // From a plain OS thread (e.g. the application's main thread):
 goc_val_t* result = goc_take_sync(result_ch);
 if (result->ok == GOC_OK)
     process(result->val);
+```
+
+```c
+// Collect results from multiple channels (OS thread context):
+goc_val_t** results = goc_take_all_sync(join_channels, n);
+for (size_t i = 0; i < n; i++) {
+    if (results[i]->ok == GOC_CLOSED)
+        printf("fiber %zu finished\n", i);
+}
 ```
 
 ---

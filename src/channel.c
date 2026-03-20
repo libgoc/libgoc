@@ -9,6 +9,8 @@
  *   goc_take, goc_put                  (fiber context)
  *   goc_take_sync, goc_put_sync        (OS thread context)
  *   goc_take_try                       (non-blocking, any context)
+ *   goc_take_all                       (fiber context — receive from N channels)
+ *   goc_take_all_sync                  (OS thread context — receive from N channels)
  *   goc_take_cb, goc_put_cb            (callback, loop-thread delivery)
  */
 
@@ -532,6 +534,28 @@ goc_val_t* goc_take_try(goc_chan* ch)
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
     r->val = NULL; r->ok = GOC_EMPTY;
     return r;
+}
+
+/* --------------------------------------------------------------------------
+ * goc_take_all  (fiber context only)
+ * -------------------------------------------------------------------------- */
+goc_val_t** goc_take_all(goc_chan** chs, size_t n)
+{
+    goc_val_t** results = goc_malloc(n * sizeof(goc_val_t*));
+    for (size_t i = 0; i < n; i++)
+        results[i] = goc_take(chs[i]);
+    return results;
+}
+
+/* --------------------------------------------------------------------------
+ * goc_take_all_sync  (OS thread context)
+ * -------------------------------------------------------------------------- */
+goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)
+{
+    goc_val_t** results = goc_malloc(n * sizeof(goc_val_t*));
+    for (size_t i = 0; i < n; i++)
+        results[i] = goc_take_sync(chs[i]);
+    return results;
 }
 
 /* --------------------------------------------------------------------------
