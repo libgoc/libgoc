@@ -291,7 +291,7 @@ CPU-bound pipelines scale well with thread count (prime sieve: 1,280 → 9,074
 primes/s from pool=1 to pool=8). Spawn is moderate: goroutine creation is
 cheap but GC and scheduler bookkeeping keep it below Clojure's IOC approach.
 
-### libuv
+### libgoc
 
 #### canary
 
