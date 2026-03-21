@@ -15,8 +15,14 @@ all: build
 # Always run cmake --build so that library API changes in src/ are picked up
 # even when build-bench/libgoc.a already exists from an older build.
 # cmake --build is incremental, so it only recompiles changed source files.
+#
+# Default mode: canary (LIBGOC_VMEM=OFF).
+# For vmem mode, override BUILD_DIR:
+#   cmake -S ../.. -B ../../build-bench-vmem -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON
+#   cmake --build ../../build-bench-vmem --target goc
+#   BUILD_DIR=../../build-bench-vmem make build run-all
 build: bench.c
-	cmake -S $(ROOT_DIR) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
+	cmake -S $(ROOT_DIR) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=OFF
 	cmake --build $(BUILD_DIR) --target goc
 	$(CC) $(CFLAGS) $< $(BUILD_DIR)/libgoc.a $(LDLIBS) -o $(BENCH_BIN)
 

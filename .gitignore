@@ -73,7 +73,10 @@ build_orig/
 root/
 pr.md
 bench/libgoc/gc_fix.md
+.clj-kondo/.cache/v1/lock
+.lsp/.cache/db.transit.json
 build-bench-vmem/
 build-bench-vmem-old/
 bench/libgoc/bench-libgoc-vmem
 bench/libgoc/bench-vmem-old
+.clj-kondo/.cache/v1/clj/bench.core.transit.json

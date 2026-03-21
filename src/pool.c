@@ -1,8 +1,8 @@
 /*
  * src/pool.c
  *
- * Thread pool workers, run queue, pool registry, and drain logic.
- * Defines goc_pool and all pool operations.
+ * Thread pool workers, work-stealing deque scheduler, pool registry, and
+ * drain logic.  Defines goc_pool and all pool operations.
  *
  * Internal symbols exposed via internal.h:
  *   pool_registry_init()
@@ -16,6 +16,7 @@
  */
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
@@ -26,48 +27,48 @@
 #include "../include/goc.h"
 #include "minicoro.h"
 #include "internal.h"
+#include "wsdq.h"
 
 /* -------------------------------------------------------------------------
- * Run-queue node (GC-heap so the entry pointer is visible to the collector)
- * ---------------------------------------------------------------------- */
-
-typedef struct goc_runq_node {
-    goc_entry*             entry;
-    struct goc_runq_node*  next;
-} goc_runq_node;
-
-/* -------------------------------------------------------------------------
- * Two-lock MPMC run queue (Michael & Scott style)
+ * goc_worker — per-worker state
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    goc_runq_node* head;
-    goc_runq_node* tail;
-    uv_mutex_t     head_lock;
-    uv_mutex_t     tail_lock;
-} goc_runq;
+    pthread_t      thread;
+    goc_wsdq    deque;
+    goc_injector   injector;   /* MPSC queue: external callers push here */
+    uv_sem_t       idle_sem;
+    size_t         index;
+    goc_pool*      pool;
+} goc_worker;
 
 /* -------------------------------------------------------------------------
  * goc_pool — full definition (opaque outside pool.c)
  * ---------------------------------------------------------------------- */
 
 struct goc_pool {
-    pthread_t*      threads;
-    size_t          thread_count;
-    goc_runq        runq;
-    uv_sem_t        work_sem;
-    _Atomic int     shutdown;
-    pthread_mutex_t drain_mutex;
-    pthread_cond_t  drain_cond;
-    size_t          active_count; /* fibers currently queued or executing; decremented
-                                     unconditionally after every mco_resume (yield or exit).
-                                     Used only for internal scheduling accounting. */
-    size_t          live_count;   /* fibers still alive on this pool; incremented exactly
-                                     once per fiber at birth (pool_fiber_born), decremented
-                                     only when mco_status == MCO_DEAD.  This is the correct
-                                     drain signal: a parked fiber still has live_count > 0
-                                     even though active_count has already been decremented. */
+    goc_worker*        workers;
+    size_t             thread_count;
+    _Atomic size_t     idle_count;
+    _Atomic size_t     next_push_idx;
+    _Atomic int        shutdown;
+    pthread_mutex_t    drain_mutex;
+    pthread_cond_t     drain_cond;
+    size_t             active_count; /* fibers currently queued or executing */
+    size_t             live_count;   /* fibers still alive (drain signal) */
 };
+
+/* -------------------------------------------------------------------------
+ * _Thread_local worker pointer
+ *
+ * Set at the top of pool_worker_fn; cleared on exit.  Used by
+ * post_to_run_queue to detect internal callers (a fiber running on a pool
+ * thread) versus external callers (main thread, libuv loop, other pool).
+ * See pr.md §Note: _Thread_local and minicoro for why this is correct even
+ * when minicoro switches stacks.
+ * ---------------------------------------------------------------------- */
+
+static _Thread_local goc_worker* tl_worker = NULL;
 
 /* -------------------------------------------------------------------------
  * Pool registry (file-scope; owned entirely by pool.c)
@@ -141,98 +142,83 @@ static void registry_remove(goc_pool* pool) {
 }
 
 /* -------------------------------------------------------------------------
- * runq_push / runq_pop — two-lock MPMC operations
- * ---------------------------------------------------------------------- */
-
-/* -------------------------------------------------------------------------
- * runq_push — Add entry to the tail of the FIFO run queue
- *
- * Thread-safe via two-lock queue (separate head and tail locks).
- * Called by multiple threads to enqueue work.
- * ---------------------------------------------------------------------- */
-
-static void runq_push(goc_runq* q, goc_entry* entry) {
-    goc_runq_node* node = malloc(sizeof(goc_runq_node));
-    node->entry = entry;
-    node->next  = NULL;
-
-    uv_mutex_lock(&q->tail_lock);
-    q->tail->next = node;
-    q->tail       = node;
-    uv_mutex_unlock(&q->tail_lock);
-}
-
-/* -------------------------------------------------------------------------
- * runq_pop — Remove entry from the head of the FIFO run queue
- *
- * Thread-safe via two-lock queue design. Returns NULL if queue is empty.
- * Called by worker threads to dequeue work.
- * ---------------------------------------------------------------------- */
-
-static goc_entry* runq_pop(goc_runq* q) {
-    uv_mutex_lock(&q->head_lock);
-    goc_runq_node* sentinel = q->head;
-    goc_runq_node* next     = sentinel->next;
-    if (next == NULL) {
-        uv_mutex_unlock(&q->head_lock);
-        return NULL;
-    }
-    goc_entry* entry = next->entry;
-    q->head          = next;
-    uv_mutex_unlock(&q->head_lock);
-    free(sentinel);  /* malloc'd in runq_push; must be freed explicitly */
-    return entry;
-}
-
-/* -------------------------------------------------------------------------
- * pool_worker_fn — thread entry point
+ * pool_worker_fn — thread entry point (work-stealing loop)
  * ---------------------------------------------------------------------- */
 
 static void* pool_worker_fn(void* arg) {
-    goc_pool* pool = (goc_pool*)arg;
+    tl_worker     = (goc_worker*)arg;
+    goc_pool* pool = tl_worker->pool;
 
-    /* [Fix 3] Compute the worker thread's own stack bottom once at thread
-     * start — it never changes during the worker's lifetime. */
-    struct GC_stack_base orig_sb;
-    GC_get_my_stackbottom(&orig_sb);
-    struct GC_stack_base fiber_sb = orig_sb;
+    /* Per-worker PRNG seed for randomised steal order (anti-thundering-herd).
+     * Combines index with the worker pointer for uniqueness. */
+    uint32_t seed = (uint32_t)(tl_worker->index ^ (uintptr_t)tl_worker);
+
+    goc_entry* entry;
 
     while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
-        uv_sem_wait(&pool->work_sem);
 
-        goc_entry* entry = runq_pop(&pool->runq);
-        if (entry == NULL) {
-            /* Spurious wake (e.g. shutdown signal); re-check loop condition. */
-            continue;
+        /* 1. Drain own injector first (entries posted by external callers). */
+        entry = injector_pop(&tl_worker->injector);
+        if (entry != NULL) goto run;
+
+        /* 2. Pop from own deque (LIFO, cache-warm). */
+        entry = wsdq_pop_bottom(&tl_worker->deque);
+        if (entry != NULL) goto run;
+
+        /* 3. Steal phase: try each other worker exactly once, starting from a
+         *    randomised offset to avoid thundering-herd on a fixed victim.
+         *    Self is explicitly excluded. */
+        if (pool->thread_count > 1) {
+            /* xorshift32 — portable thread-local PRNG (no rand_r on Windows). */
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            size_t offset = 1 + (size_t)(seed % (uint32_t)(pool->thread_count - 1));
+            for (size_t i = 0; i < pool->thread_count; i++) {
+                size_t victim = (tl_worker->index + offset + i) % pool->thread_count;
+                if (victim == tl_worker->index) continue;
+                entry = wsdq_steal_top(&pool->workers[victim].deque);
+                if (entry != NULL) goto run;
+            }
         }
+
+        /* 4. No work found anywhere — go idle.
+         *
+         * Increment idle_count with seq_cst BEFORE sleeping so that a
+         * concurrent post_to_run_queue can observe it after its own seq_cst
+         * operation.  Then double-check own injector and deque to close the
+         * sleep-miss race window (see pr.md §Correctness Notes). */
+        atomic_fetch_add_explicit(&pool->idle_count, 1, memory_order_seq_cst);
+
+        entry = injector_pop(&tl_worker->injector);
+        if (entry == NULL)
+            entry = wsdq_pop_bottom(&tl_worker->deque);
+        if (entry != NULL) {
+            atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
+            goto run;
+        }
+
+        uv_sem_wait(&tl_worker->idle_sem);
+        atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
+        continue;   /* re-check shutdown and try again */
+
+run:
+        /* --- from here, identical to old pool_worker_fn --- */
 
         /* Canary check — abort on stack overflow before corrupting anything. */
         goc_stack_canary_check(entry->stack_canary_ptr);
 
-        /* Save the coroutine handle before resuming.  If this is a parking
-         * entry (stack-allocated inside goc_take on the fiber's own stack),
-         * the fiber may run to completion during mco_resume — clobbering the
+        /* Save coro handle before resuming: if this is a parking entry
+         * (stack-allocated inside goc_take on the fiber's own stack), the
+         * fiber may run to completion during mco_resume — clobbering the
          * memory where `entry` lives before control returns here.  The
          * mco_coro object itself is minicoro heap-allocated and remains valid
-         * until mco_destroy, so `coro` is safe to dereference after the
-         * resume regardless of what happened to `entry`. */
+         * until mco_destroy, so `coro` is safe to dereference after resume. */
         mco_coro* coro = entry->coro;
 
-        /* Redirect the GC's stack scan for this thread to the fiber's stack.
-         *
-         * When mco_resume switches the stack pointer into the fiber's stack,
-         * the GC stop-the-world handler sees a thread RSP that is far below
-         * the worker thread's registered stack bottom.  The resulting scan
-         * range [RSP-in-fiber-stack, OS-thread-stack-top] spans a huge region
-         * of virtual address space containing unmapped pages, causing SIGSEGV
-         * inside the GC marker.
-         *
-         * Fix: tell the GC the new "stack bottom" (high end of the fiber
-         * stack) before resuming, so it scans only [RSP, fiber_stack_top].
-         * Restore the original bottom after mco_resume returns.
-         *
-         * [Fix 3] orig_sb is captured once at thread start (above) instead
-         * of calling GC_get_my_stackbottom on every iteration. */
+        /* Redirect GC stack scan to the fiber's stack for the duration of
+         * mco_resume (see DESIGN.md §GC Stack Bottom Redirect). */
+        struct GC_stack_base orig_sb;
+        GC_get_my_stackbottom(&orig_sb);
+        struct GC_stack_base fiber_sb;
         fiber_sb.mem_base = (char*)coro->stack_base + coro->stack_size;
         GC_set_stackbottom(NULL, &fiber_sb);
 
@@ -240,42 +226,22 @@ static void* pool_worker_fn(void* arg) {
 
         GC_set_stackbottom(NULL, &orig_sb);
 
-        /* If the fiber just parked (called goc_take, goc_put, or goc_alts slow
-         * path and set fiber_entry->parked = 0 before yielding), set it back
-         * to 1 now that mco_resume has returned and the coroutine is truly
-         * MCO_SUSPENDED.  This unblocks any wake() call spinning on parked==0. */
+        /* If the fiber just parked, release the yield-gate so that any
+         * wake() spinning on parked==0 can proceed. */
         goc_entry* fe = (goc_entry*)mco_get_user_data(coro);
         if (fe != NULL)
             atomic_store_explicit(&fe->parked, 1, memory_order_release);
 
-        /* Update the cached fiber SP so the next GC cycle scans only the
-         * used portion of the stack instead of the full vmem allocation. */
+        /* Update cached fiber SP so the next GC cycle scans only the used
+         * portion of the stack instead of the full vmem allocation. */
         if (mco_status(coro) == MCO_SUSPENDED && fe != NULL)
             goc_fiber_root_update_sp(fe->fiber_root_handle, coro);
 
-        /* Correctness invariant: every fiber that yields (MCO_SUSPENDED) must
-         * be re-posted to a run queue via post_to_run_queue(), which increments
-         * active_count before the next resume.  If a fiber yields without being
-         * re-queued (a bug in the channel / alts layer), active_count will reach
-         * zero prematurely and goc_pool_destroy will return with live coroutines.
-         * The canary check above and the assert(winner != NULL) in alts.c are the
-         * primary guards against this happening silently.
-         * Note: live_count is NOT touched here — it is managed by pool_fiber_born
-         * (increment) and the MCO_DEAD branch below (decrement). */
         pthread_mutex_lock(&pool->drain_mutex);
         pool->active_count--;
         pthread_mutex_unlock(&pool->drain_mutex);
 
-        /* Decrement live_count and broadcast only when the fiber has actually
-         * exited.  A parked fiber (MCO_SUSPENDED) still counts as live — it will
-         * be re-enqueued by wake() when a channel operation resumes it.
-         * Broadcasting on every yield would let goc_pool_destroy_timeout see
-         * live_count == 0 while fibers are merely parked, causing a premature
-         * GOC_DRAIN_OK return and pool teardown. */
         if (mco_status(coro) == MCO_DEAD) {
-            /* Unregister the fiber stack registered at birth (fiber.c).
-             * fe is still valid here — mco_get_user_data returns the entry
-             * set at creation, and mco_destroy has not yet been called. */
             if (fe != NULL)
                 goc_fiber_root_unregister(fe->fiber_root_handle);
             mco_destroy(coro);
@@ -287,26 +253,60 @@ static void* pool_worker_fn(void* arg) {
         }
     }
 
+    tl_worker = NULL;
     return NULL;
 }
 
 /* -------------------------------------------------------------------------
  * post_to_run_queue — internal; called from fiber.c and channel.c
+ *
+ * Routes the entry to either the calling worker's own deque (internal
+ * caller — a fiber running on a pool thread) or to a target worker's MPSC
+ * injector (external caller — main thread, libuv loop, other pool).
+ *
+ * Sleep-miss race closure: both paths complete their write with a seq_cst
+ * effect before reading idle_count, pairing with the worker's seq_cst
+ * increment in pool_worker_fn.  See pr.md §Correctness Notes.
  * ---------------------------------------------------------------------- */
 
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
     pthread_mutex_lock(&pool->drain_mutex);
     pool->active_count++;
-    /* live_count is NOT incremented here.  It is incremented exactly once per
-     * fiber, at birth, by pool_fiber_born() (called from goc_go_on in fiber.c).
-     * Re-queuing a parked fiber via wake() must not inflate live_count, because
-     * live_count is the drain signal: it reaches zero only when every fiber has
-     * run to MCO_DEAD.  Incrementing it on every re-queue caused it to grow
-     * unboundedly and goc_pool_destroy to block forever. */
     pthread_mutex_unlock(&pool->drain_mutex);
 
-    runq_push(&pool->runq, entry);
-    uv_sem_post(&pool->work_sem);
+    goc_worker* w = tl_worker;
+    if (w != NULL && w->pool == pool) {
+        /* Internal caller: push to executing worker's own deque.
+         * Safe: the owner is inside mco_resume, not touching the deque. */
+        wsdq_push_bottom(&w->deque, entry);
+
+        /* Explicit seq_cst fence: the bottom store in wsdq_push_bottom is
+         * only release; we need seq_cst here so idle_count reads below form a
+         * total order with the worker's seq_cst increment (ARM/POWER safety). */
+        atomic_thread_fence(memory_order_seq_cst);
+
+        /* Wake one idle worker (not self — self is running a fiber) so it
+         * can steal the just-pushed entry. */
+        if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0
+                && pool->thread_count > 1) {
+            size_t idx = (w->index + 1) % pool->thread_count;
+            uv_sem_post(&pool->workers[idx].idle_sem);
+        }
+    } else {
+        /* External caller: push into target worker's injector (MPSC-safe).
+         * Round-robin across workers for load distribution. */
+        size_t idx = atomic_fetch_add_explicit(&pool->next_push_idx, 1,
+                                               memory_order_relaxed)
+                     % pool->thread_count;
+        injector_push(&pool->workers[idx].injector, entry);
+
+        /* injector_push holds the mutex for the full operation; the unlock
+         * is a full memory barrier, providing the seq_cst effect needed for
+         * the sleep-miss race closure. */
+        if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0) {
+            uv_sem_post(&pool->workers[idx].idle_sem);
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -342,7 +342,7 @@ void pool_fiber_born(goc_pool* pool) {
 static void pool_abort_if_called_from_worker(goc_pool* pool, const char* api_name) {
     pthread_t self = pthread_self();
     for (size_t i = 0; i < pool->thread_count; i++) {
-        if (pthread_equal(self, pool->threads[i])) {
+        if (pthread_equal(self, pool->workers[i].thread)) {
             fprintf(stderr,
                     "libgoc: %s called from within target pool worker thread; "
                     "this is unsupported and would deadlock\n",
@@ -360,31 +360,30 @@ goc_pool* goc_pool_make(size_t threads) {
     goc_pool* pool = malloc(sizeof(goc_pool));
     memset(pool, 0, sizeof(goc_pool));
 
-    /* Initialise run queue with a sentinel node (plain malloc — must not be
-     * GC-heap, because goc_pool is malloc'd and BDWGC won't scan its fields
-     * for GC pointers; see runq_push/runq_pop for the same reasoning). */
-    goc_runq_node* sentinel = malloc(sizeof(goc_runq_node));
-    sentinel->entry = NULL;
-    sentinel->next  = NULL;
-    pool->runq.head = sentinel;
-    pool->runq.tail = sentinel;
-    uv_mutex_init(&pool->runq.head_lock);
-    uv_mutex_init(&pool->runq.tail_lock);
+    pool->thread_count = threads;
+    pool->workers      = malloc(threads * sizeof(goc_worker));
 
-    uv_sem_init(&pool->work_sem, 0);
+    for (size_t i = 0; i < threads; i++) {
+        wsdq_init(&pool->workers[i].deque, 256);
+        injector_init(&pool->workers[i].injector);
+        uv_sem_init(&pool->workers[i].idle_sem, 0);
+        pool->workers[i].index = i;
+        pool->workers[i].pool  = pool;
+    }
+
+    atomic_store(&pool->idle_count,    0);
+    atomic_store(&pool->next_push_idx, 0);
+    atomic_store(&pool->shutdown,      0);
 
     pthread_mutex_init(&pool->drain_mutex, NULL);
     pthread_cond_init(&pool->drain_cond, NULL);
 
     pool->active_count = 0;
     pool->live_count   = 0;
-    atomic_store(&pool->shutdown, 0);
-
-    pool->thread_count = threads;
-    pool->threads = malloc(threads * sizeof(pthread_t));
 
     for (size_t i = 0; i < threads; i++) {
-        gc_pthread_create(&pool->threads[i], NULL, pool_worker_fn, pool);
+        gc_pthread_create(&pool->workers[i].thread, NULL,
+                          pool_worker_fn, &pool->workers[i]);
     }
 
     registry_add(pool);
@@ -399,10 +398,7 @@ goc_pool* goc_pool_make(size_t threads) {
 void goc_pool_destroy(goc_pool* pool) {
     pool_abort_if_called_from_worker(pool, "goc_pool_destroy");
 
-    /* 1. Wait for all live fibers to exit (live_count reaches zero).
-     *    Parked fibers (MCO_SUSPENDED) still count as live even though
-     *    active_count may already be zero; using live_count here prevents a
-     *    premature return while fibers are merely blocked on a channel. */
+    /* 1. Wait for all live fibers to exit (live_count reaches zero). */
     pthread_mutex_lock(&pool->drain_mutex);
     while (pool->live_count > 0) {
         pthread_cond_wait(&pool->drain_cond, &pool->drain_mutex);
@@ -412,36 +408,32 @@ void goc_pool_destroy(goc_pool* pool) {
     /* 2. Signal workers to exit. */
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
 
-    /* 3. Unblock all waiting workers (one post per thread). */
+    /* 3. Unblock all waiting workers (one post per worker). */
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_post(&pool->work_sem);
+        uv_sem_post(&pool->workers[i].idle_sem);
     }
 
     /* 4. Reap worker threads. */
     for (size_t i = 0; i < pool->thread_count; i++) {
-        gc_pthread_join(pool->threads[i], NULL);
+        gc_pthread_join(pool->workers[i].thread, NULL);
     }
 
-    /* 5. Destroy synchronisation primitives. */
-    uv_sem_destroy(&pool->work_sem);
-    uv_mutex_destroy(&pool->runq.head_lock);
-    uv_mutex_destroy(&pool->runq.tail_lock);
+    /* 5. Destroy per-worker resources. */
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        uv_sem_destroy(&pool->workers[i].idle_sem);
+        wsdq_destroy(&pool->workers[i].deque);
+        injector_destroy(&pool->workers[i].injector);
+    }
+
+    /* 6. Destroy drain primitives. */
     pthread_mutex_destroy(&pool->drain_mutex);
     pthread_cond_destroy(&pool->drain_cond);
-
-    /* 6. Drain and release any remaining runq nodes (malloc'd; must be freed). */
-    goc_runq_node* n = pool->runq.head;
-    while (n != NULL) {
-        goc_runq_node* next = n->next;
-        free(n);
-        n = next;
-    }
 
     /* 7. Remove from registry (no-op if already removed by destroy_all). */
     registry_remove(pool);
 
-    /* 8. Free pool itself. */
-    free(pool->threads);
+    /* 8. Free workers array and pool itself. */
+    free(pool->workers);
     free(pool);
 }
 
@@ -483,34 +475,29 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
 
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_post(&pool->work_sem);
+        uv_sem_post(&pool->workers[i].idle_sem);
     }
 
     for (size_t i = 0; i < pool->thread_count; i++) {
 #ifndef _WIN32
-        GC_pthread_join(pool->threads[i], NULL);
+        GC_pthread_join(pool->workers[i].thread, NULL);
 #else
-        pthread_join(pool->threads[i], NULL);
+        pthread_join(pool->workers[i].thread, NULL);
 #endif
     }
 
-    uv_sem_destroy(&pool->work_sem);
-    uv_mutex_destroy(&pool->runq.head_lock);
-    uv_mutex_destroy(&pool->runq.tail_lock);
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        uv_sem_destroy(&pool->workers[i].idle_sem);
+        wsdq_destroy(&pool->workers[i].deque);
+        injector_destroy(&pool->workers[i].injector);
+    }
+
     pthread_mutex_destroy(&pool->drain_mutex);
     pthread_cond_destroy(&pool->drain_cond);
 
-    /* Drain runq nodes (malloc'd; must be freed explicitly). */
-    goc_runq_node* n = pool->runq.head;
-    while (n != NULL) {
-        goc_runq_node* next = n->next;
-        free(n);
-        n = next;
-    }
-
     registry_remove(pool);
 
-    free(pool->threads);
+    free(pool->workers);
     free(pool);
 
     return GOC_DRAIN_OK;

@@ -53,6 +53,7 @@ set(GOC_SOURCES
     src/channel.c
     src/mutex.c
     src/minicoro.c
+    src/wsdq.c
 )
 
 # ---------------------------------------------------------------------------
