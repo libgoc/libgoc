@@ -743,8 +743,7 @@ run:
     /* active_count is decremented unconditionally.  The lock is released before
        checking MCO_DEAD to avoid holding drain_mutex across mco_destroy. */
     if mco_status(coro) == MCO_DEAD:
-        fe = mco_get_user_data(coro)
-        goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
+        if fe != NULL: goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
         mco_destroy(coro)
         lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
