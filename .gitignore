@@ -73,3 +73,5 @@ build_orig/
 root/
 pr.md
 bench/libgoc/gc_fix.md
+.clj-kondo/.cache/v1/lock
+.lsp/.cache/db.transit.json
