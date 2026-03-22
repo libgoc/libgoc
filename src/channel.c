@@ -73,7 +73,8 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
          * MCO_RUNNING coroutine, which silently fails, leaving the fiber
          * permanently suspended with no one to resume it (hang). */
         goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
-        goc_spin_until_parked(&fe->parked);
+        while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+            sched_yield();
         post_to_run_queue(fe->pool, fe);
         break;
     }
@@ -195,7 +196,8 @@ static void wake_all_parked_entries(goc_entry* head) {
                 switch (e->kind) {
                 case GOC_FIBER: {
                     goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
-                    goc_spin_until_parked(&fe->parked);
+                    while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+                        sched_yield();
                     post_to_run_queue(fe->pool, fe);
                     break;
                 }

@@ -394,9 +394,9 @@ typedef struct goc_entry {
      *     Sets fiber_entry->parked = 1.
      *
      *   wake() and goc_close() (GOC_FIBER case):
-     *     Call goc_spin_until_parked(&fiber_entry->parked): try up to 64 cpu_relax
-     *     iterations first, then fall back to sched_yield().  Guarantees the
-     *     coroutine is truly MCO_SUSPENDED before any worker calls mco_resume. */
+     *     Spin with sched_yield() while fiber_entry->parked == 0 before
+     *     calling post_to_run_queue.  Guarantees the coroutine is truly
+     *     MCO_SUSPENDED before any worker calls mco_resume. */
     _Atomic int       parked;       /* per-fiber yield-gate; see protocol above */
 } goc_entry;
 ```
@@ -631,7 +631,8 @@ bool wake(goc_chan* ch, goc_entry* e, void* value) {
     e->ok = GOC_OK;
     if (e->kind == GOC_FIBER) {
         goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
-        goc_spin_until_parked(&fe->parked);
+        while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
+            sched_yield();
         post_to_run_queue(fe->pool, fe);
     } else if (e->kind == GOC_CALLBACK) {
         post_callback(e, value);   /* posted via uv_async_send; cb fires on loop thread */
