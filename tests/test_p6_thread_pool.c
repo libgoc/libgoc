@@ -147,6 +147,81 @@ static void done_destroy(done_t* d) {
     pthread_cond_destroy(&d->cond);
 }
 
+/* =========================================================================
+ * Portable barrier helper for tests
+ *
+ * macOS does not provide pthread_barrier_t/pthread_barrier_* in libpthread.
+ * Keep test semantics portable by providing a local 2+ thread barrier shim on
+ * __APPLE__, and use native pthread_barrier_* everywhere else.
+ * ====================================================================== */
+
+#if defined(__APPLE__)
+typedef struct {
+    pthread_mutex_t mtx;
+    pthread_cond_t  cond;
+    unsigned        parties;
+    unsigned        arrived;
+    unsigned        generation;
+} goc_test_barrier_t;
+
+static int goc_test_barrier_init(goc_test_barrier_t* b,
+                                 const void* attr,
+                                 unsigned count) {
+    (void)attr;
+    if (count == 0)
+        return -1;
+    if (pthread_mutex_init(&b->mtx, NULL) != 0)
+        return -1;
+    if (pthread_cond_init(&b->cond, NULL) != 0) {
+        pthread_mutex_destroy(&b->mtx);
+        return -1;
+    }
+    b->parties = count;
+    b->arrived = 0;
+    b->generation = 0;
+    return 0;
+}
+
+static int goc_test_barrier_wait(goc_test_barrier_t* b) {
+    pthread_mutex_lock(&b->mtx);
+    unsigned gen = b->generation;
+    b->arrived++;
+    if (b->arrived == b->parties) {
+        b->arrived = 0;
+        b->generation++;
+        pthread_cond_broadcast(&b->cond);
+        pthread_mutex_unlock(&b->mtx);
+        return 1;
+    }
+    while (gen == b->generation)
+        pthread_cond_wait(&b->cond, &b->mtx);
+    pthread_mutex_unlock(&b->mtx);
+    return 0;
+}
+
+static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
+    int rc1 = pthread_cond_destroy(&b->cond);
+    int rc2 = pthread_mutex_destroy(&b->mtx);
+    return rc1 != 0 ? rc1 : rc2;
+}
+#else
+typedef pthread_barrier_t goc_test_barrier_t;
+
+static int goc_test_barrier_init(goc_test_barrier_t* b,
+                                 const void* attr,
+                                 unsigned count) {
+    return pthread_barrier_init(b, (const pthread_barrierattr_t*)attr, count);
+}
+
+static int goc_test_barrier_wait(goc_test_barrier_t* b) {
+    return pthread_barrier_wait(b);
+}
+
+static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
+    return pthread_barrier_destroy(b);
+}
+#endif
+
 /*
  * done_wait_timeout — like done_wait but gives up after timeout_ms.
  * Returns true if the flag was set, false if the deadline was reached.
@@ -1001,20 +1076,20 @@ done:;
 typedef struct {
     goc_wsdq*          dq;
     _Atomic int*       thief_got;
-    pthread_barrier_t* barrier;
+    goc_test_barrier_t* barrier;
     int                rounds;
 } p6_17_thief_arg;
 
 static void* p6_17_thief(void* arg) {
     p6_17_thief_arg* a = (p6_17_thief_arg*)arg;
     for (int r = 0; r < a->rounds; r++) {
-        pthread_barrier_wait(a->barrier);   /* race start */
+        goc_test_barrier_wait(a->barrier);   /* race start */
         goc_entry* e = wsdq_steal_top(a->dq);
         if (e != NULL) {
             atomic_fetch_add_explicit(a->thief_got, 1, memory_order_relaxed);
             free(e);
         }
-        pthread_barrier_wait(a->barrier);   /* round end */
+        goc_test_barrier_wait(a->barrier);   /* round end */
     }
     return NULL;
 }
@@ -1026,8 +1101,8 @@ static void test_p6_17(void) {
     wsdq_init(&dq, 2);
 
     _Atomic int thief_got = 0;
-    pthread_barrier_t barrier;
-    pthread_barrier_init(&barrier, NULL, 2);
+    goc_test_barrier_t barrier;
+    ASSERT(goc_test_barrier_init(&barrier, NULL, 2) == 0);
 
     p6_17_thief_arg ta = { &dq, &thief_got, &barrier, P6_17_ROUNDS };
     pthread_t thief;
@@ -1036,17 +1111,17 @@ static void test_p6_17(void) {
     int owner_got = 0;
     for (int r = 0; r < P6_17_ROUNDS; r++) {
         wsdq_push_bottom(&dq, make_entry(0));
-        pthread_barrier_wait(&barrier);   /* race start: both race for the single entry */
+        goc_test_barrier_wait(&barrier);   /* race start: both race for the single entry */
         goc_entry* e = wsdq_pop_bottom(&dq);
         if (e != NULL) {
             owner_got++;
             free(e);
         }
-        pthread_barrier_wait(&barrier);   /* round end: thief has finished its steal attempt */
+        goc_test_barrier_wait(&barrier);   /* round end: thief has finished its steal attempt */
     }
 
     pthread_join(thief, NULL);
-    pthread_barrier_destroy(&barrier);
+    goc_test_barrier_destroy(&barrier);
 
     /* Every pushed entry must be consumed exactly once (no double-delivery, no loss). */
     int total = owner_got + atomic_load_explicit(&thief_got, memory_order_relaxed);
