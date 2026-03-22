@@ -617,7 +617,7 @@ The default pool is created by `goc_init` with `max(4, hardware_concurrency)` wo
 Pools also apply a live-fiber admission cap by default so bursty spawn patterns do not materialise an unbounded number of fibers at once. This helps both canary and vmem builds stay bounded under mass-spawn workloads, while still keeping `goc_go` / `goc_go_on` non-blocking. When the cap is reached, new external spawn calls are accepted immediately but their actual fiber creation is deferred until earlier fibers finish. Same-pool spawns originating from a currently running fiber bypass the cap to preserve liveness for parent→child dependency patterns. Override the cap with `GOC_MAX_LIVE_FIBERS`:
 
 - unset: use the built-in default in all builds:
-    `floor(0.7 × (available_hardware_memory / fiber_stack_size) × (pool_threads / hardware_threads))`
+    `floor(0.7 × (available_hardware_memory / fiber_stack_size))`
     (the `0.7` factor intentionally reserves ~30% memory headroom for GC and runtime overhead)
 - `0`: disable throttling entirely
 - positive integer: explicit per-pool live-fiber cap
@@ -728,7 +728,7 @@ A C11 compiler is required: GCC or Clang on Linux/macOS; MinGW-w64 GCC via MSYS2
 |---|---|---|
 | `GOC_DEAD_COUNT_THRESHOLD` | `8` | Dead-entry compaction threshold for channel waiter lists |
 | `GOC_ALTS_STACK_THRESHOLD` | `8` | Max `goc_alts` arms before scratch buffer moves to heap |
-| `GOC_DEFAULT_LIVE_FIBER_MEMORY_FACTOR` | `0.7` | Default safety/throughput factor in `floor(factor × memory / stack_size × pool_threads / hardware_threads)` for live-fiber admission |
+| `GOC_DEFAULT_LIVE_FIBER_MEMORY_FACTOR` | `0.7` | Default safety/throughput factor in `floor(factor × memory / stack_size)` for live-fiber admission |
 
 ---
 

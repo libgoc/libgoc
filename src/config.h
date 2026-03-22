@@ -16,8 +16,7 @@
 /*
  * Conservative throughput-oriented memory factor used by the default
  * live-fiber admission formula:
- *   floor(factor * (available_hardware_memory / fiber_stack_size)
- *                * (pool_threads / hardware_threads))
+ *   floor(factor * (available_hardware_memory / fiber_stack_size))
  *
  * A value below 1.0 intentionally reserves headroom for GC metadata,
  * channels/queues, allocator overhead, and other process memory.

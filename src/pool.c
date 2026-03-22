@@ -160,7 +160,7 @@ static size_t pool_default_stack_size_bytes(void) {
     return desc.stack_size;
 }
 
-static size_t pool_default_max_live_fibers(size_t threads) {
+static size_t pool_default_max_live_fibers(void) {
     const char* env = getenv("GOC_MAX_LIVE_FIBERS");
     if (env != NULL) {
         char* end = NULL;
@@ -170,27 +170,21 @@ static size_t pool_default_max_live_fibers(size_t threads) {
         }
     }
 
-    /*
-     * Default admission cap is derived from memory budget and per-fiber stack
-        * size, then scaled by pool size so smaller pools admit proportionally
-        * fewer resident fibers.
-     *
-     * Formula (no clamp):
-        *   floor(factor * (available_memory / stack_size)
-        *                * (pool_threads / hardware_threads))
-     *
-        * The factor (<1.0) intentionally leaves headroom for GC metadata,
-        * channels/queues, allocator overhead, and the rest of the process.
-     */
+     /*
+      * Default admission cap is derived from memory budget and per-fiber stack
+      * size.
+      *
+      * Formula (no clamp):
+      *   floor(factor * (available_memory / stack_size))
+      *
+      * The factor (<1.0) intentionally leaves headroom for GC metadata,
+      * channels/queues, allocator overhead, and the rest of the process.
+      */
     const size_t stack_size = pool_default_stack_size_bytes();
     const uint64_t mem_bytes = uv_get_total_memory();
-        const unsigned int hw_threads_raw = uv_available_parallelism();
-        const size_t hw_threads = hw_threads_raw > 0 ? (size_t)hw_threads_raw : 1;
-        const double pool_scale = (double)threads / (double)hw_threads;
 
     return (size_t)(GOC_DEFAULT_LIVE_FIBER_MEMORY_FACTOR *
-                    ((double)mem_bytes / (double)stack_size) *
-                    pool_scale);
+                          ((double)mem_bytes / (double)stack_size));
 }
 
 static bool pool_spawn_cap_reached_locked(goc_pool* pool) {
@@ -493,7 +487,7 @@ goc_pool* goc_pool_make(size_t threads) {
     memset(pool, 0, sizeof(goc_pool));
 
     pool->thread_count = threads;
-    pool->max_live_fibers = pool_default_max_live_fibers(threads);
+    pool->max_live_fibers = pool_default_max_live_fibers();
     pool->workers      = malloc(threads * sizeof(goc_worker));
 
     for (size_t i = 0; i < threads; i++) {

@@ -294,7 +294,7 @@ than libgoc, though still below Clojure's stackless go-block model.
 
 #### canary
 
-This run reflects the current memory-and-pool-derived bounded-admission policy.
+This run reflects the current memory-derived bounded-admission policy.
 
 **Ping-pong: strongest at pool=2/4, weaker at pool=8.** Canary peaks at
 1.84–2.00 M round trips/s at pool=2/4 (1.18–1.31× Go), then drops to 1.55 M at

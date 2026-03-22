@@ -39,8 +39,7 @@
  *                      max(4, nproc)).  Set by the Makefile run-all target.
  *   GOC_MAX_LIVE_FIBERS
  *                      Pool live-fiber cap. Defaults to
- *                      floor(0.7 × (memory / stack_size) ×
- *                      (GOC_POOL_THREADS / hardware_threads));
+ *                      floor(0.7 × (memory / stack_size));
  *                      set to 0 to disable.
  *
  * Output format
