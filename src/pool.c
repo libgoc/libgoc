@@ -218,6 +218,15 @@ void pool_submit_spawn(goc_pool* pool,
                        void (*fn)(void*),
                        void* arg,
                        goc_chan* join_ch) {
+    /* Same-pool spawns originating from a currently running fiber must remain
+     * eager even when the pool is at its admission cap. Otherwise a parent
+     * fiber can block waiting for a child that never materialises because all
+     * resident slots are occupied by similarly waiting parents (prime-sieve
+     * style pipelines are a concrete example). The throttle is therefore
+     * aimed at external burst spawners (main thread, callbacks, other pools),
+     * not at intra-pool dependency edges. */
+    bool bypass_throttle = (tl_worker != NULL && tl_worker->pool == pool);
+
     pthread_mutex_lock(&pool->drain_mutex);
 
     /* live_count tracks all accepted spawn requests, including ones still
@@ -225,7 +234,8 @@ void pool_submit_spawn(goc_pool* pool,
      * must wait for deferred spawns too, not just already-materialised ones. */
     pool->live_count++;
 
-    if (pool->pending_spawn_head == NULL && !pool_spawn_cap_reached_locked(pool)) {
+    if (bypass_throttle ||
+        (pool->pending_spawn_head == NULL && !pool_spawn_cap_reached_locked(pool))) {
         pool->resident_count++;
         pthread_mutex_unlock(&pool->drain_mutex);
 

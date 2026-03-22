@@ -614,7 +614,7 @@ goc_close(w);          /* release */
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
 
-Pools also apply a live-fiber admission cap by default so bursty spawn patterns do not materialise an unbounded number of fibers at once. This helps both canary and vmem builds stay bounded under mass-spawn workloads, while still keeping `goc_go` / `goc_go_on` non-blocking. When the cap is reached, new spawn calls are accepted immediately but their actual fiber creation is deferred until earlier fibers finish. Override the cap with `GOC_MAX_LIVE_FIBERS`:
+Pools also apply a live-fiber admission cap by default so bursty spawn patterns do not materialise an unbounded number of fibers at once. This helps both canary and vmem builds stay bounded under mass-spawn workloads, while still keeping `goc_go` / `goc_go_on` non-blocking. When the cap is reached, new external spawn calls are accepted immediately but their actual fiber creation is deferred until earlier fibers finish. Same-pool spawns originating from a currently running fiber bypass the cap to preserve liveness for parent→child dependency patterns. Override the cap with `GOC_MAX_LIVE_FIBERS`:
 
 - unset: use the built-in default in all builds (`max(256, 64 × thread_count)`)
 - `0`: disable throttling entirely

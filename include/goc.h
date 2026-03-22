@@ -143,8 +143,10 @@ bool goc_in_fiber(void);
  * or ignore it entirely (the channel is GC-collected when unreachable).
  *
  * If the target pool's live-fiber throttle is engaged, the runtime may defer
- * materialising the fiber until earlier fibers finish. The join channel is
- * still returned immediately.
+ * materialising the fiber until earlier fibers finish. Same-pool spawns made
+ * from a currently running fiber are created eagerly to avoid deadlocks in
+ * parent→child dependency patterns. The join channel is still returned
+ * immediately.
  */
 goc_chan* goc_go(void (*fn)(void*), void* arg);
 
@@ -158,7 +160,8 @@ goc_chan* goc_go(void (*fn)(void*), void* arg);
  * Returns a join channel as with goc_go().
  *
  * The runtime may defer actual fiber creation when the pool is at its
- * live-fiber cap (see GOC_MAX_LIVE_FIBERS in the project README).
+ * live-fiber cap (see GOC_MAX_LIVE_FIBERS in the project README). Same-pool
+ * spawns made from a currently running fiber bypass that deferral.
  */
 goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg);
 
