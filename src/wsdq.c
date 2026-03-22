@@ -2,9 +2,7 @@
  * src/wsdq.c
  *
  * Implementation of goc_wsdq (Chase–Lev work-stealing deque) and
- * goc_injector (MPSC injector queue).
- *
- * Memory model notes — see pr.md §Step 3 for the full rationale:
+ * goc_injector (MPSC injector queue):
  *
  *   wsdq_push_bottom:
  *     - Loads top with acquire, bottom with relaxed (owner is sole writer).

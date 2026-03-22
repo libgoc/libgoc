@@ -64,8 +64,6 @@ struct goc_pool {
  * Set at the top of pool_worker_fn; cleared on exit.  Used by
  * post_to_run_queue to detect internal callers (a fiber running on a pool
  * thread) versus external callers (main thread, libuv loop, other pool).
- * See pr.md §Note: _Thread_local and minicoro for why this is correct even
- * when minicoro switches stacks.
  * ---------------------------------------------------------------------- */
 
 static _Thread_local goc_worker* tl_worker = NULL;
@@ -186,7 +184,7 @@ static void* pool_worker_fn(void* arg) {
          * Increment idle_count with seq_cst BEFORE sleeping so that a
          * concurrent post_to_run_queue can observe it after its own seq_cst
          * operation.  Then double-check own injector and deque to close the
-         * sleep-miss race window (see pr.md §Correctness Notes). */
+         * sleep-miss race window. */
         atomic_fetch_add_explicit(&pool->idle_count, 1, memory_order_seq_cst);
 
         entry = injector_pop(&tl_worker->injector);
@@ -267,7 +265,7 @@ run:
  *
  * Sleep-miss race closure: both paths complete their write with a seq_cst
  * effect before reading idle_count, pairing with the worker's seq_cst
- * increment in pool_worker_fn.  See pr.md §Correctness Notes.
+ * increment in pool_worker_fn.
  * ---------------------------------------------------------------------- */
 
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
