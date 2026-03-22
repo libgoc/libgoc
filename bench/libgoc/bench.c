@@ -39,7 +39,7 @@
  *                      max(4, nproc)).  Set by the Makefile run-all target.
  *   GOC_MAX_LIVE_FIBERS
  *                      Pool live-fiber cap. Defaults to
- *                      floor(0.7 × (memory / stack_size));
+ *                      floor(0.67 × (memory / stack_size));
  *                      set to 0 to disable.
  *
  * Output format
@@ -220,10 +220,12 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
  * channels, receiving whichever is ready first, and counts until it has seen
  * all 'tasks' values.
  *
+ * Worker output channels are intentionally left open (matching Go and
+ * Clojure benchmark intent); collector exits after exactly `tasks`
+ * successful receives.
+ *
  * This stresses goc_alts (select) under realistic fan-in load and validates
  * that all messages are delivered exactly once.
- *
- * NOTE: This benchmark is currently disabled in main().
  */
 
 typedef struct {
@@ -234,17 +236,14 @@ typedef struct {
 /*
  * fan_out_worker_fn — one fan-out worker fiber.
  *
- * Forwards every value it receives from 'in' to 'out', then closes 'out'
- * when 'in' closes.
+ * Forwards every value it receives from 'in' to 'out'.
  */
 static void fan_out_worker_fn(void* arg) {
     fan_out_worker_args_t* a = (fan_out_worker_args_t*)arg;
     for (;;) {
         goc_val_t* v = goc_take(a->in);
-        if (v->ok != GOC_OK) {
-            goc_close(a->out);
+        if (v->ok != GOC_OK)
             return;
-        }
         goc_put(a->out, v->val);
     }
 }
@@ -259,16 +258,13 @@ typedef struct {
 /*
  * fan_in_fn — collector fiber using goc_alts to receive from all workers.
  *
- * Maintains a dynamic ops[] array.  When a worker channel closes (ok ==
- * GOC_CLOSED), it is removed from the array via a swap-with-last so
- * goc_alts always sees only live channels.  Closes 'done' when all
- * expected messages have been received.
+ * Uses a fixed ops[] array and counts exactly `tasks` successful receives.
+ * Closes 'done' when all expected messages have been received.
  */
 static void fan_in_fn(void* arg) {
     fan_in_args_t* a = (fan_in_args_t*)arg;
 
     goc_alt_op* ops     = goc_malloc(sizeof(goc_alt_op) * a->workers);
-    size_t      n_active = a->workers;
     for (size_t i = 0; i < a->workers; i++) {
         ops[i].ch      = a->outs[i];
         ops[i].op_kind = GOC_ALT_TAKE;
@@ -276,23 +272,10 @@ static void fan_in_fn(void* arg) {
     }
 
     size_t received = 0;
-    while (received < a->tasks && n_active > 0) {
-        goc_alts_result* r = goc_alts(ops, n_active);
-        if (r->value.ok == GOC_OK) {
+    while (received < a->tasks) {
+        goc_alts_result* r = goc_alts(ops, a->workers);
+        if (r->value.ok == GOC_OK)
             received++;
-        } else {
-            /* Channel closed — remove it by swapping with the last active slot.
-             * Linear scan is O(n_active) but occurs at most once per worker
-             * channel, so total overhead is O(workers²) — negligible for
-             * typical benchmark worker counts. */
-            for (size_t k = 0; k < n_active; k++) {
-                if (ops[k].ch == r->ch) {
-                    ops[k] = ops[n_active - 1];
-                    break;
-                }
-            }
-            n_active--;
-        }
     }
 
     goc_close(a->done);
@@ -301,8 +284,7 @@ static void fan_in_fn(void* arg) {
 /*
  * bench_fan_in — run fan-out/fan-in with the given worker and task counts.
  *
- * Timing starts when the first value is sent to 'in' and ends when the
- * collector signals 'done'.
+ * Timing includes producer send/close, collector completion, and worker join.
  */
 static void bench_fan_in(size_t workers, size_t tasks) {
     if (workers < 1)
@@ -310,13 +292,14 @@ static void bench_fan_in(size_t workers, size_t tasks) {
 
     goc_chan*  in   = goc_chan_make(0);
     goc_chan** outs = goc_malloc(sizeof(goc_chan*) * workers);
+    goc_chan** worker_joins = goc_malloc(sizeof(goc_chan*) * workers);
 
     for (size_t i = 0; i < workers; i++) {
         outs[i] = goc_chan_make(0);
         fan_out_worker_args_t* args = goc_malloc(sizeof(fan_out_worker_args_t));
         args->in  = in;
         args->out = outs[i];
-        goc_go(fan_out_worker_fn, args);
+        worker_joins[i] = goc_go(fan_out_worker_fn, args);
     }
 
     goc_chan*      done     = goc_chan_make(0);
@@ -333,6 +316,7 @@ static void bench_fan_in(size_t workers, size_t tasks) {
     goc_close(in);
 
     goc_take_sync(done);
+    goc_take_all_sync(worker_joins, workers);
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;

@@ -110,32 +110,35 @@
 ; output channel.  A collector go-block uses alts! (analogous to reflect.Select
 ; in Go and goc_alts in libgoc) to receive from whichever worker is ready,
 ; counting until all `tasks` values have been seen.
+;
+; Worker output channels are intentionally left open (matching Go and libgoc
+; benchmark intent); collector exits after exactly `tasks` successful receives.
+; Timing includes producer send/close, collector completion, and worker join.
 
 (defn bench-fan-in [workers tasks]
   (let [in   (chan)
         outs (vec (repeatedly workers chan))
         ; fan-out workers
-        _    (doseq [out outs]
-               (go-loop []
-                 (if-let [v (<! in)]
-                   (do (>! out v) (recur))
-                   (close! out))))
+        worker-joins
+             (mapv (fn [out]
+                     (go-loop []
+                       (if-let [v (<! in)]
+                         (do (>! out v) (recur))
+                         :done)))
+                   outs)
         ; collector: alts! across all worker output channels
         done (chan)
         _    (go
-               (loop [received    0
-                      active-outs (vec outs)]
+               (loop [received 0]
                  (if (< received tasks)
-                   (let [[v ch] (alts! active-outs)]
-                     (if (nil? v)
-                       ; channel closed — remove from active set
-                       (recur received (vec (remove #(= % ch) active-outs)))
-                       (recur (inc received) active-outs)))
+                   (let [[_ _] (alts! outs)]
+                     (recur (inc received)))
                    (close! done))))
         t0   (System/nanoTime)]
     (dotimes [i tasks] (>!! in i))
     (close! in)
     (<!! done)
+    (run! <!! worker-joins)
     (let [s    (/ (- (System/nanoTime) t0) 1e9)
           ms   (long (* s 1000))
           rate (/ tasks s)]
