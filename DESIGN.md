@@ -450,11 +450,10 @@ entry->coro = coro;
 entry->stack_canary_ptr = (uint32_t*)coro->stack_base;
 *entry->stack_canary_ptr = GOC_STACK_CANARY;
 
-/* Increment live_count exactly once for this new fiber before queuing it.
-   pool_fiber_born must precede post_to_run_queue so that live_count is
-   non-zero before the worker could potentially see MCO_DEAD and decrement. */
-pool_fiber_born(pool);
-post_to_run_queue(pool, entry);
+/* Submit the spawn to the pool. The pool may either materialise the fiber
+    immediately or queue the spawn request behind the live-fiber admission cap,
+    but the join channel is returned to the caller right away. */
+pool_submit_spawn(pool, fn, arg, join_ch);
 return join_ch;
 ```
 
@@ -670,6 +669,7 @@ typedef struct {
 typedef struct goc_pool {
     goc_worker*        workers;        /* array of thread_count workers */
     size_t             thread_count;
+    size_t             max_live_fibers; /* 0 = unlimited; otherwise admission cap */
     _Atomic size_t     idle_count;     /* number of workers currently sleeping on idle_sem */
     _Atomic size_t     next_push_idx;  /* round-robin index for external injector pushes */
     _Atomic int        shutdown;       /* set to 1 to stop workers */
@@ -678,26 +678,38 @@ typedef struct goc_pool {
        and drain_cond. */
     pthread_mutex_t drain_mutex;
     pthread_cond_t  drain_cond;
-    size_t          active_count;   /* fibers currently queued or executing;
-                                       incremented by post_to_run_queue (under drain_mutex),
-                                       decremented after every mco_resume (yield or exit). */
-    size_t          live_count;     /* fibers still alive on this pool; incremented exactly
-                                       once per fiber at birth by pool_fiber_born() (called
-                                       from goc_go_on before post_to_run_queue), decremented
-                                       only when mco_status == MCO_DEAD.  This is the correct
-                                       drain signal: a parked fiber (MCO_SUSPENDED) still has
-                                       live_count > 0 even though active_count has already
-                                       been decremented to 0.
-                                       NOTE: post_to_run_queue does NOT increment live_count.
-                                       Re-queuing a parked fiber via wake() must not inflate
-                                       it, or the count would grow unboundedly with channel
-                                       operations and goc_pool_destroy would never unblock. */
+    size_t          active_count;      /* fibers currently queued or executing;
+                                          incremented by post_to_run_queue (under drain_mutex),
+                                          decremented after every mco_resume (yield or exit). */
+    size_t          live_count;        /* accepted spawn requests not yet completed, including
+                                          deferred spawn requests waiting behind the admission cap */
+    size_t          resident_count;    /* fibers that have an allocated coroutine/stack right now */
+    goc_spawn_req*  pending_spawn_head;/* FIFO of deferred external spawns */
+    goc_spawn_req*  pending_spawn_tail;
 } goc_pool;
 ```
 
 > **`drain_cond` is signalled only on `MCO_DEAD`.** `active_count` is decremented (under `drain_mutex`) on every yield or exit, but the broadcast fires only when a fiber actually dies. `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`, not `active_count == 0` — a parked fiber (MCO_SUSPENDED) has already decremented `active_count` to zero while still being alive, so using `active_count` as the drain signal would cause a premature return while fibers are merely blocked on a channel.
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
+
+Each pool also has a **live-fiber admission cap**. By default it is
+`max(256, 64 × thread_count)` in both canary and vmem builds, and it may be
+overridden with `GOC_MAX_LIVE_FIBERS` (`0` disables the cap). The cap limits
+`resident_count` — the number of fibers that have actually materialised a
+coroutine/stack — not `live_count`.
+
+When an **external** caller (`main` thread, loop callback, or another pool)
+spawns a fiber and the pool is already at its cap, `goc_go` / `goc_go_on`
+still return a join channel immediately, but the actual fiber creation is
+deferred by appending a small `goc_spawn_req` node to `pending_spawn_*`.
+When any resident fiber reaches `MCO_DEAD`, the worker decrements
+`resident_count`, then admits as many queued requests as the cap allows.
+
+Same-pool spawns originating from a **currently running fiber** explicitly
+*bypass* this cap. Without that bypass, parent→child dependency patterns such
+as the benchmark prime sieve can deadlock: all resident slots become occupied
+by parent fibers waiting for children that have been deferred behind the cap.
 
 Each worker thread runs a 4-stage work-stealing loop:
 
@@ -728,10 +740,10 @@ while not shutdown:
     continue
 
 run:
-    if *entry->stack_canary_ptr != GOC_STACK_CANARY:
+    if stack canary protection is enabled and *entry->stack_canary_ptr != GOC_STACK_CANARY:
         abort()                        /* stack overflow — deterministic crash, not silent corruption
-                                          applies to ALL entry kinds: launch entries AND goc_alts
-                                          park entries; stack_canary_ptr must never be NULL */
+                                          applies to launch entries and park entries in canary mode;
+                                          in vmem mode the check compiles away */
     mco_coro* coro = entry->coro       /* snapshot handle before resume — see note below */
 
      /* Redirect GC stack scan to fiber stack. */
@@ -753,7 +765,13 @@ run:
     if st == MCO_DEAD:
         if fe != NULL: goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
         mco_destroy(coro)
-        lock(drain_mutex); live_count--; broadcast(drain_cond); unlock(drain_mutex)
+        lock(drain_mutex)
+            resident_count--
+            live_count--
+            admitted = dequeue pending_spawn_* while resident_count < max_live_fibers
+            broadcast(drain_cond)
+        unlock(drain_mutex)
+        materialise and post all admitted spawn requests
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
        active_count has been decremented but live_count has NOT — the fiber is
        still alive.  wake() → post_to_run_queue() will re-increment active_count
@@ -790,11 +808,12 @@ run:
 
 The invariant is:
 
-- `pool_fiber_born` increments `live_count` exactly once per fiber, immediately before `post_to_run_queue` in `goc_go_on`.
+- `pool_submit_spawn` increments `live_count` exactly once per accepted spawn request, whether the fiber is materialised immediately or queued in `pending_spawn_*`.
+- `resident_count` counts only fibers that already have a coroutine/stack. Deferred spawn requests contribute to `live_count` but not to `resident_count`.
 - `post_to_run_queue` increments **only** `active_count` before pushing to the run queue. It does **not** touch `live_count` — re-queuing a parked fiber must not inflate it.
 - After `mco_resume` returns, the worker always decrements `active_count` — whether the fiber yielded (`MCO_SUSPENDED`) or exited (`MCO_DEAD`).
-- `live_count` is decremented **only** when `mco_status(coro) == MCO_DEAD`. `drain_cond` is broadcast at the same time.
-- `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`. This correctly waits for all fibers to exit, not merely to yield.
+- `live_count` and `resident_count` are decremented **only** when `mco_status(coro) == MCO_DEAD`. At that same point, the worker may admit deferred external spawns until the cap is full again.
+- `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`. This correctly waits for both already-materialised fibers and deferred-but-accepted spawns to finish.
 
 `goc_pool_destroy` is a **blocking drain-and-join**. It waits in a loop on `drain_cond` (under `drain_mutex`), re-checking `live_count > 0` on each wake to guard against spurious wakeups, until `live_count` reaches zero, meaning every fiber launched on this pool has actually returned. Only then does it signal `shutdown = 1`, post the semaphore to unblock sleeping workers, and join all threads. It is safe to call `goc_pool_destroy` while fibers are still queued, running, or parked — the call is itself the synchronisation barrier.
 
@@ -832,7 +851,7 @@ typedef struct {
 
 `post_to_run_queue` routes entries as follows:
 
-- **Internal caller** (a fiber running on a pool thread, i.e. `tl_worker != NULL && tl_worker->pool == pool`): pushes to the executing worker's own deque, then posts **all other workers** when `idle_count > 0` so any sleeping worker can steal.
+- **Internal caller** (a fiber running on a pool thread, i.e. `tl_worker != NULL && tl_worker->pool == pool`): pushes to the executing worker's own deque and does **not** proactively wake peers. This preserves locality for short handoff-heavy workloads.
 - **External caller** (main thread, libuv loop, another pool): pushes into a round-robin target worker's injector, then posts that worker's `idle_sem` if any worker is idle.
 
 All threads — pool workers and the uv loop thread — are created via `gc_pthread_create`. On POSIX (Linux/macOS), `gc_pthread_create` is a macro alias for `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` / `GC_unregister_my_thread` call is needed or permitted on POSIX. On Windows, `gc_pthread_create` calls `pthread_create` with a trampoline (`gc_thread_trampoline` in `gc.c`) that calls `GC_register_my_thread` at thread start and `GC_unregister_my_thread` at thread exit.
@@ -1139,7 +1158,7 @@ uv_loop_t*    goc_scheduler(void);
 |---|---|---|
 | `cb_queue_init` | `void cb_queue_init(void)` | `loop.c` |
 | `post_to_run_queue` | `void post_to_run_queue(goc_pool* pool, goc_entry* entry)` | `pool.c` — increments `active_count` under `drain_mutex`; does **not** touch `live_count` |
-| `pool_fiber_born` | `void pool_fiber_born(goc_pool* pool)` | `pool.c` — increments `live_count` exactly once per new fiber; called from `goc_go_on` before `post_to_run_queue` |
+| `pool_submit_spawn` | `void pool_submit_spawn(goc_pool* pool, void (*fn)(void*), void* arg, goc_chan* join_ch)` | `pool.c` — increments `live_count`, materialises the fiber immediately or queues it behind the admission cap, and preserves eager same-pool child spawns for liveness |
 | `post_callback` | `void post_callback(goc_entry* entry, void* value)` | `loop.c` |
 | `on_wakeup` | `void on_wakeup(uv_async_t* handle)` | `loop.c` |
 | `wake` | `bool wake(goc_chan* ch, goc_entry* entry, void* value)` | `channel.c` — returns `true` when the entry is successfully claimed and dispatched; `false` when cancelled or already claimed (via `try_claim_wake`) |

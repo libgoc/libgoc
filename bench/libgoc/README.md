@@ -64,11 +64,11 @@ All benchmarks produce a single line per run:
 Example (canary mode, pool=1):
 
 ```
-Channel ping-pong: 200000 round trips in 77ms (2592082 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 195ms (2553508 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 606ms (329946 msg/s)
-Spawn idle tasks: 200000 fibers in 13292ms (15047 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 599ms (3773 primes/s)
+Channel ping-pong: 200000 round trips in 197ms (1010144 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 1170ms (427214 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 727ms (274870 msg/s)
+Spawn idle tasks: 200000 fibers in 4915ms (40688 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1312ms (1724 primes/s)
 ```
 
 ## Multi-Pool Testing
@@ -80,35 +80,35 @@ Prime sieve: 2262 primes up to 20000 in 599ms (3773 primes/s)
 ```
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 77ms (2592082 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 195ms (2553508 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 606ms (329946 msg/s)
-Spawn idle tasks: 200000 fibers in 13292ms (15047 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 599ms (3773 primes/s)
+Channel ping-pong: 200000 round trips in 197ms (1010144 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 1170ms (427214 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 727ms (274870 msg/s)
+Spawn idle tasks: 200000 fibers in 4915ms (40688 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1312ms (1724 primes/s)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 104ms (1918550 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 274ms (1821430 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 369ms (541717 msg/s)
-Spawn idle tasks: 200000 fibers in 9513ms (21023 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 441ms (5118 primes/s)
+Channel ping-pong: 200000 round trips in 108ms (1843485 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 575ms (869453 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 413ms (483536 msg/s)
+Spawn idle tasks: 200000 fibers in 3381ms (59148 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1344ms (1682 primes/s)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 108ms (1835567 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 268ms (1861899 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 451ms (442562 msg/s)
-Spawn idle tasks: 200000 fibers in 10245ms (19522 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 556ms (4064 primes/s)
+Channel ping-pong: 200000 round trips in 131ms (1516261 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 583ms (857014 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 472ms (423001 msg/s)
+Spawn idle tasks: 200000 fibers in 5921ms (33777 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2376ms (952 primes/s)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 126ms (1579323 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 323ms (1546837 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 517ms (386839 msg/s)
-Spawn idle tasks: 200000 fibers in 10622ms (18827 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1007ms (2245 primes/s)
+Channel ping-pong: 200000 round trips in 196ms (1015980 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 829ms (602770 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 841ms (237615 msg/s)
+Spawn idle tasks: 200000 fibers in 7806ms (25619 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2271ms (996 primes/s)
 ```
 
 ### vmem mode (`-DLIBGOC_VMEM=ON`)
@@ -116,39 +116,44 @@ Prime sieve: 2262 primes up to 20000 in 1007ms (2245 primes/s)
 ```
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 77ms (2577912 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 201ms (2483812 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 611ms (326836 msg/s)
-Spawn idle tasks: 200000 fibers in 12455ms (16057 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 611ms (3697 primes/s)
+Channel ping-pong: 200000 round trips in 498ms (401100 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 11099ms (45047 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 921ms (216928 msg/s)
+Spawn idle tasks: 200000 fibers in 5670ms (35273 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 8006ms (283 primes/s)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 105ms (1901673 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 273ms (1826997 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 378ms (528516 msg/s)
-Spawn idle tasks: 200000 fibers in 9081ms (22022 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 452ms (5004 primes/s)
+Channel ping-pong: 200000 round trips in 286ms (697435 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 11938ms (41880 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1375ms (145359 msg/s)
+Spawn idle tasks: 200000 fibers in 7075ms (28268 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 8967ms (252 primes/s)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 109ms (1831355 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 267ms (1871631 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 459ms (435226 msg/s)
-Spawn idle tasks: 200000 fibers in 9691ms (20636 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 578ms (3910 primes/s)
+Channel ping-pong: 200000 round trips in 229ms (872107 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 12537ms (39880 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1769ms (113047 msg/s)
+Spawn idle tasks: 200000 fibers in 13004ms (15379 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 12925ms (175 primes/s)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 125ms (1588654 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 305ms (1635970 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 585ms (341391 msg/s)
-Spawn idle tasks: 200000 fibers in 10689ms (18710 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1151ms (1964 primes/s)
+Channel ping-pong: 200000 round trips in 265ms (752246 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 9152ms (54628 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1839ms (108724 msg/s)
+Spawn idle tasks: 200000 fibers in 17201ms (11627 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 12887ms (176 primes/s)
 ```
 
-Note that pool=1 typically shows the best channel throughput for libgoc because
-all fibers run cooperatively on one OS thread with no cross-thread wakeup cost.
-With the work-stealing scheduler, canary and vmem modes show much closer
-performance than before, since the dominant cost at pool > 1 is now cross-thread
-wakeup latency rather than GC scan overhead.
+The current bounded-admission implementation changes the performance story
+substantially:
+
+- **Canary** now performs best at pool=2 on most benchmarks. The live-fiber
+	cap improves `spawn idle` throughput by preventing all 200k fibers from
+	materialising at once, but it also leaves `ring` and `prime sieve` well below
+	the older work-stealing-only numbers.
+- **vmem** is no longer close to canary. It is dramatically slower on `ring`,
+	`fan-out/fan-in`, and `prime sieve`, and should currently be treated as a
+	correctness/stress configuration rather than a near-parity performance mode.
