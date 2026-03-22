@@ -674,13 +674,10 @@ typedef struct goc_pool {
     _Atomic size_t     next_push_idx;  /* round-robin index for external injector pushes */
     _Atomic int        shutdown;       /* set to 1 to stop workers */
 
-    /* Drain synchronisation — drain_mutex protects active_count, live_count,
-       and drain_cond. */
+    /* Drain synchronisation — drain_mutex protects live_count,
+       resident_count, pending_spawn_*, and drain_cond. */
     pthread_mutex_t drain_mutex;
     pthread_cond_t  drain_cond;
-    size_t          active_count;      /* fibers currently queued or executing;
-                                          incremented by post_to_run_queue (under drain_mutex),
-                                          decremented after every mco_resume (yield or exit). */
     size_t          live_count;        /* accepted spawn requests not yet completed, including
                                           deferred spawn requests waiting behind the admission cap */
     size_t          resident_count;    /* fibers that have an allocated coroutine/stack right now */
@@ -689,7 +686,7 @@ typedef struct goc_pool {
 } goc_pool;
 ```
 
-> **`drain_cond` is signalled only on `MCO_DEAD`.** `active_count` is decremented (under `drain_mutex`) on every yield or exit, but the broadcast fires only when a fiber actually dies. `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`, not `active_count == 0` — a parked fiber (MCO_SUSPENDED) has already decremented `active_count` to zero while still being alive, so using `active_count` as the drain signal would cause a premature return while fibers are merely blocked on a channel.
+> **`drain_cond` is signalled only on `MCO_DEAD`.** The broadcast fires only when a fiber actually dies. `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0` — a parked fiber (MCO_SUSPENDED) is still alive and held in `live_count`, so the drain correctly waits until all fibers exit.
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
 
@@ -764,7 +761,6 @@ run:
         goc_fiber_root_update_sp(fe->fiber_root_handle, coro)  /* update cached SP for GC */
     if fe != NULL: atomic_store(fe->parked, 1, release)  /* release yield-gate after resume bookkeeping */
 
-    lock(drain_mutex); active_count--; unlock(drain_mutex)
     if st == MCO_DEAD:
         if fe != NULL: goc_fiber_root_unregister(fe->fiber_root_handle)  /* unregister via push_other_roots list */
         mco_destroy(coro)
@@ -776,11 +772,10 @@ run:
         unlock(drain_mutex)
         materialise and post all admitted spawn requests
     /* if MCO_SUSPENDED: the fiber yielded and is parked on a channel.
-       active_count has been decremented but live_count has NOT — the fiber is
-       still alive.  wake() → post_to_run_queue() will re-increment active_count
-       only (not live_count) when the fiber is rescheduled.  drain_cond is not
-       broadcast here: live_count > 0 still holds, so goc_pool_destroy /
-       goc_pool_destroy_timeout will not see a spurious drain-complete. */
+       live_count has NOT been decremented — the fiber is still alive.
+       wake() → post_to_run_queue() will re-enqueue it without touching live_count.
+       drain_cond is not broadcast here: live_count > 0 still holds, so
+       goc_pool_destroy / goc_pool_destroy_timeout will not see a spurious drain-complete. */
 ```
 
 > **Sleep-miss race closure.** A poster calling `post_to_run_queue` must not miss a sleeping worker. Protocol: (1) worker increments `idle_count` with `seq_cst` *before* its double-check; (2) poster completes its write (deque push or injector mutex-unlock, both full-barrier), then reads `idle_count` with `seq_cst`. The C11 total order on seq_cst operations guarantees that if the poster sees `idle_count == 0`, the worker's double-check will see the posted entry; if the poster sees `idle_count > 0`, it posts `idle_sem` to wake the worker.
@@ -813,8 +808,7 @@ The invariant is:
 
 - `pool_submit_spawn` increments `live_count` exactly once per accepted spawn request, whether the fiber is materialised immediately or queued in `pending_spawn_*`.
 - `resident_count` counts only fibers that already have a coroutine/stack. Deferred spawn requests contribute to `live_count` but not to `resident_count`.
-- `post_to_run_queue` increments **only** `active_count` before pushing to the run queue. It does **not** touch `live_count` — re-queuing a parked fiber must not inflate it.
-- After `mco_resume` returns, the worker always decrements `active_count` — whether the fiber yielded (`MCO_SUSPENDED`) or exited (`MCO_DEAD`).
+- `post_to_run_queue` pushes the entry to the run queue. It does **not** touch `live_count` — re-queuing a parked fiber must not inflate it.
 - `live_count` and `resident_count` are decremented **only** when `mco_status(coro) == MCO_DEAD`. At that same point, the worker may admit deferred external spawns until the cap is full again.
 - `goc_pool_destroy` and `goc_pool_destroy_timeout` wait on `live_count == 0`. This correctly waits for both already-materialised fibers and deferred-but-accepted spawns to finish.
 
@@ -1160,7 +1154,7 @@ uv_loop_t*    goc_scheduler(void);
 | Function | Signature | Defined in |
 |---|---|---|
 | `cb_queue_init` | `void cb_queue_init(void)` | `loop.c` |
-| `post_to_run_queue` | `void post_to_run_queue(goc_pool* pool, goc_entry* entry)` | `pool.c` — increments `active_count` under `drain_mutex`; does **not** touch `live_count` |
+| `post_to_run_queue` | `void post_to_run_queue(goc_pool* pool, goc_entry* entry)` | `pool.c` — enqueues entry for execution; does **not** touch `live_count` |
 | `pool_submit_spawn` | `void pool_submit_spawn(goc_pool* pool, void (*fn)(void*), void* arg, goc_chan* join_ch)` | `pool.c` — increments `live_count`, materialises the fiber immediately or queues it behind the admission cap, and preserves eager same-pool child spawns for liveness |
 | `post_callback` | `void post_callback(goc_entry* entry, void* value)` | `loop.c` |
 | `on_wakeup` | `void on_wakeup(uv_async_t* handle)` | `loop.c` |
