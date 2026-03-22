@@ -31,10 +31,8 @@ make run-all
 ### vmem mode (virtual-memory-backed stacks — opt-in)
 
 ```sh
-# Rebuild libgoc with -DLIBGOC_VMEM=ON, then run
-cmake -S ../.. -B ../../build-bench-vmem -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON
-cmake --build ../../build-bench-vmem --target goc
-make BUILD_DIR=../../build-bench-vmem build run-all
+# Build and run benchmarks against a vmem libgoc build
+make LIBGOC_VMEM=ON BUILD_DIR=../../build-bench-vmem build run-all
 ```
 
 ## Benchmarks
