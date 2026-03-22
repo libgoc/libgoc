@@ -103,7 +103,7 @@ jobs:
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
-        run: ctest --test-dir build --output-on-failure --timeout 120
+        run: ctest --test-dir build --output-on-failure --timeout 60
         env:
           LD_LIBRARY_PATH: ${{ env.BDWGC_PREFIX }}/lib
 
@@ -137,7 +137,7 @@ jobs:
 
       - name: Test (macOS)
         if: runner.os == 'macOS'
-        run: ctest --test-dir build --output-on-failure --timeout 120
+        run: ctest --test-dir build --output-on-failure --timeout 60
 
       # ---- Windows -----------------------------------------------------
       # Uses MSYS2/MinGW-w64 (UCRT64) to provide a POSIX-compatible toolchain
@@ -181,4 +181,4 @@ jobs:
       - name: Test (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: ctest --test-dir build --output-on-failure --timeout 120
+        run: ctest --test-dir build --output-on-failure --timeout 60

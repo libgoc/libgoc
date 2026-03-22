@@ -98,7 +98,7 @@ void goc_init(void);
  * Calling from any non-main thread prints an error to stderr and aborts.
  * Drains all pools, stops the event loop, destroys all live channel mutexes,
  * and releases all runtime resources. No goc_* call may be made after this
- * returns (except goc_init to re-initialise).
+ * returns.
  */
 void goc_shutdown(void);
 
@@ -141,6 +141,12 @@ bool goc_in_fiber(void);
  * Returns a join channel that is closed when fn returns. The caller may
  * goc_take() or goc_take_sync() on the join channel to wait for completion,
  * or ignore it entirely (the channel is GC-collected when unreachable).
+ *
+ * If the target pool's live-fiber throttle is engaged, the runtime may defer
+ * materialising the fiber until earlier fibers finish. Same-pool spawns made
+ * from a currently running fiber are created eagerly to avoid deadlocks in
+ * parent→child dependency patterns. The join channel is still returned
+ * immediately.
  */
 goc_chan* goc_go(void (*fn)(void*), void* arg);
 
@@ -152,6 +158,10 @@ goc_chan* goc_go(void (*fn)(void*), void* arg);
  * arg   : arbitrary user data passed to fn.
  *
  * Returns a join channel as with goc_go().
+ *
+ * The runtime may defer actual fiber creation when the pool is at its
+ * live-fiber cap (see GOC_MAX_LIVE_FIBERS in the project README). Same-pool
+ * spawns made from a currently running fiber bypass that deferral.
  */
 goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg);
 
@@ -165,8 +175,7 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg);
  * buf_size : capacity of the internal ring buffer (0 = rendezvous channel).
  *
  * The channel itself is GC-heap allocated. Its internal mutex is plain-malloc
- * allocated (libuv constraint) and is freed during goc_shutdown() or when
- * goc_close() triggers cleanup.
+ * allocated (libuv constraint) and is freed during goc_shutdown().
  */
 goc_chan* goc_chan_make(size_t buf_size);
 
@@ -187,7 +196,7 @@ void goc_close(goc_chan* ch);
  * Channel I/O — Fiber context
  *
  * Must only be called from within a fiber (i.e. goc_in_fiber() == true).
- * Calling from an OS thread results in undefined behaviour.
+ * Calling from an OS thread aborts with a diagnostic message.
  * ---------------------------------------------------------------------- */
 
 /**

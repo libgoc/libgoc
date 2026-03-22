@@ -2,9 +2,7 @@
  * src/wsdq.c
  *
  * Implementation of goc_wsdq (Chase–Lev work-stealing deque) and
- * goc_injector (MPSC injector queue).
- *
- * Memory model notes — see pr.md §Step 3 for the full rationale:
+ * goc_injector (MPSC injector queue):
  *
  *   wsdq_push_bottom:
  *     - Loads top with acquire, bottom with relaxed (owner is sole writer).
@@ -28,6 +26,7 @@
 #include <stdlib.h>
 #include <assert.h>
 #include <stdatomic.h>
+#include <gc.h>
 #include "wsdq.h"
 
 /* =========================================================================
@@ -41,7 +40,10 @@ void wsdq_init(goc_wsdq* dq, size_t cap) {
     atomic_init(&dq->top,    0);
     dq->capacity = cap;
 
-    goc_entry** buf = malloc(cap * sizeof(goc_entry*));
+    /* GC_malloc_uncollectable: never collected itself, but scanned for interior
+     * pointers.  Any goc_entry* stored in the ring buffer is therefore a GC
+     * root automatically, keeping the entry alive while it is queued. */
+    goc_entry** buf = GC_malloc_uncollectable(cap * sizeof(goc_entry*));
     atomic_init(&dq->buf, buf);
 
     uv_mutex_init(&dq->steal_lock);
@@ -49,7 +51,7 @@ void wsdq_init(goc_wsdq* dq, size_t cap) {
 
 void wsdq_destroy(goc_wsdq* dq) {
     goc_entry** buf = atomic_load_explicit(&dq->buf, memory_order_relaxed);
-    free(buf);
+    GC_free(buf);
     uv_mutex_destroy(&dq->steal_lock);
 }
 
@@ -63,7 +65,7 @@ void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry) {
         /* Grow: allocate 2× buffer, copy live entries with modular indexing,
          * swap under steal_lock to prevent thieves reading the freed buffer. */
         size_t new_cap = cap * 2;
-        goc_entry** new_buf = malloc(new_cap * sizeof(goc_entry*));
+        goc_entry** new_buf = GC_malloc_uncollectable(new_cap * sizeof(goc_entry*));
 
         for (size_t i = t; i < b; i++)
             new_buf[i % new_cap] = buf[i % cap];
@@ -73,7 +75,7 @@ void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry) {
         dq->capacity = new_cap;
         uv_mutex_unlock(&dq->steal_lock);
 
-        free(buf);
+        GC_free(buf);
         buf = new_buf;
         cap = new_cap;
     }
@@ -185,6 +187,10 @@ void injector_destroy(goc_injector* inj) {
 }
 
 void injector_push(goc_injector* inj, goc_entry* entry) {
+    /* Plain malloc: injector nodes are freed manually on pop/destroy, and the
+     * queue is protected by a mutex, so we do not need BDW-GC here. Using
+     * malloc also avoids requiring arbitrary producer threads to be registered
+     * with the GC (tests exercise injector_push from plain pthreads). */
     goc_injector_node* node = malloc(sizeof(goc_injector_node));
     node->entry = entry;
     node->next  = NULL;

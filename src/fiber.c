@@ -43,41 +43,41 @@ static void fiber_trampoline(mco_coro* co) {
 }
 
 /* ---------------------------------------------------------------------------
- * goc_go_on — launch a fiber on a specific pool
+ * goc_fiber_entry_create — allocate and fully initialise a runnable fiber
  * --------------------------------------------------------------------------- */
 
-goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
-    /* 1. Create the join channel (rendezvous; closed when fiber returns). */
-    goc_chan* join_ch = goc_chan_make(0);
-
-    /* 2. Allocate the entry on the GC heap (zero-initialised by GC_malloc). */
+goc_entry* goc_fiber_entry_create(goc_pool* pool,
+                                  void (*fn)(void*),
+                                  void* arg,
+                                  goc_chan* join_ch) {
+    /* 1. Allocate the entry on the GC heap (zero-initialised by GC_malloc). */
     goc_entry* entry = (goc_entry*)goc_malloc(sizeof(goc_entry));
 
-    /* 3. Populate fiber launch fields. */
+    /* 2. Populate fiber launch fields. */
     entry->kind     = GOC_FIBER;
     entry->fn       = fn;
     entry->fn_arg   = arg;
     entry->join_ch  = join_ch;
     entry->pool     = pool;
 
-    /* 4. Initialise the minicoro descriptor with the trampoline and stack size. */
+    /* 3. Initialise the minicoro descriptor with the trampoline and stack size. */
     mco_desc desc   = mco_desc_init(fiber_trampoline, LIBGOC_STACK_SIZE); /* 0 = use minicoro's default */
     desc.user_data  = entry;
 
-    /* 5. Create the coroutine. */
+    /* 4. Create the coroutine. */
     mco_result rc = mco_create(&entry->coro, &desc);
     if (rc != MCO_SUCCESS) {
         fprintf(stderr, "libgoc: mco_create failed (%d)\n", rc);
         abort();
     }
 
-    /* 6. Register the fiber stack so BDW-GC scans it while the fiber is
+    /* 5. Register the fiber stack so BDW-GC scans it while the fiber is
      *    suspended.  Uses a GC_push_other_roots callback (gc.c) instead of
      *    GC_add_roots to avoid exhausting BDW-GC's fixed root-set table when
      *    large numbers of fibers are created (e.g. bench_spawn_idle).
      *    Unregistered in pool.c before mco_destroy when the fiber reaches
      *    MCO_DEAD. */
-    void* fiber_stack_top  = (char*)entry->coro->stack_base + entry->coro->stack_size;
+    void* fiber_stack_top    = (char*)entry->coro->stack_base + entry->coro->stack_size;
     entry->fiber_root_handle = goc_fiber_root_register(entry->coro, fiber_stack_top, entry);
 
     /* 6. Record the canary pointer (lowest word of the fiber stack). */
@@ -86,14 +86,23 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
     /* 7. Write the canary value so pool_worker_fn can detect stack overflow. */
     goc_stack_canary_set(entry->stack_canary_ptr);
 
-    /* 8. Record this fiber's birth in live_count (exactly once per fiber),
-     *    then hand the entry to the pool run queue.
-     *    pool_fiber_born must come before post_to_run_queue so that live_count
-     *    is non-zero before the worker could potentially decrement it. */
-    pool_fiber_born(pool);
-    post_to_run_queue(pool, entry);
+    return entry;
+}
 
-    /* 9. Return the join channel to the caller. */
+/* ---------------------------------------------------------------------------
+ * goc_go_on — launch a fiber on a specific pool
+ * --------------------------------------------------------------------------- */
+
+goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
+    /* 1. Create the join channel (rendezvous; closed when fiber returns). */
+    goc_chan* join_ch = goc_chan_make(0);
+
+    /* 2. Hand the spawn request to the pool. If the pool is currently below
+     *    its live-fiber cap, the fiber is created immediately. Otherwise the
+     *    request is queued and admitted later as earlier fibers finish. */
+    pool_submit_spawn(pool, fn, arg, join_ch);
+
+    /* 3. Return the join channel to the caller immediately. */
     return join_ch;
 }
 

@@ -75,7 +75,7 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
         goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
         while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
             sched_yield();
-        post_to_run_queue(e->pool, e);
+        post_to_run_queue(fe->pool, fe);
         break;
     }
     case GOC_CALLBACK:
@@ -184,9 +184,8 @@ static void wake_all_parked_entries(goc_entry* head) {
     while (e != NULL) {
         /* Snapshot next before any dispatch: for GOC_FIBER entries,
          * post_to_run_queue may allow a pool thread to resume the fiber
-         * immediately, which can cause the entry to be freed (if it was
-         * stack-allocated in goc_take) or collected (if GC-heap allocated
-         * in goc_alts).  Reading e->next after dispatch is use-after-free. */
+         * immediately, and the parked entry can become unreachable/collected
+         * before we iterate again. Reading e->next after dispatch is unsafe. */
         goc_entry* next = e->next;
         /* Skip cancelled entries (goc_alts losers): their coroutine is
          * already dead; calling post_to_run_queue on it would resume a
@@ -199,7 +198,7 @@ static void wake_all_parked_entries(goc_entry* head) {
                     goc_entry* fe = (goc_entry*)mco_get_user_data(e->coro);
                     while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
                         sched_yield();
-                    post_to_run_queue(e->pool, e);
+                    post_to_run_queue(fe->pool, fe);
                     break;
                 }
                 case GOC_CALLBACK: post_callback(e, NULL);        break;
@@ -295,16 +294,17 @@ goc_val_t* goc_take(goc_chan* ch)
     /* Slow path: park on this channel */
     void* local_result = NULL;
 
-    goc_entry e = { 0 };
-    e.kind             = GOC_FIBER;
-    e.coro             = mco_running();
-    e.pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
-    e.result_slot      = &local_result;
-    e.ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
-    goc_stack_canary_init(&e);
+    goc_entry* e = goc_malloc(sizeof(goc_entry));
+    *e = (goc_entry){ 0 };
+    e->kind             = GOC_FIBER;
+    e->coro             = mco_running();
+    e->pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
+    e->result_slot      = &local_result;
+    e->ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
+    goc_stack_canary_init(e);
 
     /* Append to takers list */
-    chan_list_append(&ch->takers, &ch->takers_tail, &e);
+    chan_list_append(&ch->takers, &ch->takers_tail, e);
 
     /* Set parked = 0 on the fiber's initial entry while ch->lock is still held.
      * wake() and goc_close() will spin until pool_worker_fn sets it back to 1
@@ -318,7 +318,7 @@ goc_val_t* goc_take(goc_chan* ch)
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
-    r->val = local_result; r->ok = e.ok;
+    r->val = local_result; r->ok = e->ok;
     return r;
 }
 
@@ -366,16 +366,17 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     }
 
     /* Slow path: park on this channel */
-    goc_entry e = { 0 };
-    e.kind             = GOC_FIBER;
-    e.coro             = mco_running();
-    e.pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
-    e.put_val          = val;
-    e.ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
-    goc_stack_canary_init(&e);
+    goc_entry* e = goc_malloc(sizeof(goc_entry));
+    *e = (goc_entry){ 0 };
+    e->kind             = GOC_FIBER;
+    e->coro             = mco_running();
+    e->pool             = ((goc_entry*)mco_get_user_data(mco_running()))->pool;
+    e->put_val          = val;
+    e->ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
+    goc_stack_canary_init(e);
 
     /* Append to putters list */
-    chan_list_append(&ch->putters, &ch->putters_tail, &e);
+    chan_list_append(&ch->putters, &ch->putters_tail, e);
 
     /* Same yield-gate as goc_take slow path. */
     goc_entry* fiber_entry = (goc_entry*)mco_get_user_data(mco_running());
@@ -385,7 +386,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
-    return e.ok;
+    return e->ok;
 }
 
 /* --------------------------------------------------------------------------

@@ -21,20 +21,12 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | `libuv` | event loop, timers, cross-thread wakeup |
 | Boehm GC | garbage collection; **must be built with POSIX thread support** (`--enable-threads=posix`); linked automatically, initialised by `goc_init` |
 
-> See [minicoro limitations](#minicoro-limitations) in the Public API section for fiber stack constraints.
-
 **Pre-built static libraries** for:
 - Linux (x86-64)
 - macOS (arm64)
 - Windows (x86-64)
 
 are available on the [Releases page](https://github.com/divs1210/libgoc/releases).
-
-> This library is in active development ⚠️
-> - ✅ API stable
-> - ✅ Core functionality complete
-> - ✅ Stress testing done
-> - 📈 Clear optimization path
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
@@ -308,8 +300,8 @@ int main(void) {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_init` | `void goc_init(void)` | Initialise the runtime. Must be called **exactly once**, as the **first call in `main()`**, before any other library or application code that could trigger GC allocation. Must be called from the process main thread; calling from any non-main thread prints an error to `stderr` and aborts. Calls `GC_INIT()` and `GC_allow_register_threads()` unconditionally — do not call these yourself. Initialises the callback queue, the live-channel registry, and both async handles, then spawns the libuv loop thread and creates the default thread pool. Calling `goc_init` more than once is undefined behaviour. |
-| `goc_shutdown` | `void goc_shutdown(void)` | Shut down the runtime. Blocks until all in-flight fibers on every pool have completed naturally, then tears down all pools (the default pool and any user-created pools not yet destroyed), destroys channel mutexes, signals the loop thread to close all handles, joins the loop thread, and frees the event loop. Must be called from the process main thread (the same thread that called `goc_init`); calling from any non-main thread prints an error to `stderr` and aborts. Will block forever if any fiber is waiting on a channel event that will never arrive. May not be called again after it returns. |
+| `goc_init` | `void goc_init(void)` | Initialise the runtime. Must be called **exactly once**, as the **first call in `main()`**, before any other library or application code that could trigger GC allocation. Must be called from the process main thread; calling from any non-main thread prints an error to `stderr` and aborts. Calls `GC_INIT()` and `GC_allow_register_threads()` unconditionally — do not call these yourself. Initialises the live-channel, pool, and mutex registries; creates the libuv loop infrastructure; starts the libuv loop thread; and creates the default thread pool. |
+| `goc_shutdown` | `void goc_shutdown(void)` | Shut down the runtime. Blocks until all in-flight fibers on every pool have completed naturally, then tears down all pools (the default pool and any user-created pools not yet destroyed), destroys channel and RW-mutex internal locks, signals the loop thread to close all handles, joins the loop thread, and frees the event loop. Must be called from the process main thread (the same thread that called `goc_init`); calling from any non-main thread prints an error to `stderr` and aborts. Will block forever if any fiber is waiting on a channel event that will never arrive. No `goc_*` call is valid after it returns. |
 
 ---
 
@@ -351,8 +343,8 @@ typedef struct {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_chan_make` | `goc_chan* goc_chan_make(size_t buf_size)` | Create a channel. `buf_size == 0` → unbuffered (synchronous rendezvous). `buf_size > 0` → buffered ring of that capacity. |
-| `goc_close` | `void goc_close(goc_chan* ch)` | Close a channel, waking all parked fibers with `ok=GOC_CLOSED`. Subsequent puts return `GOC_CLOSED`; subsequent takes drain any buffered values, then return `{NULL, GOC_CLOSED}`. |
+| `goc_chan_make` | `goc_chan* goc_chan_make(size_t buf_size)` | Create a channel. `buf_size == 0` → unbuffered (synchronous rendezvous). `buf_size > 0` → buffered ring of that capacity. The channel object itself is GC-managed; its internal mutex is plain-`malloc` allocated and is released during `goc_shutdown()`. |
+| `goc_close` | `void goc_close(goc_chan* ch)` | Close a channel. The operation is idempotent: closing an already-closed channel is a no-op. Closing wakes all parked takers and putters with `ok=GOC_CLOSED`. Subsequent puts return `GOC_CLOSED`; subsequent takes drain any buffered values, then return `{NULL, GOC_CLOSED}`. |
 
 ```c
 // Unbuffered
@@ -378,8 +370,8 @@ goc_close(ch);
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the default pool. Stack is managed by minicoro. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
-| `goc_go_on` | `goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg)` | Spawn on a specific pool. Stack is managed by minicoro. Returns a join channel with the same semantics as `goc_go`. |
+| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the default pool. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
+| `goc_go_on` | `goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg)` | Spawn on a specific pool. Returns a join channel with the same semantics as `goc_go`. |
 
 ```c
 typedef struct { goc_chan* ch; int n; } args_t;
@@ -622,6 +614,14 @@ goc_close(w);          /* release */
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
 
+Pools also apply a live-fiber admission cap by default so bursty spawn patterns do not materialise an unbounded number of fibers at once. This helps both canary and vmem builds stay bounded under mass-spawn workloads, while still keeping `goc_go` / `goc_go_on` non-blocking. When the cap is reached, new external spawn calls are accepted immediately but their actual fiber creation is deferred until earlier fibers finish. Same-pool spawns originating from a currently running fiber bypass the cap to preserve liveness for parent→child dependency patterns. Override the cap with `GOC_MAX_LIVE_FIBERS`:
+
+- unset: use the built-in default in all builds:
+    `floor(0.6 × (available_hardware_memory / fiber_stack_size))`
+    (the `0.6` factor intentionally reserves ~40% memory headroom for GC and runtime overhead)
+- `0`: disable throttling entirely
+- positive integer: explicit per-pool live-fiber cap
+
 ```c
 typedef enum {
     GOC_DRAIN_OK      = 0,  /* all fibers finished within the deadline */
@@ -631,7 +631,7 @@ typedef enum {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_pool_make` | `goc_pool* goc_pool_make(size_t threads)` | Create a pool with `threads` worker threads. Worker thread registration with Boehm GC is handled automatically via `gc_pthread_create` / `gc_pthread_join` (on POSIX: aliases for `GC_pthread_create`/`GC_pthread_join`; on Windows: a trampoline wrapping `GC_register_my_thread`/`GC_unregister_my_thread`) — do not register or unregister threads manually. |
+| `goc_pool_make` | `goc_pool* goc_pool_make(size_t threads)` | Create a pool with `threads` worker threads. |
 | `goc_default_pool` | `goc_pool* goc_default_pool(void)` | Return the default thread pool created by `goc_init`. The default pool is created with `max(4, hardware_concurrency)` worker threads (overridable via `GOC_POOL_THREADS`). The returned pointer is valid from `goc_init` until `goc_shutdown` returns. |
 | `goc_pool_destroy` | `void goc_pool_destroy(goc_pool* pool)` | Wait for all in-flight fibers on the pool to complete naturally, then drain the run queue, join all worker threads, and release pool resources. Blocks indefinitely if any fiber is parked on a channel event that never arrives. Safe to call while fibers are still queued or running — the drain is the synchronisation barrier. **Must not be called from within a worker thread that belongs to `pool`** (including from a fiber running on that pool); that path aborts with a diagnostic message. |
 | `goc_pool_destroy_timeout` | `goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms)` | Like `goc_pool_destroy`, but returns `GOC_DRAIN_OK` if the drain completes within `ms` milliseconds, or `GOC_DRAIN_TIMEOUT` if the timeout expires before all fibers have finished. On timeout the pool is **not** destroyed — worker threads continue running and the pool remains valid. The caller may retry later or take other action (e.g. closing channels to unblock parked fibers, then calling `goc_pool_destroy`). **Must not be called from within a worker thread that belongs to `pool`**; that path aborts with a diagnostic message. |
@@ -728,6 +728,7 @@ A C11 compiler is required: GCC or Clang on Linux/macOS; MinGW-w64 GCC via MSYS2
 |---|---|---|
 | `GOC_DEAD_COUNT_THRESHOLD` | `8` | Dead-entry compaction threshold for channel waiter lists |
 | `GOC_ALTS_STACK_THRESHOLD` | `8` | Max `goc_alts` arms before scratch buffer moves to heap |
+| `GOC_DEFAULT_LIVE_FIBER_MEMORY_FACTOR` | `0.6` | Default safety/throughput factor in `floor(factor × memory / stack_size)` for live-fiber admission |
 
 ---
 

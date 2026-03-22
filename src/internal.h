@@ -73,6 +73,7 @@ static inline void goc_sync_destroy(goc_sync_t* s) {
 
 typedef struct goc_pool goc_pool;   /* defined in pool.c */
 typedef struct goc_entry goc_entry;
+typedef struct goc_spawn_req goc_spawn_req;
 
 /* ---------------------------------------------------------------------------
  * goc_entry_kind
@@ -156,6 +157,13 @@ struct goc_entry {
     _Atomic int              parked;      /* per-fiber flag; see protocol above */
 };
 
+struct goc_spawn_req {
+    struct goc_spawn_req* next;
+    void               (*fn)(void*);
+    void*                 fn_arg;
+    goc_chan*             join_ch;
+};
+
 /* ---------------------------------------------------------------------------
  * Canary Constant
  *
@@ -184,7 +192,7 @@ struct goc_entry {
     /* Fixed stack mode: enable overflow protection */
     #define goc_stack_canary_init(entry)  do { (entry)->stack_canary_ptr = (uint32_t*)(entry)->coro->stack_base; } while(0)
     #define goc_stack_canary_set(ptr)     do { *(ptr) = GOC_STACK_CANARY; } while(0)
-    #define goc_stack_canary_check(ptr)   do { if (*(ptr) != GOC_STACK_CANARY) abort(); } while(0)
+    #define goc_stack_canary_check(ptr)   do { if (*(ptr) != GOC_STACK_CANARY) { fprintf(stderr, "libgoc: stack canary corrupted at %p (val=0x%08x); likely stack overflow\n", (void*)(ptr), *(ptr)); abort(); } } while(0)
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -201,12 +209,21 @@ void  goc_fiber_root_unregister(void* handle);
 void  goc_fiber_root_update_sp(void* handle, mco_coro* coro);
 void  goc_fiber_roots_init(void);
 
+/* fiber.c → used by pool.c */
+goc_entry* goc_fiber_entry_create(goc_pool* pool,
+                                  void (*fn)(void*),
+                                  void* arg,
+                                  goc_chan* join_ch);
+
 /* minicoro.c → used by gc.c (push_fiber_roots callback) */
 void* mco_get_suspended_sp(mco_coro* co);
 
 /* pool.c → used by fiber.c, channel.c */
 void post_to_run_queue(goc_pool* pool, goc_entry* entry);
-void pool_fiber_born(goc_pool* pool);
+void pool_submit_spawn(goc_pool* pool,
+                       void (*fn)(void*),
+                       void* arg,
+                       goc_chan* join_ch);
 
 /* Inline helper used by wake() and goc_close to atomically claim a parked
  * entry for dispatch.  For goc_alts entries (fired != NULL), first CAS fired

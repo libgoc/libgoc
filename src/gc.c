@@ -126,8 +126,9 @@ int gc_pthread_join(pthread_t t, void** retval)
 
 typedef struct {
     goc_entry*      entry;      /* GC root: keeps the fiber's goc_entry alive */
+    void*           stack_base; /* low end of fiber stack (const after init) */
     void*           stack_top;  /* high end of fiber stack (const after init) */
-    _Atomic(void*)  scan_from;  /* low end of scan range; updated post-yield */
+    _Atomic(void*)  scan_from;  /* cached SP hint; kept for future optimisation */
 } fiber_root_slot;
 
 /* fiber_root_chunks[c] is malloc'd (not GC-heap) for the same reason as the
@@ -166,10 +167,20 @@ static void push_fiber_roots(void)
                 GC_push_all_eager(&s->entry,
                                   (char*)&s->entry + sizeof(goc_entry*));
 
-                /* Scan the used portion of the fiber stack. */
-                void* scan_from = atomic_load_explicit(
-                    &s->scan_from, memory_order_relaxed);
-                GC_push_all_eager(scan_from, s->stack_top);
+                /* Scan the full fiber stack.
+                 *
+                 * scan_from is only a valid lower bound when the fiber is
+                 * suspended (SP saved at the last yield).  While the fiber is
+                 * running, scan_from is stale: new call frames are pushed below
+                 * the saved SP and are outside [scan_from, stack_top].  Any
+                 * GC_malloc inside those frames (e.g. goc_go_on spawning child
+                 * fibers) produces a goc_entry* that is only on the active
+                 * fiber stack — invisible to GC if scan_from is used.
+                 *
+                 * Scanning [stack_base, stack_top] is always conservative and
+                 * correct: BDW-GC ignores non-pointer-aligned words, so the
+                 * extra scan of the unused portion of the stack is safe. */
+                GC_push_all_eager(s->stack_base, s->stack_top);
 
                 bword &= bword - 1; /* clear lowest set bit */
             }
@@ -194,11 +205,6 @@ void* goc_fiber_root_register(mco_coro* coro, void* top, goc_entry* entry)
                                               memory_order_relaxed);
         if (bword != UINT64_MAX) {
             int bit = __builtin_ctzll(~bword);
-            /* Under the mutex no other thread can be in register, so
-             * atomic_fetch_or is sufficient (no CAS retry needed). */
-            atomic_fetch_or_explicit(&fiber_root_bitmap[w],
-                                     (uint64_t)1 << bit,
-                                     memory_order_relaxed);
             slot_idx = w * 64 + (size_t)bit;
             break;
         }
@@ -219,25 +225,39 @@ void* goc_fiber_root_register(mco_coro* coro, void* top, goc_entry* entry)
         atomic_fetch_add_explicit(&fiber_root_num_chunks, 1,
                                   memory_order_relaxed);
 
-        /* Claim slot 0 of the new chunk. */
-        size_t base_word = c * FIBER_ROOT_CHUNK_WORDS;
-        atomic_fetch_or_explicit(&fiber_root_bitmap[base_word],
-                                 (uint64_t)1,
-                                 memory_order_relaxed);
         slot_idx = c * FIBER_ROOT_CHUNK_SIZE;
     }
 
-    /* Write slot data.  Visible to the GC callback only after the bitmap bit
-     * is set (which happened above, under the mutex). */
+    /* Write slot data BEFORE setting the bitmap bit.
+     *
+     * push_fiber_roots runs without the mutex (called by BDW-GC during
+     * stop-the-world).  If the bitmap bit were set first, a GC stop between
+     * the bit-set and the data-write would leave push_fiber_roots reading
+     * stale data from the previous occupant of this slot — whose stack was
+     * already freed by mco_destroy — causing GC_push_all_eager to scan freed
+     * memory and corrupt the heap (SIGABRT under burst-spawn workloads).
+     *
+     * By writing data first and then publishing the bit with a release fence,
+     * any observer that loads the bit and sees it set is guaranteed to also
+     * see the correct slot data. */
     size_t           chunk_idx = slot_idx / FIBER_ROOT_CHUNK_SIZE;
     size_t           offset    = slot_idx % FIBER_ROOT_CHUNK_SIZE;
     fiber_root_slot* s         = &fiber_root_chunks[chunk_idx][offset];
-    s->entry     = entry;
-    s->stack_top = top;
+    s->entry      = entry;
+    s->stack_base = coro->stack_base;
+    s->stack_top  = top;
     void* initial_sp = mco_get_suspended_sp(coro);
     atomic_store_explicit(&s->scan_from,
                           initial_sp ? initial_sp : coro->stack_base,
                           memory_order_relaxed);
+
+    /* Publish: release fence ensures slot data is visible before the bit. */
+    size_t   bitmap_word = slot_idx / 64;
+    uint64_t bitmap_bit  = (uint64_t)1 << (slot_idx % 64);
+    atomic_thread_fence(memory_order_release);
+    atomic_fetch_or_explicit(&fiber_root_bitmap[bitmap_word],
+                             bitmap_bit,
+                             memory_order_relaxed);
 
     uv_mutex_unlock(&fiber_root_mutex);
     return (void*)(uintptr_t)slot_idx;

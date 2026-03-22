@@ -51,7 +51,7 @@ Module.symvers
 
 # CMake build directory
 build/
-build-bench/
+build-*/
 cmake-build-*/
 
 # CMake cache
@@ -79,4 +79,5 @@ build-bench-vmem/
 build-bench-vmem-old/
 bench/libgoc/bench-libgoc-vmem
 bench/libgoc/bench-vmem-old
-.clj-kondo/.cache/v1/clj/bench.core.transit.json
+.clj-kondo/
+fix.md

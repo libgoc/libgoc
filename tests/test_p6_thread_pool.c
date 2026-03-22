@@ -59,6 +59,35 @@
  *   P6.14  injector push/pop round-trip (FIFO, single-threaded)
  *   P6.15  injector_pop on empty returns NULL
  *   P6.16  injector concurrent push from multiple threads
+ *   P6.17  wsdq pop_bottom / steal_top race on the last element (no
+ *          double-delivery, no loss, no hang)
+ *   P6.18  pool internal post: burst of child fibers (spawned inside a fiber
+ *          via goc_go_on) all complete — verifies that idle workers beyond
+ *          the fixed (w->index+1)%N neighbor are eventually woken/utilized;
+ *          also catches deferred-materialization GC race under burst spawning
+ *          (SIGABRT from BDW-GC if concurrent goc_fiber_materialize calls
+ *          corrupt or exhaust the GC root registration table)
+ *   P6.19  pool external post sleep-miss: serial external posts with forced
+ *          idle windows — verifies that a worker sleeping in uv_sem_wait is
+ *          reliably woken when an external caller pushes to its injector
+ *   P6.20  pool external post targets busy worker: injected tasks still
+ *          complete even when the round-robin target worker is inside
+ *          mco_resume and its idle_sem post is consumed after the fact;
+ *          also catches deferred-materialization GC race (same as P6.18)
+ *          when the burst of deferred tasks are materialized concurrently
+ *   P6.21  pool idle steal gap: work that becomes stealable after a worker's
+ *          double-check (but before uv_sem_wait) is still processed within
+ *          deadline, not silently dropped; also catches deferred-
+ *          materialization GC race under a larger burst (1000 children)
+ *   P6.22  double-resume via stack-address reuse: many ping-pong pairs on
+ *          unbuffered channels with a high worker count; verifies that
+ *          heap-allocated parking entries prevent a waker spinning on the
+ *          old entry from claiming the new entry at the same stack address
+ *
+ *   P6.23  GC bitmap write-ordering: rapid slot reuse with concurrent GC
+ *          cycles — verifies that goc_fiber_root_register writes slot data
+ *          before publishing the bitmap bit, preventing push_fiber_roots from
+ *          reading stale stack pointers from a freed previous occupant
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -116,6 +145,104 @@ static void done_wait(done_t* d) {
 static void done_destroy(done_t* d) {
     pthread_mutex_destroy(&d->mtx);
     pthread_cond_destroy(&d->cond);
+}
+
+/* =========================================================================
+ * Portable barrier helper for tests
+ *
+ * macOS does not provide pthread_barrier_t/pthread_barrier_* in libpthread.
+ * Keep test semantics portable by providing a local 2+ thread barrier shim on
+ * __APPLE__, and use native pthread_barrier_* everywhere else.
+ * ====================================================================== */
+
+#if defined(__APPLE__)
+typedef struct {
+    pthread_mutex_t mtx;
+    pthread_cond_t  cond;
+    unsigned        parties;
+    unsigned        arrived;
+    unsigned        generation;
+} goc_test_barrier_t;
+
+static int goc_test_barrier_init(goc_test_barrier_t* b,
+                                 const void* attr,
+                                 unsigned count) {
+    (void)attr;
+    if (count == 0)
+        return -1;
+    if (pthread_mutex_init(&b->mtx, NULL) != 0)
+        return -1;
+    if (pthread_cond_init(&b->cond, NULL) != 0) {
+        pthread_mutex_destroy(&b->mtx);
+        return -1;
+    }
+    b->parties = count;
+    b->arrived = 0;
+    b->generation = 0;
+    return 0;
+}
+
+static int goc_test_barrier_wait(goc_test_barrier_t* b) {
+    pthread_mutex_lock(&b->mtx);
+    unsigned gen = b->generation;
+    b->arrived++;
+    if (b->arrived == b->parties) {
+        b->arrived = 0;
+        b->generation++;
+        pthread_cond_broadcast(&b->cond);
+        pthread_mutex_unlock(&b->mtx);
+        return 1;
+    }
+    while (gen == b->generation)
+        pthread_cond_wait(&b->cond, &b->mtx);
+    pthread_mutex_unlock(&b->mtx);
+    return 0;
+}
+
+static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
+    int rc1 = pthread_cond_destroy(&b->cond);
+    int rc2 = pthread_mutex_destroy(&b->mtx);
+    return rc1 != 0 ? rc1 : rc2;
+}
+#else
+typedef pthread_barrier_t goc_test_barrier_t;
+
+static int goc_test_barrier_init(goc_test_barrier_t* b,
+                                 const void* attr,
+                                 unsigned count) {
+    return pthread_barrier_init(b, (const pthread_barrierattr_t*)attr, count);
+}
+
+static int goc_test_barrier_wait(goc_test_barrier_t* b) {
+    return pthread_barrier_wait(b);
+}
+
+static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
+    return pthread_barrier_destroy(b);
+}
+#endif
+
+/*
+ * done_wait_timeout — like done_wait but gives up after timeout_ms.
+ * Returns true if the flag was set, false if the deadline was reached.
+ */
+static bool done_wait_timeout(done_t* d, int timeout_ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec  += timeout_ms / 1000;
+    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_sec++;
+        ts.tv_nsec -= 1000000000L;
+    }
+    pthread_mutex_lock(&d->mtx);
+    int rc = 0;
+    while (!d->flag && rc == 0)
+        rc = pthread_cond_timedwait(&d->cond, &d->mtx, &ts);
+    bool got = (d->flag != 0);
+    d->flag = 0;
+    pthread_mutex_unlock(&d->mtx);
+    return got;
 }
 
 /* =========================================================================
@@ -936,6 +1063,658 @@ static void test_p6_16(void) {
 done:;
 }
 
+/* ---- P6.17: pop_bottom / steal_top race on last element ---- */
+/*
+ * Stress-tests the last-element race between wsdq_pop_bottom (owner, no
+ * lock) and wsdq_steal_top (thief, holds steal_lock).  One entry is pushed
+ * per round; a pthread_barrier synchronises the owner pop and the thief steal
+ * so they start simultaneously.  Exactly one must win each round — no double-
+ * delivery, no loss, and no hang.
+ */
+#define P6_17_ROUNDS 100000
+
+typedef struct {
+    goc_wsdq*          dq;
+    _Atomic int*       thief_got;
+    goc_test_barrier_t* barrier;
+    int                rounds;
+} p6_17_thief_arg;
+
+static void* p6_17_thief(void* arg) {
+    p6_17_thief_arg* a = (p6_17_thief_arg*)arg;
+    for (int r = 0; r < a->rounds; r++) {
+        goc_test_barrier_wait(a->barrier);   /* race start */
+        goc_entry* e = wsdq_steal_top(a->dq);
+        if (e != NULL) {
+            atomic_fetch_add_explicit(a->thief_got, 1, memory_order_relaxed);
+            free(e);
+        }
+        goc_test_barrier_wait(a->barrier);   /* round end */
+    }
+    return NULL;
+}
+
+static void test_p6_17(void) {
+    TEST_BEGIN("P6.17  pop_bottom/steal_top last-element race: no double-delivery, no hang");
+
+    goc_wsdq dq;
+    wsdq_init(&dq, 2);
+
+    _Atomic int thief_got = 0;
+    goc_test_barrier_t barrier;
+    ASSERT(goc_test_barrier_init(&barrier, NULL, 2) == 0);
+
+    p6_17_thief_arg ta = { &dq, &thief_got, &barrier, P6_17_ROUNDS };
+    pthread_t thief;
+    pthread_create(&thief, NULL, p6_17_thief, &ta);
+
+    int owner_got = 0;
+    for (int r = 0; r < P6_17_ROUNDS; r++) {
+        wsdq_push_bottom(&dq, make_entry(0));
+        goc_test_barrier_wait(&barrier);   /* race start: both race for the single entry */
+        goc_entry* e = wsdq_pop_bottom(&dq);
+        if (e != NULL) {
+            owner_got++;
+            free(e);
+        }
+        goc_test_barrier_wait(&barrier);   /* round end: thief has finished its steal attempt */
+    }
+
+    pthread_join(thief, NULL);
+    goc_test_barrier_destroy(&barrier);
+
+    /* Every pushed entry must be consumed exactly once (no double-delivery, no loss). */
+    int total = owner_got + atomic_load_explicit(&thief_got, memory_order_relaxed);
+    ASSERT(total == P6_17_ROUNDS);
+
+    wsdq_destroy(&dq);
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.18: internal post — burst of child fibers all complete ---- */
+/*
+ * Bugs being tested:
+ *
+ * (A) pool.c internal path in post_to_run_queue (bug #4):
+ *   When a fiber posts work internally, the code always wakes
+ *   workers[(w->index + 1) % N] regardless of which worker is actually idle.
+ *   If that fixed neighbor is busy, other idle workers beyond it are never
+ *   notified and their steal loops only run after they happen to wake for
+ *   another reason.  Under a burst of N_CHILDREN internal posts this means
+ *   entries pile up in the spawner's deque and may never reach the idle
+ *   workers at index+2, index+3, …
+ *
+ * (B) Deferred fiber materialization GC race (introduced by work-stealing
+ *   commit): goc_go_on now defers goc_fiber_materialize to the first
+ *   dispatch on a worker thread (entry->coro == NULL at spawn time).  Under
+ *   a large burst multiple workers race to call goc_fiber_materialize
+ *   concurrently; each call registers a GC root via goc_fiber_root_register.
+ *   If the registration logic has a race or the root table is exhausted
+ *   before slots are reused, BDW-GC aborts with signal 6 (SIGABRT /
+ *   "Too many root sets").  A crash (not just a timeout) from this test
+ *   indicates that race.
+ *
+ * Test strategy:
+ *   A parent fiber (running on some worker W) calls goc_go_on N_CHILDREN
+ *   times.  Each call takes the internal path: push entry to W's deque,
+ *   then unconditionally wake workers[(W+1)%N].  The parent then exits.
+ *   Each child atomically increments a shared counter; when it reaches
+ *   N_CHILDREN the last child signals done.  The main thread waits with a
+ *   3-second deadline.
+ *   - A timeout indicates bug (A): idle workers were not notified and
+ *     entries stagnated in W's deque.
+ *   - A crash (SIGABRT from GC) indicates bug (B): deferred materialization
+ *     race under concurrent burst spawning.
+ */
+#define P6_18_WORKERS  4
+#define P6_18_CHILDREN 500
+
+typedef struct {
+    goc_pool*    pool;
+    done_t*      done;
+    _Atomic int* completed;
+    int          total;
+} p6_18_arg_t;
+
+static void p6_18_child_fn(void* arg) {
+    p6_18_arg_t* a = (p6_18_arg_t*)arg;
+    /* Signal when the last child finishes. */
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
+            == a->total)
+        done_signal(a->done);
+}
+
+static void p6_18_spawner_fn(void* arg) {
+    p6_18_arg_t* a = (p6_18_arg_t*)arg;
+    /* All goc_go_on calls here take the *internal* post path because
+     * tl_worker != NULL (we are running inside a pool worker fiber). */
+    for (int i = 0; i < a->total; i++)
+        goc_go_on(a->pool, p6_18_child_fn, a);
+}
+
+static void test_p6_18(void) {
+    TEST_BEGIN("P6.18  internal post: burst of child fibers all complete");
+
+    done_t done;
+    done_init(&done);
+    _Atomic int completed = 0;
+
+    goc_pool* pool = goc_pool_make(P6_18_WORKERS);
+    ASSERT(pool != NULL);
+
+    p6_18_arg_t args = { pool, &done, &completed, P6_18_CHILDREN };
+
+    /* Dispatch the spawner via *external* post so tl_worker is set when the
+     * spawner runs, making every child dispatch hit the internal path. */
+    goc_go_on(pool, p6_18_spawner_fn, &args);
+
+    /* 3-second deadline: a timeout means idle workers were never woken and
+     * entries stagnated in the spawner's deque. */
+    bool ok = done_wait_timeout(&done, 3000);
+    ASSERT(ok);
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.19: external post sleep-miss — worker wakes reliably ---- */
+/*
+ * Bug being tested (pool.c external path in post_to_run_queue):
+ *   The external path relies on the mutex unlock inside injector_push to
+ *   supply the seq_cst barrier needed to close the sleep-miss race.  A
+ *   C11 mutex unlock is a *release*, not seq_cst.  On ARM/POWER the
+ *   injector_push unlock may not order before the subsequent seq_cst
+ *   idle_count read, so the poster could observe idle_count == 0 (stale),
+ *   skip the sem_post, and leave a sleeping worker with work in its injector.
+ *
+ * Test strategy:
+ *   Repeat N_ROUNDS times:
+ *     1. Wait for the previous fiber to complete (guarantees all workers
+ *        have had time to drain their deques and go idle in uv_sem_wait).
+ *     2. usleep(500) to let all workers settle into sem_wait.
+ *     3. Post one fiber via goc_go_on (external path — called from the
+ *        main OS thread, so tl_worker == NULL).
+ *     4. Wait up to 2 seconds for it to signal done.
+ *   A timeout on any round means an external post was lost: the sleep-miss
+ *   race fired and the injected entry sat unseen in a worker's injector.
+ */
+#define P6_19_WORKERS 4
+#define P6_19_ROUNDS  200
+
+typedef struct {
+    done_t* done;
+} p6_19_arg_t;
+
+static void p6_19_fiber_fn(void* arg) {
+    p6_19_arg_t* a = (p6_19_arg_t*)arg;
+    done_signal(a->done);
+}
+
+static void test_p6_19(void) {
+    TEST_BEGIN("P6.19  external post sleep-miss: worker wakes reliably after idle");
+
+    done_t done;
+    done_init(&done);
+
+    goc_pool* pool = goc_pool_make(P6_19_WORKERS);
+    ASSERT(pool != NULL);
+
+    p6_19_arg_t args = { &done };
+
+    for (int i = 0; i < P6_19_ROUNDS; i++) {
+        /* Give workers time to drain and enter uv_sem_wait. */
+        usleep(500);
+
+        /* External post: main thread → tl_worker == NULL → injector path. */
+        goc_go_on(pool, p6_19_fiber_fn, &args);
+
+        /* 2-second deadline per round. Timeout = sleep-miss: posted entry
+         * sat in injector while the worker slept without being woken. */
+        bool ok = done_wait_timeout(&done, 2000);
+        if (!ok) {
+            ASSERT(false);  /* print location and jump to cleanup */
+            break;
+        }
+    }
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.20: external post targets busy worker — tasks still complete ---- */
+/*
+ * Bugs being tested:
+ *
+ * (A) pool.c external path — wasted sem post to busy worker (bug #6):
+ *   post_to_run_queue's external path both pushes the entry into
+ *   workers[idx].injector AND posts workers[idx].idle_sem.  If workers[idx]
+ *   is currently inside mco_resume (busy running a fiber), the sem post is
+ *   wasted: it increments the semaphore count of a non-sleeping worker.
+ *   Idle workers at other indices have no way to steal from workers[idx]'s
+ *   injector (injectors are not stealable), so they cannot help.  The entry
+ *   sits in workers[idx].injector until workers[idx] itself loops back and
+ *   drains it.
+ *
+ * (B) Deferred fiber materialization GC race (introduced by work-stealing
+ *   commit): the burst of externally-posted tasks all have entry->coro == NULL
+ *   at dispatch time.  When the busy worker eventually drains its injector and
+ *   processes each entry, it calls goc_fiber_materialize for each one.
+ *   Multiple workers may race to materialize concurrently, contending on the
+ *   GC root registration table.  A SIGABRT crash from BDW-GC during this test
+ *   indicates that race (same underlying issue as in P6.18).
+ *
+ * Test strategy:
+ *   1. 2-worker pool so round-robin alternates strictly between workers 0 and 1.
+ *   2. Keep worker 0 occupied for ~20 ms by dispatching a CPU-spinning fiber
+ *      (tight loop, no yield) so it stays inside mco_resume.
+ *   3. During that window post N tasks externally from the main thread.
+ *      Odd-numbered round-robin targets (idx=1,3,5,…) land in worker 1's
+ *      injector and are processed immediately.  Even-numbered targets
+ *      (idx=0,2,4,…) land in worker 0's injector, which is not drained until
+ *      the spinning fiber exits ~20 ms later.  The sem post to worker 0's
+ *      idle_sem is wasted; worker 1 cannot steal worker 0's injector.
+ *   4. Assert all N tasks complete within 3 seconds (they must, once the
+ *      spinner exits and worker 0 drains its injector).
+ *   - A timeout means bug (A): the wasted sem post caused queued entries to
+ *     stagnate indefinitely.
+ *   - A crash (SIGABRT from GC) means bug (B): deferred materialization
+ *     of the burst tasks raced against concurrent GC root registration.
+ */
+#define P6_20_WORKERS  2
+#define P6_20_TASKS    200
+
+typedef struct {
+    _Atomic int* completed;
+    int          total;
+    done_t*      done;
+} p6_20_task_arg_t;
+
+static void p6_20_task_fn(void* arg) {
+    p6_20_task_arg_t* a = (p6_20_task_arg_t*)arg;
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
+            == a->total)
+        done_signal(a->done);
+}
+
+typedef struct {
+    done_t* started;
+} p6_20_spinner_arg_t;
+
+/* CPU-spinning fiber: burns ~20 ms without yielding. */
+static void p6_20_spinner_fn(void* arg) {
+    p6_20_spinner_arg_t* a = (p6_20_spinner_arg_t*)arg;
+    done_signal(a->started);
+    volatile long x = 0;
+    /* ~20 ms of work at typical clock speeds. */
+    for (long i = 0; i < 50000000L; i++) x += i;
+    (void)x;
+}
+
+static void test_p6_20(void) {
+    TEST_BEGIN("P6.20  external post busy-worker: injector tasks still complete");
+
+    done_t done, spinner_started;
+    done_init(&done);
+    done_init(&spinner_started);
+
+    _Atomic int completed = 0;
+
+    goc_pool* pool = goc_pool_make(P6_20_WORKERS);
+    ASSERT(pool != NULL);
+
+    /* Launch the spinner first; wait until it's actually running so that
+     * next_push_idx is advanced and the subsequent task posts land on both
+     * workers in a predictable round-robin pattern. */
+    p6_20_spinner_arg_t sarg = { &spinner_started };
+    goc_go_on(pool, p6_20_spinner_fn, &sarg);
+    done_wait(&spinner_started);  /* spinner is now burning CPU on one worker */
+
+    /* Post all tasks while the spinner holds one worker inside mco_resume. */
+    p6_20_task_arg_t targ = { &completed, P6_20_TASKS, &done };
+    for (int i = 0; i < P6_20_TASKS; i++)
+        goc_go_on(pool, p6_20_task_fn, &targ);
+
+    /* 3-second deadline: must complete even though ~half the tasks land in
+     * the busy worker's injector and sit there until the spinner exits. */
+    bool ok = done_wait_timeout(&done, 3000);
+    ASSERT(ok);
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    done_destroy(&spinner_started);
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.21: idle steal gap — stealable work after double-check ---- */
+/*
+ * Bugs being tested:
+ *
+ * (A) pool.c worker loop — idle double-check skips steal phase (bug #7):
+ *   The idle double-check (step 4 in pool_worker_fn) re-checks only the
+ *   worker's own injector and its own deque before sleeping.  It does NOT
+ *   re-run the steal phase (step 3).  Combined with the fixed-neighbor
+ *   wakeup in the internal path (bug #4), a window exists:
+ *
+ *     1. Workers W1 … W(N-1) all complete step 3 (steal), find nothing,
+ *        increment idle_count, do the double-check (still nothing), and
+ *        are about to call uv_sem_wait.
+ *     2. W0 is running a spawner fiber that calls goc_go_on K times
+ *        (internal post): each post pushes one entry onto W0's deque and
+ *        wakes workers[(W0+1)%N] = W1 only.
+ *     3. W1 is woken K times by the K sem posts, but it may not steal all K
+ *        entries fast enough while W2 … W(N-1) stay sleeping — they were
+ *        past the steal check and will not retry it before sleeping.
+ *   A timeout indicates this bug.
+ *
+ * (B) Deferred fiber materialization GC race (introduced by work-stealing
+ *   commit): all 1000 child entries have entry->coro == NULL at spawn time.
+ *   When workers steal and run them they call goc_fiber_materialize
+ *   concurrently, racing on GC root registration.  A SIGABRT crash from
+ *   BDW-GC during this test indicates that race (same issue as P6.18/P6.20).
+ *
+ * Test strategy: N=4 workers, spawner creates 1000 entries via internal
+ * posts.  All entries must be processed within 5 seconds.
+ *   - A timeout means bug (A): workers stuck past the steal double-check
+ *     were never re-woken and entries stagnated in W0's deque.
+ *   - A crash (SIGABRT from GC) means bug (B): concurrent materialization
+ *     race under the large burst.
+ *
+ * Distinction from P6.18: P6.18 uses 500 children + 3s deadline.
+ * P6.21 uses 1000 children with an explicit "deep-idle" pre-settle
+ * (usleep before the spawner) to maximise the probability that W1-W3
+ * are past their steal check when the burst arrives.
+ */
+#define P6_21_WORKERS  4
+#define P6_21_CHILDREN 1000
+
+typedef struct {
+    goc_pool*    pool;
+    done_t*      done;
+    _Atomic int* completed;
+    int          total;
+} p6_21_arg_t;
+
+static void p6_21_child_fn(void* arg) {
+    p6_21_arg_t* a = (p6_21_arg_t*)arg;
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
+            == a->total)
+        done_signal(a->done);
+}
+
+static void p6_21_spawner_fn(void* arg) {
+    p6_21_arg_t* a = (p6_21_arg_t*)arg;
+    for (int i = 0; i < a->total; i++)
+        goc_go_on(a->pool, p6_21_child_fn, a);
+}
+
+static void test_p6_21(void) {
+    TEST_BEGIN("P6.21  idle steal gap: stealable work after double-check still completes");
+
+    done_t done;
+    done_init(&done);
+    _Atomic int completed = 0;
+
+    goc_pool* pool = goc_pool_make(P6_21_WORKERS);
+    ASSERT(pool != NULL);
+
+    /* Let all workers settle deep into uv_sem_wait before the burst arrives,
+     * maximising the chance they are past the steal phase at step 3. */
+    usleep(5000);
+
+    p6_21_arg_t args = { pool, &done, &completed, P6_21_CHILDREN };
+    goc_go_on(pool, p6_21_spawner_fn, &args);
+
+    /* 5-second deadline: a timeout means workers stuck past the steal
+     * double-check were never re-woken and entries stagnated in W0's deque. */
+    bool ok = done_wait_timeout(&done, 5000);
+    ASSERT(ok);
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.22: double-resume via stack-address reuse ---- */
+/*
+ * Bug being tested (channel.c slow path — fixed by commit "GC allocate parked
+ * entries to avoid race condition"):
+ *
+ *   goc_take and goc_put originally stack-allocated the parking goc_entry:
+ *     goc_entry e = {0};  // on the fiber's coroutine stack
+ *   When the fiber parked, it appended &e to the channel's takers/putters
+ *   list, then yielded.
+ *
+ *   Race sequence (requires work-stealing):
+ *     1. Fiber A calls goc_take(ch) → slow path → stack entry at address X
+ *        with woken=0, appended to takers list.
+ *     2. Fiber B calls goc_put(ch) → wake(e_at_X):
+ *          a. CAS: woken 0→1 on entry X.
+ *          b. Spin: waiting for fe->parked to become 1 (fiber A truly yielded).
+ *          c. post_to_run_queue dispatches A to B's deque (entry at addr Y).
+ *     3. Worker W2 STEALS Y from B's deque and resumes A before B's spin ends.
+ *     4. A returns from goc_take (local_result/e.ok read), immediately calls
+ *        goc_take(ch) again in a loop — same call depth → new goc_entry e
+ *        at the SAME stack address X, with woken=0, parked=1.
+ *     5. B's spin completes (parked==1 from the NEW entry at X), reads
+ *        woken==0 on the new entry, wins a SECOND CAS, posts A again.
+ *     6. A is double-resumed: one worker resumes an already-running coro →
+ *        MCO abort / stall / data corruption.
+ *
+ *   Fix: heap-allocate the parking entry via goc_malloc so each parking
+ *   instance has a unique address; old entries are never confused with new.
+ *
+ * Test strategy:
+ *   P6_22_PAIRS pairs of fibers, each pair doing P6_22_ROUNDS of ping-pong
+ *   on an unbuffered channel pair (req + ack).  Sender and receiver each
+ *   park on goc_take in a tight loop — re-parking at the exact same stack
+ *   offset on every iteration.  A large pool (P6_22_WORKERS) maximises the
+ *   steal probability that opens the race window.
+ *
+ *   If the bug is present: one fiber in a pair is double-resumed; its
+ *   partner hangs waiting for a rendezvous that never comes → test times out.
+ *   If the fix holds: all pairs complete within the deadline.
+ *
+ *   A timeout from this test has two possible causes:
+ *   (1) Double-resume (this bug): a waker posts a fiber twice; the second
+ *       resume races against the first, corrupting coroutine state so the
+ *       partner fiber stalls forever waiting for a rendezvous that never
+ *       arrives.
+ *   (2) Scheduler wakeup bugs (#4 fixed-neighbor wakeup, #7 idle steal gap):
+ *       partner fibers are never scheduled because the workers that hold
+ *       their entries are not notified.  P6.18 and P6.21 isolate those bugs
+ *       in isolation; this test intentionally exercises both simultaneously
+ *       with a high worker count (P6_22_WORKERS=8) to maximise concurrency
+ *       and will also fail if either scheduler issue causes a stall.
+ */
+#define P6_22_WORKERS 8
+#define P6_22_PAIRS   20
+#define P6_22_ROUNDS  300
+
+typedef struct {
+    goc_chan*    req;
+    goc_chan*    ack;
+    _Atomic int* finished;
+    _Atomic int  sender_round;
+    _Atomic int  receiver_round;
+    int          expected;
+    done_t*      done;
+} p6_22_pair_t;
+
+static bool g_skip_shutdown = false;
+
+static void p6_22_sender_fn(void* arg) {
+    p6_22_pair_t* p = (p6_22_pair_t*)arg;
+    for (int i = 0; i < P6_22_ROUNDS; i++) {
+        /* slow-path put: parks if no receiver is waiting */
+        goc_put(p->req, (void*)(uintptr_t)(i + 1));
+        /* slow-path take at the SAME call depth on every iteration;
+         * re-uses the same stack slot for the parking goc_entry each time */
+        goc_take(p->ack);
+        atomic_store_explicit(&p->sender_round, i + 1, memory_order_release);
+    }
+    if (atomic_fetch_add_explicit(p->finished, 1, memory_order_acq_rel) + 1
+            == p->expected)
+        done_signal(p->done);
+}
+
+static void p6_22_receiver_fn(void* arg) {
+    p6_22_pair_t* p = (p6_22_pair_t*)arg;
+    for (int i = 0; i < P6_22_ROUNDS; i++) {
+        /* slow-path take: same re-use pattern as the sender */
+        goc_take(p->req);
+        goc_put(p->ack, NULL);
+        atomic_store_explicit(&p->receiver_round, i + 1, memory_order_release);
+    }
+    if (atomic_fetch_add_explicit(p->finished, 1, memory_order_acq_rel) + 1
+            == p->expected)
+        done_signal(p->done);
+}
+
+static void test_p6_22(void) {
+    TEST_BEGIN("P6.22  double-resume/stack-address reuse: ping-pong completes without hang");
+
+    done_t done;
+    done_init(&done);
+    _Atomic int finished = 0;
+    bool ok = false;
+
+    goc_pool* pool = goc_pool_make(P6_22_WORKERS);
+    ASSERT(pool != NULL);
+
+    p6_22_pair_t pairs[P6_22_PAIRS] = { 0 };
+    for (int i = 0; i < P6_22_PAIRS; i++) {
+        pairs[i].req      = goc_chan_make(0);   /* unbuffered: always slow path */
+        pairs[i].ack      = goc_chan_make(0);
+        pairs[i].finished = &finished;
+        pairs[i].expected = P6_22_PAIRS * 2;   /* both sender and receiver count */
+        pairs[i].done     = &done;
+        ASSERT(pairs[i].req != NULL);
+        ASSERT(pairs[i].ack != NULL);
+    }
+
+    for (int i = 0; i < P6_22_PAIRS; i++) {
+        goc_go_on(pool, p6_22_sender_fn,   &pairs[i]);
+        goc_go_on(pool, p6_22_receiver_fn, &pairs[i]);
+    }
+
+    /* Generous deadline: only a double-resume (hang) causes a timeout.
+     * A double-resume crash would appear as SIGABRT / signal 11 here. */
+    ok = done_wait_timeout(&done, 5000);
+    ASSERT(ok);
+    TEST_PASS();
+done:;
+
+    if (!ok) {
+        printf("    progress: finished=%d/%d\n",
+               atomic_load_explicit(&finished, memory_order_acquire),
+               P6_22_PAIRS * 2);
+        for (int i = 0; i < P6_22_PAIRS; i++) {
+            int sr = atomic_load_explicit(&pairs[i].sender_round, memory_order_acquire);
+            int rr = atomic_load_explicit(&pairs[i].receiver_round, memory_order_acquire);
+            if (sr != P6_22_ROUNDS || rr != P6_22_ROUNDS) {
+                printf("    pair[%d]: sender=%d receiver=%d\n", i, sr, rr);
+            }
+        }
+    }
+
+    for (int i = 0; i < P6_22_PAIRS; i++) {
+        if (pairs[i].req != NULL)
+            goc_close(pairs[i].req);
+        if (pairs[i].ack != NULL)
+            goc_close(pairs[i].ack);
+    }
+
+    if (pool != NULL) {
+        if (ok) {
+            goc_pool_destroy(pool);
+        } else if (goc_pool_destroy_timeout(pool, 100) == GOC_DRAIN_TIMEOUT) {
+            g_skip_shutdown = true;
+        }
+    }
+
+    done_destroy(&done);
+}
+
+/* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
+/*
+ * Bug being tested (gc.c goc_fiber_root_register):
+ *   Before the fix, the fiber root bitmap bit was set FIRST (under the mutex),
+ *   then slot data (entry pointer, stack_top, scan_from) was written AFTER.
+ *   push_fiber_roots runs without the mutex during BDW-GC stop-the-world.
+ *   If GC stopped the world between the bit-set and the data-write,
+ *   push_fiber_roots would see the bit set and read STALE slot data from the
+ *   previous occupant of that slot — a fiber whose mco_coro stack was already
+ *   freed by mco_destroy.  GC_push_all_eager on freed memory corrupts the GC
+ *   heap, causing later GC operations or allocations to SIGABRT.
+ *
+ * Fix: write slot data first, then atomic_thread_fence(release), then set bit.
+ *   Any observer that sees the bit set is guaranteed to see correct slot data.
+ *
+ * Test strategy:
+ *   Spawn N_WAVES waves of N_PER_WAVE short-lived fibers.  Each fiber calls
+ *   GC_malloc to allocate a small object (forcing BDW-GC to run collection
+ *   cycles frequently).  The fibers complete immediately, causing rapid slot
+ *   reuse in the bitmap.  The combination of high slot-reuse rate and frequent
+ *   GC cycles maximises the probability of hitting the write-ordering window.
+ *   Without the fix, this reliably produces a SIGABRT from GC heap corruption
+ *   (observed via the crash handler installed in main()).
+ *   With the fix, all fibers complete and the test passes.
+ */
+#define P6_23_WORKERS   4
+#define P6_23_WAVES     20
+#define P6_23_PER_WAVE  50
+
+typedef struct {
+    done_t*      done;
+    _Atomic int* completed;
+    int          total;
+} p6_23_arg_t;
+
+static void p6_23_fiber_fn(void* arg) {
+    p6_23_arg_t* a = (p6_23_arg_t*)arg;
+    /* Allocate on the GC heap to pressure BDW-GC into running collections.
+     * The allocation is intentionally kept alive briefly via a volatile read
+     * so the compiler cannot elide it. */
+    volatile char* gc_buf = (volatile char*)goc_malloc(256);
+    (void)*gc_buf;
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
+            == a->total)
+        done_signal(a->done);
+}
+
+static void test_p6_23(void) {
+    TEST_BEGIN("P6.23  GC bitmap write-ordering: slot reuse under concurrent GC");
+
+    done_t done;
+    done_init(&done);
+
+    goc_pool* pool = goc_pool_make(P6_23_WORKERS);
+    ASSERT(pool != NULL);
+
+    for (int w = 0; w < P6_23_WAVES; w++) {
+        _Atomic int completed = 0;
+        p6_23_arg_t args = { &done, &completed, P6_23_PER_WAVE };
+
+        for (int i = 0; i < P6_23_PER_WAVE; i++)
+            goc_go_on(pool, p6_23_fiber_fn, &args);
+
+        bool ok = done_wait_timeout(&done, 3000);
+        ASSERT(ok);
+    }
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -972,9 +1751,21 @@ int main(void) {
     test_p6_14();
     test_p6_15();
     test_p6_16();
+    test_p6_17();
+    test_p6_18();
+    test_p6_19();
+    test_p6_20();
+    test_p6_21();
+    test_p6_22();
+    test_p6_23();
     printf("\n");
 
-    goc_shutdown();
+    if (!g_skip_shutdown) {
+        goc_shutdown();
+    } else {
+        fprintf(stderr,
+                "skipping goc_shutdown: P6.22 left an undrained pool after failure\n");
+    }
 
     printf("==========================================\n");
     printf("Results: %d/%d passed", g_tests_passed, g_tests_run);

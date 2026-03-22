@@ -156,10 +156,15 @@ func ringBenchmark(nodes, hops int) {
 // fanInBenchmark measures select-based fan-out/fan-in throughput.
 //
 // One producer (the calling goroutine) sends tasks values into the shared
-// unbuffered channel 'in'.  workers goroutines each forward every value they
-// receive from 'in' to their own private output channel.  A single collector
+// unbuffered channel 'in'. workers goroutines each forward every value they
+// receive from 'in' to their own private output channel. A single collector
 // goroutine uses reflect.Select to receive from all workers simultaneously,
 // counting until it has seen all tasks values.
+//
+// Worker output channels are closed when their worker drains the shared input.
+// The collector removes closed outputs from the active select set and exits
+// after exactly `tasks` successful receives. Timing includes producer
+// send/close, collector completion, and worker join.
 //
 // reflect.Select is used because Go's built-in select statement requires a
 // statically known set of cases; reflect.Select enables the same dynamic
@@ -185,10 +190,12 @@ func fanInBenchmark(workers, tasks int) {
 			for v := range in {
 				out <- v
 			}
+			close(out)
 		}()
 	}
 
 	// Fan-in: collector uses reflect.Select to receive from any ready worker.
+	// Closed worker outputs are nil'd out so Select skips them subsequently.
 	done := make(chan struct{})
 	go func() {
 		cases := make([]reflect.SelectCase, workers)
@@ -202,8 +209,6 @@ func fanInBenchmark(workers, tasks int) {
 			// measures throughput (message count), not the values themselves.
 			idx, _, ok := reflect.Select(cases)
 			if !ok {
-				// Worker closed its output channel — nil it out so Select
-				// skips it on future iterations.
 				cases[idx].Chan = reflect.ValueOf((<-chan int)(nil))
 				continue
 			}
