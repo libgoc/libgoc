@@ -13,6 +13,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <sched.h>
 #include <pthread.h>
 #include <uv.h>
 #include <gc.h>
@@ -194,6 +195,37 @@ struct goc_spawn_req {
     #define goc_stack_canary_set(ptr)     do { *(ptr) = GOC_STACK_CANARY; } while(0)
     #define goc_stack_canary_check(ptr)   do { if (*(ptr) != GOC_STACK_CANARY) { fprintf(stderr, "libgoc: stack canary corrupted at %p (val=0x%08x); likely stack overflow\n", (void*)(ptr), *(ptr)); abort(); } } while(0)
 #endif
+
+/* ---------------------------------------------------------------------------
+ * goc_cpu_relax — portable spin-loop hint
+ *
+ * On x86/x86_64 the PAUSE instruction reduces power in a spin loop and
+ * avoids the pipeline flush that would otherwise occur when the spin exits.
+ * On AArch64/ARM YIELD is the equivalent architectural hint.
+ * Elsewhere a compiler barrier prevents the loop from being optimised away.
+ * --------------------------------------------------------------------------- */
+#if defined(__x86_64__) || defined(__i386__)
+#  define goc_cpu_relax()  __asm__ volatile("pause" ::: "memory")
+#elif defined(__aarch64__) || defined(__arm__)
+#  define goc_cpu_relax()  __asm__ volatile("yield" ::: "memory")
+#else
+#  define goc_cpu_relax()  __asm__ volatile("" ::: "memory")
+#endif
+
+/* Spin-wait for the yield-gate (parked) to become 1.
+ * First tries a short busy-wait with cpu_relax (good for the common case
+ * where the parking fiber yields within a few dozen cycles); then falls back
+ * to sched_yield() to avoid burning a CPU core if the wait is unexpectedly
+ * long. */
+static inline void goc_spin_until_parked(_Atomic int* parked) {
+    for (int i = 0; i < 64; i++) {
+        if (atomic_load_explicit(parked, memory_order_acquire))
+            return;
+        goc_cpu_relax();
+    }
+    while (!atomic_load_explicit(parked, memory_order_acquire))
+        sched_yield();
+}
 
 /* ---------------------------------------------------------------------------
  * Internal Function Declarations (cross-module)
