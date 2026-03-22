@@ -111,9 +111,10 @@
 ; in Go and goc_alts in libgoc) to receive from whichever worker is ready,
 ; counting until all `tasks` values have been seen.
 ;
-; Worker output channels are intentionally left open (matching Go and libgoc
-; benchmark intent); collector exits after exactly `tasks` successful receives.
-; Timing includes producer send/close, collector completion, and worker join.
+; Worker output channels are closed when workers drain shared input. Collector
+; removes closed outputs from the active alts! set and exits after exactly
+; `tasks` successful receives. Timing includes producer send/close, collector
+; completion, and worker join.
 
 (defn bench-fan-in [workers tasks]
   (let [in   (chan)
@@ -124,15 +125,18 @@
                      (go-loop []
                        (if-let [v (<! in)]
                          (do (>! out v) (recur))
-                         :done)))
+                         (do (close! out) :done))))
                    outs)
         ; collector: alts! across all worker output channels
         done (chan)
         _    (go
-               (loop [received 0]
+               (loop [received    0
+                      active-outs (vec outs)]
                  (if (< received tasks)
-                   (let [[_ _] (alts! outs)]
-                     (recur (inc received)))
+                   (let [[v ch] (alts! active-outs)]
+                     (if (nil? v)
+                       (recur received (vec (remove #(= % ch) active-outs)))
+                       (recur (inc received) active-outs)))
                    (close! done))))
         t0   (System/nanoTime)]
     (dotimes [i tasks] (>!! in i))

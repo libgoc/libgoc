@@ -220,9 +220,9 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
  * channels, receiving whichever is ready first, and counts until it has seen
  * all 'tasks' values.
  *
- * Worker output channels are intentionally left open (matching Go and
- * Clojure benchmark intent); collector exits after exactly `tasks`
- * successful receives.
+ * Worker output channels are closed when workers drain the shared input.
+ * Collector removes closed outputs from the active goc_alts set and exits
+ * after exactly `tasks` successful receives.
  *
  * This stresses goc_alts (select) under realistic fan-in load and validates
  * that all messages are delivered exactly once.
@@ -236,14 +236,17 @@ typedef struct {
 /*
  * fan_out_worker_fn — one fan-out worker fiber.
  *
- * Forwards every value it receives from 'in' to 'out'.
+ * Forwards every value it receives from 'in' to 'out', then closes 'out'
+ * when 'in' closes.
  */
 static void fan_out_worker_fn(void* arg) {
     fan_out_worker_args_t* a = (fan_out_worker_args_t*)arg;
     for (;;) {
         goc_val_t* v = goc_take(a->in);
-        if (v->ok != GOC_OK)
+        if (v->ok != GOC_OK) {
+            goc_close(a->out);
             return;
+        }
         goc_put(a->out, v->val);
     }
 }
@@ -258,13 +261,15 @@ typedef struct {
 /*
  * fan_in_fn — collector fiber using goc_alts to receive from all workers.
  *
- * Uses a fixed ops[] array and counts exactly `tasks` successful receives.
- * Closes 'done' when all expected messages have been received.
+ * Maintains a dynamic ops[] array. When a worker output closes, that channel
+ * is removed from the active set via swap-with-last so goc_alts only scans
+ * live outputs. Closes 'done' when all expected messages have been received.
  */
 static void fan_in_fn(void* arg) {
     fan_in_args_t* a = (fan_in_args_t*)arg;
 
     goc_alt_op* ops     = goc_malloc(sizeof(goc_alt_op) * a->workers);
+    size_t      n_active = a->workers;
     for (size_t i = 0; i < a->workers; i++) {
         ops[i].ch      = a->outs[i];
         ops[i].op_kind = GOC_ALT_TAKE;
@@ -272,10 +277,19 @@ static void fan_in_fn(void* arg) {
     }
 
     size_t received = 0;
-    while (received < a->tasks) {
-        goc_alts_result* r = goc_alts(ops, a->workers);
-        if (r->value.ok == GOC_OK)
+    while (received < a->tasks && n_active > 0) {
+        goc_alts_result* r = goc_alts(ops, n_active);
+        if (r->value.ok == GOC_OK) {
             received++;
+        } else {
+            for (size_t k = 0; k < n_active; k++) {
+                if (ops[k].ch == r->ch) {
+                    ops[k] = ops[n_active - 1];
+                    break;
+                }
+            }
+            n_active--;
+        }
     }
 
     goc_close(a->done);

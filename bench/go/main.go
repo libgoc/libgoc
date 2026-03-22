@@ -161,10 +161,10 @@ func ringBenchmark(nodes, hops int) {
 // goroutine uses reflect.Select to receive from all workers simultaneously,
 // counting until it has seen all tasks values.
 //
-// Worker output channels are intentionally left open (matching libgoc and
-// Clojure benchmark intent); collector exits after exactly `tasks` successful
-// receives. Timing includes producer send/close, collector completion, and
-// worker join.
+// Worker output channels are closed when their worker drains the shared input.
+// The collector removes closed outputs from the active select set and exits
+// after exactly `tasks` successful receives. Timing includes producer
+// send/close, collector completion, and worker join.
 //
 // reflect.Select is used because Go's built-in select statement requires a
 // statically known set of cases; reflect.Select enables the same dynamic
@@ -190,12 +190,12 @@ func fanInBenchmark(workers, tasks int) {
 			for v := range in {
 				out <- v
 			}
+			close(out)
 		}()
 	}
 
 	// Fan-in: collector uses reflect.Select to receive from any ready worker.
-	// Because workers do not close outs, every successful select corresponds
-	// to exactly one forwarded message; the loop exits after `tasks` receives.
+	// Closed worker outputs are nil'd out so Select skips them subsequently.
 	done := make(chan struct{})
 	go func() {
 		cases := make([]reflect.SelectCase, workers)
@@ -207,7 +207,11 @@ func fanInBenchmark(workers, tasks int) {
 		for received < tasks {
 			// The received value is intentionally discarded — the benchmark
 			// measures throughput (message count), not the values themselves.
-			_, _, _ = reflect.Select(cases)
+			idx, _, ok := reflect.Select(cases)
+			if !ok {
+				cases[idx].Chan = reflect.ValueOf((<-chan int)(nil))
+				continue
+			}
 			received++
 		}
 		close(done)
