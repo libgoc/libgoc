@@ -76,6 +76,7 @@ static goc_entry *cb_queue_pop(void)
     g_cb_queue.tail = next;         /* advance tail past sentinel */
     goc_entry *e = next->entry;
     /* Old tail (sentinel) is now garbage — GC will collect it. */
+    GOC_STATS_CALLBACK_QUEUE_POP();
     return e;
 }
 
@@ -91,6 +92,7 @@ void post_callback(goc_entry *entry, void *value)
     mpsc_node *node = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
     node->entry = entry;
     cb_queue_push(node);
+    GOC_STATS_CALLBACK_QUEUE_PUSH();
 
     uv_async_t *w = atomic_load_explicit(&g_wakeup, memory_order_acquire);
     if (w)

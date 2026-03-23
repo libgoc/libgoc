@@ -303,10 +303,12 @@ static void* pool_worker_fn(void* arg) {
 
         /* 1. Drain own injector first (entries posted by external callers). */
         entry = injector_pop(&tl_worker->injector);
+        GOC_STATS_RECORD_INJECTOR_POP(entry != NULL);
         if (entry != NULL) goto run;
 
         /* 2. Pop from own deque (LIFO, cache-warm). */
         entry = wsdq_pop_bottom(&tl_worker->deque);
+        GOC_STATS_RECORD_DEQUE_POP(entry != NULL);
         if (entry != NULL) goto run;
 
         /* 3. Steal phase: try each other worker exactly once, starting from a
@@ -320,6 +322,7 @@ static void* pool_worker_fn(void* arg) {
                 size_t victim = (tl_worker->index + offset + i) % pool->thread_count;
                 if (victim == tl_worker->index) continue;
                 entry = wsdq_steal_top(&pool->workers[victim].deque);
+                GOC_STATS_RECORD_STEAL(entry != NULL);
                 if (entry != NULL) goto run;
             }
         }
@@ -333,8 +336,11 @@ static void* pool_worker_fn(void* arg) {
         atomic_fetch_add_explicit(&pool->idle_count, 1, memory_order_seq_cst);
 
         entry = injector_pop(&tl_worker->injector);
-        if (entry == NULL)
+        GOC_STATS_RECORD_INJECTOR_POP(entry != NULL);
+        if (entry == NULL) {
             entry = wsdq_pop_bottom(&tl_worker->deque);
+            GOC_STATS_RECORD_DEQUE_POP(entry != NULL);
+        }
         if (entry != NULL) {
             atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
             goto run;

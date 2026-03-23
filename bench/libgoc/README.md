@@ -26,7 +26,15 @@ make run
 
 # Multi-pool testing (GOC_POOL_THREADS = 1, 2, 4, 8)
 make run-all
+
+# Enable runtime instrumentation counters
+make LIBGOC_STATS=ON run-all
 ```
+
+Runtime instrumentation counters are **OFF by default** in benchmark builds
+(`LIBGOC_STATS=OFF`). Enable them explicitly with `LIBGOC_STATS=ON` when you
+want per-benchmark stats lines (scan lengths, compaction, callback queue,
+timeout, and scheduler attempts/successes).
 
 ### vmem mode (virtual-memory-backed stacks — opt-in)
 

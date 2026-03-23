@@ -63,8 +63,10 @@ static inline int chan_take_from_buffer(goc_chan* ch, void** out) {
 }
 
 static inline int chan_put_to_taker(goc_chan* ch, void* val) {
+    size_t steps = 0;
     goc_entry** pp = &ch->takers;
     while (*pp) {
+        steps++;
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
@@ -83,17 +85,21 @@ static inline int chan_put_to_taker(goc_chan* ch, void* val) {
             *pp = next;
             /* Invalidate tail when we remove the last entry. */
             if (next == NULL) ch->takers_tail = NULL;
+            GOC_STATS_RECORD_CHAN_PUT_SCAN(steps);
             return 1;
         }
         *pp = next;
         if (next == NULL) ch->takers_tail = NULL;
     }
+    GOC_STATS_RECORD_CHAN_PUT_SCAN(steps);
     return 0;
 }
 
 static inline int chan_take_from_putter(goc_chan* ch, void** out) {
+    size_t steps = 0;
     goc_entry** pp = &ch->putters;
     while (*pp) {
+        steps++;
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
@@ -111,11 +117,13 @@ static inline int chan_take_from_putter(goc_chan* ch, void** out) {
             *out = val;
             *pp = next;
             if (next == NULL) ch->putters_tail = NULL;
+            GOC_STATS_RECORD_CHAN_TAKE_SCAN(steps);
             return 1;
         }
         *pp = next;
         if (next == NULL) ch->putters_tail = NULL;
     }
+    GOC_STATS_RECORD_CHAN_TAKE_SCAN(steps);
     return 0;
 }
 

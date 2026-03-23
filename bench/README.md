@@ -37,7 +37,15 @@ make -C libgoc run
 
 # Multi-pool testing (runs with GOC_POOL_THREADS = 1, 2, 4, 8)
 make -C libgoc run-all
+
+# Enable runtime instrumentation counters in benchmark output
+make -C libgoc LIBGOC_STATS=ON run-all
 ```
+
+`bench/libgoc` now builds with `LIBGOC_STATS=OFF` by default.
+When enabled (`LIBGOC_STATS=ON`), each benchmark prints an additional stats
+line with runtime counters (scan lengths, compaction, callback-queue depth
+high-water mark, timeout counts, and scheduler attempt/success counters).
 
 ### Clojure
 

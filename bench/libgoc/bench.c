@@ -55,6 +55,59 @@
 #include <stdio.h>
 #include <uv.h>
 
+static goc_stats_t stats_diff(goc_stats_t after, goc_stats_t before) {
+    goc_stats_t d;
+    d.chan_put_scan_steps_total = after.chan_put_scan_steps_total - before.chan_put_scan_steps_total;
+    d.chan_put_scan_steps_max = (after.chan_put_scan_steps_max > before.chan_put_scan_steps_max)
+                              ? after.chan_put_scan_steps_max : 0;
+    d.chan_take_scan_steps_total = after.chan_take_scan_steps_total - before.chan_take_scan_steps_total;
+    d.chan_take_scan_steps_max = (after.chan_take_scan_steps_max > before.chan_take_scan_steps_max)
+                               ? after.chan_take_scan_steps_max : 0;
+
+    d.dead_compactions = after.dead_compactions - before.dead_compactions;
+    d.dead_entries_removed = after.dead_entries_removed - before.dead_entries_removed;
+
+    d.callback_queue_depth = after.callback_queue_depth;
+    d.callback_queue_depth_max = (after.callback_queue_depth_max > before.callback_queue_depth_max)
+                               ? after.callback_queue_depth_max : 0;
+
+    d.timeout_allocations = after.timeout_allocations - before.timeout_allocations;
+    d.timeout_expirations = after.timeout_expirations - before.timeout_expirations;
+
+    d.injector_pop_attempts = after.injector_pop_attempts - before.injector_pop_attempts;
+    d.injector_pop_successes = after.injector_pop_successes - before.injector_pop_successes;
+    d.deque_pop_attempts = after.deque_pop_attempts - before.deque_pop_attempts;
+    d.deque_pop_successes = after.deque_pop_successes - before.deque_pop_successes;
+    d.steal_attempts = after.steal_attempts - before.steal_attempts;
+    d.steal_successes = after.steal_successes - before.steal_successes;
+
+    return d;
+}
+
+static void print_bench_stats_delta(const char* label, goc_stats_t before, goc_stats_t after) {
+    goc_stats_t d = stats_diff(after, before);
+    printf(
+        "[%s stats] chan_put_scan_total=%" PRIu64 " chan_put_scan_max=%" PRIu64
+        " chan_take_scan_total=%" PRIu64 " chan_take_scan_max=%" PRIu64
+        " dead_compactions=%" PRIu64 " dead_removed=%" PRIu64
+        " cb_depth_now=%" PRIu64 " cb_depth_hwm=%" PRIu64
+        " timeout_alloc=%" PRIu64 " timeout_expire=%" PRIu64
+        " injector_pop=%" PRIu64 "/%" PRIu64
+        " deque_pop=%" PRIu64 "/%" PRIu64
+        " steal=%" PRIu64 "/%" PRIu64
+        "\n",
+        label,
+        d.chan_put_scan_steps_total, d.chan_put_scan_steps_max,
+        d.chan_take_scan_steps_total, d.chan_take_scan_steps_max,
+        d.dead_compactions, d.dead_entries_removed,
+        d.callback_queue_depth, d.callback_queue_depth_max,
+        d.timeout_allocations, d.timeout_expirations,
+        d.injector_pop_successes, d.injector_pop_attempts,
+        d.deque_pop_successes, d.deque_pop_attempts,
+        d.steal_successes, d.steal_attempts
+    );
+}
+
 
 /* =========================================================================
  * 1. Channel ping-pong
@@ -104,6 +157,9 @@ static void player_fn(void* arg) {
  * after both join channels are closed (i.e. both fibers have returned).
  */
 static void bench_ping_pong(size_t ping_rounds) {
+    goc_stats_t s0 = {0}, s1 = {0};
+    if (goc_stats_enabled()) goc_stats_snapshot(&s0);
+
     goc_chan* a = goc_chan_make(0);
     goc_chan* b = goc_chan_make(0);
 
@@ -124,6 +180,11 @@ static void bench_ping_pong(size_t ping_rounds) {
     double rate = (double)(ping_rounds) / s;
     printf("Channel ping-pong: %zu round trips in %dms (%.0f round trips/s)\n",
            ping_rounds, ms, rate);
+
+    if (goc_stats_enabled()) {
+        goc_stats_snapshot(&s1);
+        print_bench_stats_delta("ping-pong", s0, s1);
+    }
 }
 
 
@@ -181,6 +242,9 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     if (ring_nodes < 1)
         return;
 
+    goc_stats_t s0 = {0}, s1 = {0};
+    if (goc_stats_enabled()) goc_stats_snapshot(&s0);
+
     /* Create one channel per node; node i reads from channels[i] and
      * writes to channels[(i+1) % ring_nodes]. */
     goc_chan** channels = goc_malloc(sizeof(goc_chan*) * ring_nodes);
@@ -206,6 +270,11 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     double rate = (double)(ring_hops) / s;
     printf("Ring benchmark: %zu hops across %zu tasks in %dms (%.0f hops/s)\n",
            ring_hops, ring_nodes, ms, rate);
+
+    if (goc_stats_enabled()) {
+        goc_stats_snapshot(&s1);
+        print_bench_stats_delta("ring", s0, s1);
+    }
 }
 
 
@@ -304,6 +373,9 @@ static void bench_fan_in(size_t workers, size_t tasks) {
     if (workers < 1)
         return;
 
+    goc_stats_t s0 = {0}, s1 = {0};
+    if (goc_stats_enabled()) goc_stats_snapshot(&s0);
+
     goc_chan*  in   = goc_chan_make(0);
     goc_chan** outs = goc_malloc(sizeof(goc_chan*) * workers);
     goc_chan** worker_joins = goc_malloc(sizeof(goc_chan*) * workers);
@@ -338,6 +410,11 @@ static void bench_fan_in(size_t workers, size_t tasks) {
     double rate = (double)tasks / s;
     printf("Selective receive / fan-out / fan-in: %zu messages with %zu workers in %dms (%.0f msg/s)\n",
            tasks, workers, ms, rate);
+
+    if (goc_stats_enabled()) {
+        goc_stats_snapshot(&s1);
+        print_bench_stats_delta("fan-in", s0, s1);
+    }
 }
 
 
@@ -371,6 +448,9 @@ static void idle_fn(void* arg) {
  * Timing covers the full lifecycle: spawn, park (via goc_close), and join.
  */
 static void bench_spawn_idle(size_t count) {
+    goc_stats_t s0 = {0}, s1 = {0};
+    if (goc_stats_enabled()) goc_stats_snapshot(&s0);
+
     goc_chan*  park  = goc_chan_make(0);
     goc_chan** joins = goc_malloc(sizeof(goc_chan*) * count);
 
@@ -388,6 +468,11 @@ static void bench_spawn_idle(size_t count) {
     double rate = (double)count / s;
     printf("Spawn idle tasks: %zu fibers in %dms (%.0f tasks/s)\n",
            count, ms, rate);
+
+    if (goc_stats_enabled()) {
+        goc_stats_snapshot(&s1);
+        print_bench_stats_delta("spawn-idle", s0, s1);
+    }
 }
 
 
@@ -502,6 +587,9 @@ static void sieve_fn(void* arg) {
  * is received on result_ch.
  */
 static void bench_prime_sieve(size_t max) {
+    goc_stats_t s0 = {0}, s1 = {0};
+    if (goc_stats_enabled()) goc_stats_snapshot(&s0);
+
     goc_chan*     result_ch = goc_chan_make(0);
     sieve_args_t* args      = goc_malloc(sizeof(sieve_args_t));
     args->max       = max;
@@ -518,6 +606,11 @@ static void bench_prime_sieve(size_t max) {
     double rate  = (double)count / s;
     printf("Prime sieve: %zu primes up to %zu in %dms (%.0f primes/s)\n",
            count, max, ms, rate);
+
+    if (goc_stats_enabled()) {
+        goc_stats_snapshot(&s1);
+        print_bench_stats_delta("prime-sieve", s0, s1);
+    }
 }
 
 
@@ -527,6 +620,9 @@ static void bench_prime_sieve(size_t max) {
  */
 int main(void) {
     goc_init();
+
+    if (goc_stats_enabled())
+        goc_stats_reset();
 
     size_t ping_rounds    = 200000;
     size_t ring_nodes     = 128;

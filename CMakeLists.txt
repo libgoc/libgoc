@@ -16,6 +16,7 @@ option(LIBGOC_VMEM     "Use minicoro virtual memory allocator (off by default; c
 option(LIBGOC_ASAN     "Build an instrumented copy of goc with AddressSanitizer" OFF)
 option(LIBGOC_TSAN     "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE "Instrument goc and tests for code coverage" OFF)
+option(LIBGOC_STATS    "Enable runtime instrumentation counters" OFF)
 set(LIBGOC_STACK_SIZE "0" CACHE STRING "Default fiber stack size in bytes (0 = let minicoro decide)")
 
 # ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ pkg_check_modules(BDWGC REQUIRED IMPORTED_TARGET bdw-gc-threaded)
 set(GOC_SOURCES
     src/alts.c
     src/timeout.c
+    src/stats.c
     src/gc.c
     src/loop.c
     src/pool.c
@@ -76,6 +78,9 @@ function(goc_configure_target target_name)
         target_compile_definitions(${target_name} PRIVATE GC_THREADS)
     else()
         target_compile_definitions(${target_name} PRIVATE GC_THREADS GC_PTHREADS)
+    endif()
+    if(LIBGOC_STATS)
+        target_compile_definitions(${target_name} PRIVATE LIBGOC_STATS_ENABLED)
     endif()
     target_link_libraries(${target_name}
         PUBLIC

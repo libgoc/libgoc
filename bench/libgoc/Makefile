@@ -5,6 +5,7 @@ BUILD_DIR := $(ROOT_DIR)/build-bench
 BENCH_BIN := bench-libgoc
 PKG_CONFIG ?= pkg-config
 LIBGOC_VMEM ?= OFF
+LIBGOC_STATS ?= OFF
 
 CFLAGS := -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE
 CFLAGS += -I$(ROOT_DIR)/include -I$(ROOT_DIR)/src -I$(ROOT_DIR)/vendor/minicoro
@@ -21,7 +22,7 @@ all: build
 # For vmem mode, set LIBGOC_VMEM=ON (and optionally BUILD_DIR):
 #   make LIBGOC_VMEM=ON BUILD_DIR=../../build-bench-vmem build run-all
 build: bench.c
-	cmake -S $(ROOT_DIR) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=$(LIBGOC_VMEM)
+	cmake -S $(ROOT_DIR) -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=$(LIBGOC_VMEM) -DLIBGOC_STATS=$(LIBGOC_STATS)
 	cmake --build $(BUILD_DIR) --target goc
 	$(CC) $(CFLAGS) $< $(BUILD_DIR)/libgoc.a $(LDLIBS) -o $(BENCH_BIN)
 

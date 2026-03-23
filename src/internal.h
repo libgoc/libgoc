@@ -261,6 +261,46 @@ void mutex_registry_init(void);
 void pool_registry_destroy_all(void);
 void mutex_registry_destroy_all(void);
 
+/* stats.c → optional runtime instrumentation */
+bool goc_stats_enabled(void);
+void goc_stats_reset(void);
+void goc_stats_snapshot(goc_stats_t* out);
+
+#ifdef LIBGOC_STATS_ENABLED
+void goc_stats_record_chan_put_scan(size_t steps);
+void goc_stats_record_chan_take_scan(size_t steps);
+void goc_stats_record_dead_compaction(size_t removed_entries);
+void goc_stats_callback_queue_push(void);
+void goc_stats_callback_queue_pop(void);
+void goc_stats_record_timeout_alloc(void);
+void goc_stats_record_timeout_expire(void);
+void goc_stats_record_injector_pop_attempt(bool success);
+void goc_stats_record_deque_pop_attempt(bool success);
+void goc_stats_record_steal_attempt(bool success);
+
+#define GOC_STATS_RECORD_CHAN_PUT_SCAN(steps)      goc_stats_record_chan_put_scan((steps))
+#define GOC_STATS_RECORD_CHAN_TAKE_SCAN(steps)     goc_stats_record_chan_take_scan((steps))
+#define GOC_STATS_RECORD_DEAD_COMPACTION(removed)  goc_stats_record_dead_compaction((removed))
+#define GOC_STATS_CALLBACK_QUEUE_PUSH()            goc_stats_callback_queue_push()
+#define GOC_STATS_CALLBACK_QUEUE_POP()             goc_stats_callback_queue_pop()
+#define GOC_STATS_RECORD_TIMEOUT_ALLOC()           goc_stats_record_timeout_alloc()
+#define GOC_STATS_RECORD_TIMEOUT_EXPIRE()          goc_stats_record_timeout_expire()
+#define GOC_STATS_RECORD_INJECTOR_POP(success)     goc_stats_record_injector_pop_attempt((success))
+#define GOC_STATS_RECORD_DEQUE_POP(success)        goc_stats_record_deque_pop_attempt((success))
+#define GOC_STATS_RECORD_STEAL(success)            goc_stats_record_steal_attempt((success))
+#else
+#define GOC_STATS_RECORD_CHAN_PUT_SCAN(steps)      ((void)(steps))
+#define GOC_STATS_RECORD_CHAN_TAKE_SCAN(steps)     ((void)(steps))
+#define GOC_STATS_RECORD_DEAD_COMPACTION(removed)  ((void)(removed))
+#define GOC_STATS_CALLBACK_QUEUE_PUSH()            ((void)0)
+#define GOC_STATS_CALLBACK_QUEUE_POP()             ((void)0)
+#define GOC_STATS_RECORD_TIMEOUT_ALLOC()           ((void)0)
+#define GOC_STATS_RECORD_TIMEOUT_EXPIRE()          ((void)0)
+#define GOC_STATS_RECORD_INJECTOR_POP(success)     ((void)(success))
+#define GOC_STATS_RECORD_DEQUE_POP(success)        ((void)(success))
+#define GOC_STATS_RECORD_STEAL(success)            ((void)(success))
+#endif
+
 /* ---------------------------------------------------------------------------
  * Global Extern Declarations
  * --------------------------------------------------------------------------- */

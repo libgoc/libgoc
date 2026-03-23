@@ -100,14 +100,17 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
  * -------------------------------------------------------------------------- */
 void compact_dead_entries(goc_chan* ch)
 {
+    size_t removed = 0;
+
     /* Compact takers */
     goc_entry* last_taker = NULL;
     goc_entry** pp = &ch->takers;
     while (*pp) {
         goc_entry* e = *pp;
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;   /* unlink */
-        else {
+            removed++;
+        } else {
             last_taker = e;
             pp = &e->next;
         }
@@ -119,9 +122,10 @@ void compact_dead_entries(goc_chan* ch)
     pp = &ch->putters;
     while (*pp) {
         goc_entry* e = *pp;
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
-        else {
+            removed++;
+        } else {
             last_putter = e;
             pp = &e->next;
         }
@@ -129,6 +133,7 @@ void compact_dead_entries(goc_chan* ch)
     ch->putters_tail = last_putter;
 
     ch->dead_count = 0;
+    GOC_STATS_RECORD_DEAD_COMPACTION(removed);
 }
 
 /* --------------------------------------------------------------------------

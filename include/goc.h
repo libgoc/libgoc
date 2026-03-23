@@ -77,6 +77,38 @@ typedef struct {
 } goc_alts_result;
 
 /* -------------------------------------------------------------------------
+ * Runtime instrumentation stats (optional)
+ * ---------------------------------------------------------------------- */
+
+typedef struct {
+    /* Channel waiter-list scan lengths */
+    uint64_t chan_put_scan_steps_total;
+    uint64_t chan_put_scan_steps_max;
+    uint64_t chan_take_scan_steps_total;
+    uint64_t chan_take_scan_steps_max;
+
+    /* Dead-entry compaction */
+    uint64_t dead_compactions;
+    uint64_t dead_entries_removed;
+
+    /* Callback queue */
+    uint64_t callback_queue_depth;
+    uint64_t callback_queue_depth_max;
+
+    /* Timeout path */
+    uint64_t timeout_allocations;
+    uint64_t timeout_expirations;
+
+    /* Scheduler attempts/successes */
+    uint64_t injector_pop_attempts;
+    uint64_t injector_pop_successes;
+    uint64_t deque_pop_attempts;
+    uint64_t deque_pop_successes;
+    uint64_t steal_attempts;
+    uint64_t steal_successes;
+} goc_stats_t;
+
+/* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
 
@@ -461,6 +493,28 @@ void goc_pool_destroy(goc_pool* pool);
  * Doing so aborts with a diagnostic message.
  */
 goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms);
+
+/* -------------------------------------------------------------------------
+ * Optional instrumentation API
+ * ---------------------------------------------------------------------- */
+
+/**
+ * goc_stats_enabled() — true when libgoc was built with instrumentation
+ * counters enabled (CMake: -DLIBGOC_STATS=ON), false otherwise.
+ */
+bool goc_stats_enabled(void);
+
+/**
+ * goc_stats_reset() — reset all runtime instrumentation counters to zero.
+ * Safe to call at any time after goc_init(); no-op when stats are disabled.
+ */
+void goc_stats_reset(void);
+
+/**
+ * goc_stats_snapshot() — copy current runtime counters into *out.
+ * If stats are disabled, fills *out with zeros.
+ */
+void goc_stats_snapshot(goc_stats_t* out);
 
 #ifdef __cplusplus
 } /* extern "C" */
