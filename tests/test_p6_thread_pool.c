@@ -100,8 +100,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <time.h>
-#include <unistd.h>
 #include <uv.h>
 #include <stdlib.h>
 #include <string.h>
@@ -310,11 +308,7 @@ typedef struct {
 static void test_p6_2_fiber_fn(void* arg) {
     p6_2_args_t* a = (p6_2_args_t*)arg;
     done_signal(a->started);  /* confirm the fiber is live */
-    struct timespec ts = {
-        .tv_sec  = 0,
-        .tv_nsec = (long)(a->delay_us * 1000UL),
-    };
-    nanosleep(&ts, NULL);
+    goc_nanosleep((uint64_t)a->delay_us * 1000);
     /* returns — fiber is done */
 }
 
@@ -1200,7 +1194,7 @@ done:;
  *   Repeat N_ROUNDS times:
  *     1. Wait for the previous fiber to complete (guarantees all workers
  *        have had time to drain their deques and go idle in uv_sem_wait).
- *     2. usleep(500) to let all workers settle into sem_wait.
+ *     2. goc_nanosleep(1ms) to let all workers settle into sem_wait.
  *     3. Post one fiber via goc_go_on (external path — called from the
  *        main OS thread, so tl_worker == NULL).
  *     4. Wait up to 2 seconds for it to signal done.
@@ -1232,7 +1226,7 @@ static void test_p6_19(void) {
 
     for (int i = 0; i < P6_19_ROUNDS; i++) {
         /* Give workers time to drain and enter uv_sem_wait. */
-        usleep(500);
+        goc_nanosleep(1000000); /* 1 ms */
 
         /* External post: main thread → tl_worker == NULL → injector path. */
         goc_go_on(pool, p6_19_fiber_fn, &args);
@@ -1393,7 +1387,7 @@ done:;
  *
  * Distinction from P6.18: P6.18 uses 500 children + 3s deadline.
  * P6.21 uses 1000 children with an explicit "deep-idle" pre-settle
- * (usleep before the spawner) to maximise the probability that W1-W3
+ * (goc_nanosleep before the spawner) to maximise the probability that W1-W3
  * are past their steal check when the burst arrives.
  */
 #define P6_21_WORKERS  4
@@ -1431,7 +1425,7 @@ static void test_p6_21(void) {
 
     /* Let all workers settle deep into uv_sem_wait before the burst arrives,
      * maximising the chance they are past the steal phase at step 3. */
-    usleep(5000);
+    goc_nanosleep(5000000); /* 5 ms */
 
     p6_21_arg_t args = { pool, &done, &completed, P6_21_CHILDREN };
     goc_go_on(pool, p6_21_spawner_fn, &args);

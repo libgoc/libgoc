@@ -17,9 +17,8 @@
  *   - libgoc (goc.h)  — runtime under test
  *   - Boehm GC        — must be the threaded variant (bdw-gc-threaded);
  *                        initialised internally by goc_init()
- *   - libuv           — event loop; drives fiber scheduling
- *   - pthreads        — used in P2.3 to race two threads on goc_close();
- *                        mutex + condvar for done_t (see below)
+ *   - libuv           — event loop; drives fiber scheduling, provides
+ *                        uv_thread_t / uv_mutex_t for done_t and P2.3
  *
  * Synchronisation helper — done_t:
  *   A portable mutex+condvar semaphore that lets the main thread (or a
@@ -57,15 +56,14 @@
  *   - goc_shutdown() is called once in main() after all tests complete.
  *   - The test harness uses the same goto-based cleanup pattern as Phase 1;
  *     see the harness section comments for details.
- *   - P2.3 is the only test that creates a raw pthread directly; all others
- *     use goc_go() for fiber launch.
+ *   - P2.3 is the only test that creates a raw OS thread directly (via
+ *     uv_thread_create); all others use goc_go() for fiber launch.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <unistd.h>
 #include <uv.h>
 
 #include "test_harness.h"
@@ -387,16 +385,12 @@ typedef struct {
 /*
  * Fiber entry point for P2.7.
  * Sleeps for sleep_us microseconds then signals done before returning.
- * nanosleep() is used in preference to usleep() for POSIX.1-2008 compliance.
+ * goc_nanosleep() is used for cross-platform compatibility.
  */
 static void slow_fiber_fn(void* arg) {
     slow_fiber_args_t* a = (slow_fiber_args_t*)arg;
     /* Simulate work with a short sleep on the fiber's OS thread. */
-    struct timespec ts = {
-        .tv_sec  = 0,
-        .tv_nsec = (long)(a->sleep_us * 1000UL),
-    };
-    nanosleep(&ts, NULL);
+    goc_nanosleep((uint64_t)a->sleep_us * 1000);
     done_signal(a->done);
 }
 

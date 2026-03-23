@@ -55,8 +55,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <time.h>
-#include <unistd.h>
 #include <uv.h>
 
 #include "test_harness.h"
@@ -529,11 +527,7 @@ typedef struct {
 
 static void test_p7_5_worker_fn(void* arg) {
     p7_5_worker_args_t* a = (p7_5_worker_args_t*)arg;
-    struct timespec ts = {
-        .tv_sec  = (time_t)(a->delay_ms / 1000),
-        .tv_nsec = (long)((a->delay_ms % 1000) * 1000000L),
-    };
-    nanosleep(&ts, NULL);
+    goc_nanosleep((uint64_t)a->delay_ms * 1000000);
     /* Ignore the return status: the slow fiber will get GOC_CLOSED if the
      * channel has already been closed by the time it wakes up. */
     goc_put(a->result_ch, (void*)a->value);
