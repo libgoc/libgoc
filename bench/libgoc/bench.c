@@ -114,9 +114,9 @@ static void bench_ping_pong(size_t ping_rounds) {
     goc_chan* j2 = goc_go(player_fn, &args_ab);
 
     uint64_t t0 = uv_hrtime();
-    goc_put_sync(a, (void*)(uintptr_t)0);
-    goc_take_sync(j1);
-    goc_take_sync(j2);
+    goc_put(a, (void*)(uintptr_t)0);
+    goc_take(j1);
+    goc_take(j2);
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
@@ -197,8 +197,8 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     }
 
     uint64_t t0 = uv_hrtime();
-    goc_put_sync(channels[0], (void*)(uintptr_t)ring_hops);
-    goc_take_all_sync(joins, ring_nodes);
+    goc_put(channels[0], (void*)(uintptr_t)ring_hops);
+    goc_take_all(joins, ring_nodes);
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
@@ -326,11 +326,11 @@ static void bench_fan_in(size_t workers, size_t tasks) {
 
     uint64_t t0 = uv_hrtime();
     for (size_t i = 0; i < tasks; i++)
-        goc_put_sync(in, (void*)(uintptr_t)i);
+        goc_put(in, (void*)(uintptr_t)i);
     goc_close(in);
 
-    goc_take_sync(done);
-    goc_take_all_sync(worker_joins, workers);
+    goc_take(done);
+    goc_take_all(worker_joins, workers);
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
@@ -380,7 +380,7 @@ static void bench_spawn_idle(size_t count) {
 
     goc_close(park);
 
-    goc_take_all_sync(joins, count);
+    goc_take_all(joins, count);
     uint64_t t1 = uv_hrtime();
 
     double s    = (double)(t1 - t0) / 1e9;
@@ -509,7 +509,7 @@ static void bench_prime_sieve(size_t max) {
 
     uint64_t t0 = uv_hrtime();
     goc_go(sieve_fn, args);
-    goc_val_t* r = goc_take_sync(result_ch);
+    goc_val_t* r = goc_take(result_ch);
     uint64_t t1 = uv_hrtime();
 
     size_t count = (size_t)(uintptr_t)r->val;
@@ -525,9 +525,7 @@ static void bench_prime_sieve(size_t max) {
  * main
  * =========================================================================
  */
-int main(void) {
-    goc_init();
-
+static void main_fiber(void* _) {
     size_t ping_rounds    = 200000;
     size_t ring_nodes     = 128;
     size_t ring_hops      = 500000;
@@ -541,7 +539,11 @@ int main(void) {
     bench_fan_in(select_workers, select_tasks);
     bench_spawn_idle(spawn_count);
     bench_prime_sieve(prime_max);
+}
 
+int main(void) {
+    goc_init();
+    goc_go(main_fiber, NULL);
     goc_shutdown();
     return 0;
 }

@@ -37,6 +37,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <stdint.h>
+#include <uv.h>
 
 #if !defined(_WIN32)
 #  include <unistd.h>
@@ -48,6 +50,20 @@
 #    define GOC_HAVE_EXECINFO 1
 #  endif
 #endif
+
+/* =========================================================================
+ * Portable nanosleep helper
+ * ====================================================================== */
+
+/**
+ * goc_nanosleep() — sleep for ns nanoseconds (cross-platform).
+ *
+ * Converts nanoseconds to milliseconds (ceiling) and delegates to
+ * uv_sleep(), which works on Linux, macOS, and Windows.
+ */
+static inline void goc_nanosleep(uint64_t ns) {
+    uv_sleep((unsigned int)((ns + 999999ULL) / 1000000ULL));
+}
 
 /* =========================================================================
  * Result counters

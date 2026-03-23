@@ -5,8 +5,7 @@
  *   - goc_malloc
  *   - live-channels registry (live_channels array + g_live_mutex)
  *   - pool registry initialisation (delegates to pool.c)
- *   - gc_pthread_create / gc_pthread_join (Windows only; POSIX aliases in
- *     internal.h)
+ *   - goc_thread_create / goc_thread_join (all platforms)
  */
 
 #include <stdlib.h>
@@ -15,7 +14,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <stdatomic.h>
-#include <pthread.h>
+#include <uv.h>
 #include <gc.h>
 #include <gc/gc_mark.h>
 #include "../include/goc.h"
@@ -23,58 +22,51 @@
 #include "internal.h"
 
 /* ---------------------------------------------------------------------------
- * gc_pthread_create / gc_pthread_join  (Windows-only implementation)
+ * goc_thread_create / goc_thread_join  (all platforms)
  *
- * On POSIX these are #defined as GC_pthread_create / GC_pthread_join in
- * internal.h.  On Windows, bdwgc (MSYS2 UCRT64) is compiled with Win32
- * threads and does not provide GC_pthread_create, so we implement the
- * equivalent behaviour here: a generic trampoline registers the thread with
- * the GC before calling the real thread function and unregisters it on exit.
+ * libuv's uv_thread_create does not register new threads with Boehm GC.
+ * This trampoline ensures every thread is registered before its body runs
+ * and unregistered on exit.  goc_init() calls GC_allow_register_threads()
+ * before any threads are spawned, which is required on all platforms.
  * ---------------------------------------------------------------------------*/
 
-#ifdef _WIN32
-
 typedef struct {
-    void* (*fn)(void*);
-    void*  arg;
+    uv_thread_cb fn;
+    void*        arg;
 } gc_thread_args_t;
 
-static void* gc_thread_trampoline(void* raw)
+static void goc_thread_trampoline(void* raw)
 {
     /* Extract fn/arg and free the heap-allocated carrier before we touch
      * any GC-managed memory (avoids a window where the carrier is live but
      * not yet reachable by the GC). */
-    gc_thread_args_t* w   = (gc_thread_args_t*)raw;
-    void* (*fn)(void*)    = w->fn;
-    void*  arg            = w->arg;
+    gc_thread_args_t* w = (gc_thread_args_t*)raw;
+    uv_thread_cb fn     = w->fn;
+    void*        arg    = w->arg;
     free(w);
 
     struct GC_stack_base sb;
     GC_get_stack_base(&sb);
     GC_register_my_thread(&sb);
-    void* ret = fn(arg);
+    fn(arg);
     GC_unregister_my_thread();
-    return ret;
 }
 
-int gc_pthread_create(pthread_t* t, const pthread_attr_t* a,
-                      void* (*fn)(void*), void* arg)
+int goc_thread_create(uv_thread_t* t, uv_thread_cb fn, void* arg)
 {
     gc_thread_args_t* w = malloc(sizeof(gc_thread_args_t));
-    if (!w) return ENOMEM;
+    if (!w) return UV_ENOMEM;
     w->fn  = fn;
     w->arg = arg;
-    int rc = pthread_create(t, a, gc_thread_trampoline, w);
+    int rc = uv_thread_create(t, goc_thread_trampoline, w);
     if (rc != 0) free(w);
     return rc;
 }
 
-int gc_pthread_join(pthread_t t, void** retval)
+int goc_thread_join(uv_thread_t* t)
 {
-    return pthread_join(t, retval);
+    return uv_thread_join(t);
 }
-
-#endif /* _WIN32 */
 
 /* ---------------------------------------------------------------------------
  * [Fix 5] Fiber stack root push — flat array + bitmap
@@ -307,24 +299,25 @@ static size_t     live_channels_len = 0;
 static size_t     live_channels_cap = 0;
 static uv_mutex_t g_live_mutex;   /* plain malloc; not GC-heap (uv constraint) */
 
-static pthread_t  g_main_thread;
+static uv_thread_t g_main_thread;
 static bool       g_main_thread_set = false;
 
 __attribute__((constructor))
 static void capture_main_thread_at_load(void)
 {
-    g_main_thread = pthread_self();
+    g_main_thread = uv_thread_self();
     g_main_thread_set = true;
 }
 
 static void lifecycle_abort_non_main_thread(const char* fn_name)
 {
     if (!g_main_thread_set) {
-        g_main_thread = pthread_self();
+        g_main_thread = uv_thread_self();
         g_main_thread_set = true;
     }
 
-    if (!pthread_equal(pthread_self(), g_main_thread)) {
+    uv_thread_t self = uv_thread_self();
+    if (!uv_thread_equal(&self, &g_main_thread)) {
         fprintf(stderr,
                 "libgoc: %s must be called from the main thread\n",
                 fn_name);
