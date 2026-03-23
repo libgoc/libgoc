@@ -55,6 +55,7 @@ set(GOC_SOURCES
     src/minicoro.c
     src/wsdq.c
     src/goc_array.c
+    src/goc_io.c
 )
 
 # ---------------------------------------------------------------------------
@@ -234,7 +235,7 @@ include(GNUInstallDirs)
 install(TARGETS goc
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(FILES include/goc.h
+install(FILES include/goc.h include/goc_io.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 if(LIBGOC_SHARED)

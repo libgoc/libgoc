@@ -32,6 +32,7 @@ static void free_handle_cb(uv_handle_t* h) { free(h); }
 static void on_timeout(uv_timer_t* t)
 {
     goc_chan* ch = (goc_chan*)t->data;
+    uv_handle_chan_unregister(ch);
     goc_close(ch);
     uv_close((uv_handle_t*)t, free_handle_cb);
 }
@@ -65,6 +66,7 @@ static void on_start_timer(uv_async_t* h)
 goc_chan* goc_timeout(uint64_t ms)
 {
     goc_chan*         ch  = goc_chan_make(0);   /* rendezvous channel */
+    uv_handle_chan_register(ch);               /* keep ch alive while timer is pending */
     goc_timeout_req*  req = malloc(sizeof(goc_timeout_req));
     uv_timer_t*       t   = malloc(sizeof(uv_timer_t));
 

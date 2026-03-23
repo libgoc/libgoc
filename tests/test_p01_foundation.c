@@ -154,7 +154,6 @@ static void test_p1_5(void) {
     for (size_t i = 0; i < SZ / 2; i++) {
         ASSERT(p[i] == (unsigned char)(i + 1));
     }
-
     TEST_PASS();
 done:;
 }

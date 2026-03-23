@@ -202,6 +202,11 @@ struct goc_spawn_req {
 void chan_register(goc_chan* ch);
 void chan_unregister(goc_chan* ch);
 
+/* gc.c → used by timeout.c and goc_io.c */
+void live_uv_handles_init(void);
+void uv_handle_chan_register(goc_chan* ch);
+void uv_handle_chan_unregister(goc_chan* ch);
+
 /* gc.c → used by fiber.c, pool.c */
 void* goc_fiber_root_register(mco_coro* coro, void* top, goc_entry* entry);
 void  goc_fiber_root_unregister(void* handle);

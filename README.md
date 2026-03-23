@@ -31,6 +31,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
+- [Async I/O API](./IO.md)
 - [Benchmarks](/bench)
 
 
@@ -60,6 +61,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [RW mutexes](#rw-mutexes)
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
+  - [Async I/O](#async-io)
 - [Best Practices](#best-practices)
 - [Benchmarks](#benchmarks)
 - [Building and Testing](#building-and-testing)
@@ -694,6 +696,23 @@ uv_close((uv_handle_t*)server, on_handle_closed);
 
 ---
 
+### Async I/O
+
+libgoc provides channel-based async I/O wrappers for libuv operations via a separate header:
+
+```c
+#include "goc.h"
+#include "goc_io.h"
+```
+
+Each function is prefixed `goc_io_` and returns a `goc_chan*` that delivers the result when the I/O completes. Safe from any context; composable with `goc_alts()`.
+
+Covered operations: stream read/write/connect/shutdown, UDP send/recv, file-system (open/close/read/write/stat/rename/unlink/sendfile), and DNS (getaddrinfo/getnameinfo).
+
+> **Full API reference:** [IO.md](./IO.md)
+
+---
+
 ## Best Practices
 
 Used the right way, **libgoc** provides a runtime environment very similar to Go's.
@@ -825,7 +844,7 @@ ctest --test-dir build --output-on-failure
 
 ### Windows
 
-libgoc uses `pthread.h` and C11 `_Atomic` directly. These are not available in MSVC builds or in the Win32-threads build of bdwgc that vcpkg produces. The recommended approach for Windows is **MSYS2/MinGW-w64 (UCRT64)**, which provides a POSIX-compatible GCC toolchain with full C11 support and a bdwgc package built with POSIX thread support.
+libgoc uses libuv thread primitives (`uv_thread_t`, etc.) and C11 atomics via `<stdatomic.h>` (`_Atomic`, `atomic_*`). MSVC builds are still not supported (notably due to bdwgc/toolchain constraints, including vcpkg's Win32-threads build), so the recommended Windows setup remains **MSYS2/MinGW-w64 (UCRT64)**.
 
 ```sh
 # 1. Install MSYS2 from https://www.msys2.org/, then in a UCRT64 shell:

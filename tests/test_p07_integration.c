@@ -515,19 +515,23 @@ done:;
  *   completed; it receives GOC_CLOSED and exits cleanly.
  */
 
-#define P7_5_FAST_DELAY_MS   20
+#define P7_5_FAST_DELAY_MS    0
 #define P7_5_SLOW_DELAY_MS  150
 #define P7_5_TIMEOUT_MS      80
 
 typedef struct {
     goc_chan*  result_ch;
+    goc_chan*  ready_ch;
     uint64_t   delay_ms;
     uintptr_t  value;
 } p7_5_worker_args_t;
 
 static void test_p7_5_worker_fn(void* arg) {
     p7_5_worker_args_t* a = (p7_5_worker_args_t*)arg;
-    goc_nanosleep((uint64_t)a->delay_ms * 1000000);
+    if (a->ready_ch) {
+        goc_put(a->ready_ch, NULL);
+    }
+    goc_take(goc_timeout(a->delay_ms));
     /* Ignore the return status: the slow fiber will get GOC_CLOSED if the
      * channel has already been closed by the time it wakes up. */
     goc_put(a->result_ch, goc_box_uint(a->value));
@@ -542,27 +546,27 @@ static void test_p7_5_worker_fn(void* arg) {
  * subsequent goc_put returns GOC_CLOSED and the fiber exits without hanging.
  * All joins must complete, proving no goroutine leak.
  *
- * NOTE: This test is timing-sensitive on macOS (libuv timer jitter can cause
- * the timeout arm to win). It is marked flaky and skipped there to keep CI
- * signal stable until we harden the timing guarantees.
+ * NOTE: A readiness handshake is used to make this deterministic across
+ * platforms: the fast worker signals once it reaches its send point before
+ * goc_alts_sync starts, so the data arm is pending immediately.
  */
 static void test_p7_5(void) {
     TEST_BEGIN("P7.5   timeout+cancellation: slow result discarded, no hang");
 
-#ifdef __APPLE__
-    TEST_SKIP("flaky on macOS: timeout arm may win due to timer jitter");
-#endif
-
     goc_chan* result_ch = goc_chan_make(0);
     ASSERT(result_ch != NULL);
+    goc_chan* fast_ready_ch = goc_chan_make(0);
+    ASSERT(fast_ready_ch != NULL);
 
     p7_5_worker_args_t fast_args = {
         .result_ch = result_ch,
+        .ready_ch  = fast_ready_ch,
         .delay_ms  = P7_5_FAST_DELAY_MS,
         .value     = 0xFADE,
     };
     p7_5_worker_args_t slow_args = {
         .result_ch = result_ch,
+        .ready_ch  = NULL,
         .delay_ms  = P7_5_SLOW_DELAY_MS,
         .value     = 0xDEAD,
     };
@@ -571,6 +575,12 @@ static void test_p7_5(void) {
     ASSERT(fast_join != NULL);
     goc_chan* slow_join = goc_go(test_p7_5_worker_fn, &slow_args);
     ASSERT(slow_join != NULL);
+
+    /* Wait until the fast worker has reached its send point. This removes
+     * scheduler jitter from the select race so the test is deterministic: the
+     * data arm is already pending when goc_alts_sync starts. */
+    goc_take_sync(fast_ready_ch);
+    goc_close(fast_ready_ch);
 
     goc_chan* tch = goc_timeout(P7_5_TIMEOUT_MS);
     ASSERT(tch != NULL);

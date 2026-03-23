@@ -2,7 +2,7 @@
 
 ### Features
 
-- [ ] **F1** libuv I/O function wrappers that use channels rather than callbacks
+- [x] **F1** libuv I/O function wrappers that use channels rather than callbacks
 
 - [ ] **F2** dynamic fiber stacks, like Go
 

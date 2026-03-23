@@ -25,10 +25,11 @@
 14. [`goc_timeout` — libuv Timer](#goc_timeout--libuv-timer)
 15. [`goc_alts`](#goc_alts)
 16. [Public API](#public-api)
-17. [Initialization Sequence](#initialization-sequence)
-18. [Shutdown Sequence](#shutdown-sequence)
-19. [Testing](#testing)
-20. [CI/CD](#cicd)
+17. [Async I/O Wrappers (`goc_io`)](#async-io-wrappers-goc_io)
+18. [Initialization Sequence](#initialization-sequence)
+19. [Shutdown Sequence](#shutdown-sequence)
+20. [Testing](#testing)
+21. [CI/CD](#cicd)
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
 
@@ -63,11 +64,15 @@ libgoc/
 │   ├── channel.c          # Channel operations
 │   ├── mutex.c            # RW mutexes (channel-backed lock handles)
 │   ├── goc_array.c        # Dynamic array (goc_array)
+│   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
 │   ├── channel_internal.h  # Channel-only internals and inline channel helpers
 │   └── config.h           # Build configuration constants (thresholds, etc.)
+├── include/
+│   ├── goc.h              # Public API header
+│   └── goc_io.h           # Async I/O wrappers public API (separate include)
 ├── tests/
 │   ├── test_harness.h              # Shared harness macros + SIGSEGV/SIGABRT crash handler
 │   ├── test_p1_foundation.c        # Phase 1 — Foundation
@@ -80,6 +85,18 @@ libgoc/
 │   ├── test_p7_integration.c       # Phase 7 — Integration
 │   ├── test_p8_safety.c            # Phase 8 — Safety and crash behaviour
 │   └── test_p9_mutexes.c           # Phase 9 — RW mutexes
+│   ├── test_harness.h               # Shared harness macros + SIGSEGV/SIGABRT crash handler
+│   ├── test_p01_foundation.c        # Phase 1  — Foundation
+│   ├── test_goc_array.c             # Component — goc_array dynamic array
+│   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
+│   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
+│   ├── test_p04_callbacks.c         # Phase 4  — Callbacks
+│   ├── test_p05_select_timeout.c    # Phase 5  — Select and timeout
+│   ├── test_p06_thread_pool.c       # Phase 6  — Thread pool
+│   ├── test_p07_integration.c       # Phase 7  — Integration
+│   ├── test_p08_safety.c            # Phase 8  — Safety and crash behaviour
+│   ├── test_p09_mutexes.c           # Phase 9  — RW mutexes
+│   └── test_p10_io.c                # Phase 10 — Async I/O wrappers
 ├── bench/                           # Benchmarks (see bench/README.md)
 │   ├── go/                          # Go benchmark sources
 │   ├── libgoc/                      # C benchmark sources
@@ -113,7 +130,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 |---|---|---|
 | `goc` | static library | All `src/*.c` modules; always built |
 | `goc_shared` | shared library | Same sources as `goc`; built only with `-DLIBGOC_SHARED=ON`; output name `libgoc.so` / `.dylib` / `.dll` |
-| `test_p1_foundation` … `test_p9_mutexes` | executables | Phase tests, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
+| `test_p01_foundation` … `test_p10_io` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
@@ -1215,6 +1232,27 @@ uv_tcp_init(goc_scheduler(), server);
 
 ---
 
+## Async I/O Wrappers (`goc_io`)
+
+libgoc provides channel-based wrappers for libuv I/O operations in a separate header (`goc_io.h`) and translation unit (`src/goc_io.c`). All public identifiers are prefixed `goc_io_`.
+
+**Include separately:**
+
+```c
+#include "goc.h"
+#include "goc_io.h"
+```
+
+**Single-form API.** Each operation is exposed as a single function that returns `goc_chan*`; the channel delivers the result when the I/O completes. Safe from any context; composable with `goc_alts()`.
+
+**Thread-safety bridge.** Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) touch handle internals that must run on the libuv loop thread. Stream/UDP wrappers marshal each call to the loop thread via a one-shot heap-allocated `uv_async_t`. File-system and DNS operations are submitted directly (libuv routes them through its internal thread pool).
+
+**GC safety.** All `goc_chan*` pointers passed to async context structs (which are `malloc`-allocated) are registered in the `live_uv_handles` array (see `gc.c`) for the duration of the pending I/O, preventing premature collection.
+
+> **Full API reference:** [IO.md](./IO.md)
+
+---
+
 ## Initialization Sequence
 
 `goc_init` must be called exactly once, as the first call in `main()`. Calling it more than once is undefined behaviour. It performs the following steps:
@@ -1434,7 +1472,6 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | P9.4 | Writer preference: once a writer is queued, subsequent readers queue behind it |
 | P9.5 | Fiber parking path: reader fiber blocks behind writer and resumes after writer release |
 
-
 **goc_array component**
 
 | Test | Description |
@@ -1452,6 +1489,25 @@ The test suite is split across phase files in `tests/`, each a self-contained C 
 | `test_array_empty_ops` | Pop/pop_head/slice/concat on empty arrays return NULL / zero-length array without crashing |
 | `test_array_from_empty` | `goc_array_from(NULL, 0)` returns a valid empty array |
 
+**Phase 10 — Async I/O wrappers**
+
+| Test | Description |
+|---|---|
+| P10.1 | `goc_io_fs_open`: open a new file; file descriptor >= 0 |
+| P10.2 | `goc_io_fs_write`: write data to an open file; returns correct written byte count |
+| P10.3 | `goc_io_fs_read`: read back written data; content matches |
+| P10.4 | `goc_io_fs_stat`: stat the file; `st_size` equals written byte count |
+| P10.5 | `goc_io_fs_rename`: rename the file; old path stat fails, new path stat succeeds |
+| P10.6 | `goc_io_fs_unlink`: delete the file; subsequent stat fails |
+| P10.7 | `goc_io_fs_open` with non-existent path returns negative error code |
+| P10.8 | `goc_io_getaddrinfo` resolves "localhost"; `ok == GOC_IO_OK`, `res != NULL` |
+| P10.9 | `goc_io_getaddrinfo` with NULL node and service: no crash |
+| P10.10 | `goc_io_getaddrinfo` returns non-NULL channel |
+| P10.11 | `goc_io_fs_sendfile`: copy bytes between two file descriptors; content verified |
+| P10.12 | `goc_io_fs_open` integrates with `goc_alts` (select on I/O channel vs. dummy channel) |
+
+> **Windows portability:** Temporary file paths are constructed via `GetTempPathA` on Windows and `/tmp` on POSIX. All file-system operations use `UV_FS_O_*` flags (e.g. `UV_FS_O_RDONLY`, `UV_FS_O_WRONLY | UV_FS_O_CREAT`) which are portable across all libuv platforms. Phase 10 builds and runs on Windows.
+
 ### Running
 
 ```sh
@@ -1459,7 +1515,7 @@ cmake -B build
 cmake --build build
 ctest --test-dir build --output-on-failure --timeout 120
 # or run a single phase directly:
-./build/test_p1_foundation
+./build/test_p01_foundation
 ```
 
 With sanitizers:

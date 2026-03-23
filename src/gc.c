@@ -299,6 +299,24 @@ static size_t     live_channels_len = 0;
 static size_t     live_channels_cap = 0;
 static uv_mutex_t g_live_mutex;   /* plain malloc; not GC-heap (uv constraint) */
 
+/* ---------------------------------------------------------------------------
+ * Live UV-handle channel registry
+ *
+ * Tracks goc_chan* pointers that are referenced only from malloc-allocated
+ * libuv context structs (invisible to the GC).  The backing array is
+ * GC_malloc-allocated so the collector scans its contents at every mark
+ * phase, keeping the referenced channels alive until the libuv callback
+ * fires and calls uv_handle_chan_unregister.
+ *
+ * Thread-safety: protected by g_live_uv_mutex.
+ * GC note: GC_realloc may trigger a collection cycle; that is safe because
+ * push_fiber_roots (the GC callback) does not acquire g_live_uv_mutex.
+ * ---------------------------------------------------------------------------*/
+
+static goc_chan** live_uv_handles     = NULL;   /* GC_malloc'd array */
+static size_t     live_uv_handles_len = 0;
+static size_t     live_uv_handles_cap = 0;
+static uv_mutex_t g_live_uv_mutex;
 static uv_thread_t g_main_thread;
 static bool       g_main_thread_set = false;
 
@@ -331,6 +349,15 @@ static void lifecycle_abort_non_main_thread(const char* fn_name)
 
 void* goc_malloc(size_t n) {
     return GC_malloc(n);
+}
+
+void* goc_realloc(void* ptr, size_t n) {
+    void* p = GC_realloc(ptr, n);
+    if (!p) {
+        fprintf(stderr, "goc_realloc: out of memory\n");
+        abort();
+    }
+    return p;
 }
 
 /* ---------------------------------------------------------------------------
@@ -402,6 +429,69 @@ void chan_unregister(goc_chan* ch) {
 }
 
 /* ---------------------------------------------------------------------------
+ * live_uv_handles_init  (internal; declared in internal.h)
+ *
+ * Allocates the GC-managed live_uv_handles array and initialises its mutex.
+ * Must be called during goc_init, before any channel-backed libuv operation.
+ * ---------------------------------------------------------------------------*/
+
+void live_uv_handles_init(void) {
+    live_uv_handles_cap = 16;
+    live_uv_handles     = GC_malloc(live_uv_handles_cap * sizeof(goc_chan*));
+    assert(live_uv_handles != NULL);
+    live_uv_handles_len = 0;
+    uv_mutex_init(&g_live_uv_mutex);
+}
+
+/* ---------------------------------------------------------------------------
+ * uv_handle_chan_register  (internal; declared in internal.h)
+ *
+ * Called by every *_ch wrapper after goc_chan_make, before submitting the
+ * libuv request.  Adds ch to the GC-visible live_uv_handles array so the
+ * collector keeps it alive while only a malloc-allocated context struct
+ * references it.
+ * ---------------------------------------------------------------------------*/
+
+void uv_handle_chan_register(goc_chan* ch) {
+    uv_mutex_lock(&g_live_uv_mutex);
+
+    if (live_uv_handles_len == live_uv_handles_cap) {
+        size_t     new_cap = live_uv_handles_cap * 2;
+        goc_chan** grown   = GC_realloc(live_uv_handles,
+                                        new_cap * sizeof(goc_chan*));
+        assert(grown != NULL);
+        live_uv_handles     = grown;
+        live_uv_handles_cap = new_cap;
+    }
+
+    live_uv_handles[live_uv_handles_len++] = ch;
+
+    uv_mutex_unlock(&g_live_uv_mutex);
+}
+
+/* ---------------------------------------------------------------------------
+ * uv_handle_chan_unregister  (internal; declared in internal.h)
+ *
+ * Called in every libuv callback just before goc_close(ch).  Removes ch
+ * from live_uv_handles so the GC may collect it once all other references
+ * drop.
+ * ---------------------------------------------------------------------------*/
+
+void uv_handle_chan_unregister(goc_chan* ch) {
+    uv_mutex_lock(&g_live_uv_mutex);
+
+    for (size_t i = 0; i < live_uv_handles_len; i++) {
+        if (live_uv_handles[i] == ch) {
+            live_uv_handles[i] = live_uv_handles[--live_uv_handles_len];
+            break;
+        }
+    }
+
+
+    uv_mutex_unlock(&g_live_uv_mutex);
+}
+
+/* ---------------------------------------------------------------------------
  * goc_init
  *
  * Full initialisation sequence (must be called exactly once, from the main
@@ -410,9 +500,10 @@ void chan_unregister(goc_chan* ch) {
  *   1. GC_INIT()
  *   2. GC_allow_register_threads()
  *   3. live_channels_init()    — allocates live_channels + g_live_mutex
- *   4. pool_registry_init()    — allocates pool registry (src/pool.c)
- *   5. loop_init()             — allocates g_loop, g_wakeup, spawns loop thread
- *   6. g_default_pool = goc_pool_make(N)
+ *   4. live_uv_handles_init()  — allocates live_uv_handles + g_live_uv_mutex
+ *   5. pool_registry_init()    — allocates pool registry (src/pool.c)
+ *   6. loop_init()             — allocates g_loop, g_wakeup, spawns loop thread
+ *   7. g_default_pool = goc_pool_make(N)
  *        N = GOC_POOL_THREADS env var if set to a valid positive integer,
  *            otherwise max(4, hardware_concurrency).
  * ---------------------------------------------------------------------------*/
@@ -431,6 +522,9 @@ void goc_init(void) {
 
     /* Step 3 — Live-channels registry (this file). */
     live_channels_init();
+
+    /* Step 3.1 — Live UV-handle channel registry (this file). */
+    live_uv_handles_init();
 
     /* Step 4 — Pool registry (pool.c). */
     pool_registry_init();
@@ -467,6 +561,7 @@ void goc_init(void) {
     g_default_pool = goc_pool_make(n);
 }
 
+
 /* ---------------------------------------------------------------------------
  * goc_shutdown
  *
@@ -477,6 +572,7 @@ void goc_init(void) {
  * Sequence:
  *   B.1  pool_registry_destroy_all()  — drains (blocks) and destroys every pool
  *   B.2  Destroy all channel mutexes; free live_channels; destroy g_live_mutex
+ *   B.2a Tear down live_uv_handles registry
  *   B.3  loop_shutdown()              — signals loop thread, joins, frees g_loop
  * ---------------------------------------------------------------------------*/
 
@@ -504,6 +600,14 @@ void goc_shutdown(void) {
     live_channels_cap = 0;
 
     uv_mutex_destroy(&g_live_mutex);
+
+    /* B.2a — Tear down the live UV-handle channel registry.
+     * The backing array is GC-managed; just drop the pointer and destroy
+     * the mutex. */
+    live_uv_handles     = NULL;
+    live_uv_handles_len = 0;
+    live_uv_handles_cap = 0;
+    uv_mutex_destroy(&g_live_uv_mutex);
 
     /* B.2.1 — Destroy all RW mutex internal locks. */
     mutex_registry_destroy_all();
