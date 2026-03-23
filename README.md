@@ -419,13 +419,13 @@ goc_take_sync(done);
 
 ### minicoro limitations
 
-libgoc uses [minicoro](https://github.com/edubart/minicoro) for fiber switching. Two hard constraints apply to all fiber entry functions:
+libgoc uses [minicoro](https://github.com/edubart/minicoro) for fiber switching. Three hard constraints apply to all fiber entry functions:
 
 **C++ exceptions are not supported.** Throwing a C++ exception that unwinds across a `mco_yield` / `mco_resume` boundary is undefined behaviour — the exception mechanism's internal state is not preserved across a coroutine switch. In mixed C/C++ codebases, all fiber entry functions must be declared `extern "C"` and must not allow any C++ exception to propagate out of them.
 
 **Stack management.** By default, libgoc uses canary-protected stacks with overflow detection. This is the portable default: canary stacks work on all platforms including restricted environments where virtual memory is unavailable, and encourage library authors to develop with a portability mindset. libgoc provides a GC heap (`goc_malloc`) for off-stack data, so fixed-size stacks are practical for most use cases. If stack overflow is detected, the runtime calls `abort()` immediately with a diagnostic message. For use cases that need large or variable stacks, the virtual memory allocator can be enabled with `-DLIBGOC_VMEM=ON`. Avoid large stack-allocated buffers and deep recursion inside fibers regardless of stack mode; use `goc_malloc`-allocated buffers on the GC heap for large data instead.
 
-**`src/minicoro.c` must be compiled without `-DGC_THREADS`.** The build system enforces this with `-UGC_THREADS` on that translation unit. This avoids a TLS interaction between minicoro and Boehm's thread wrapper during thread startup.
+**`src/minicoro.c` uses isolated compile flags.** The build system enforces `-UGC_THREADS -UGC_PTHREADS -DMCO_ZERO_MEMORY` on that translation unit (and additionally `-DMCO_USE_VMEM_ALLOCATOR` when `-DLIBGOC_VMEM=ON`). This avoids GC thread-wrapper/TLS startup interaction and enables minicoro's zeroing of pop storage for conservative-GC friendliness.
 
 ---
 

@@ -107,7 +107,12 @@ Benchmarks live in `bench/` and are documented in [bench/README.md](./bench/READ
 
 minicoro is a single-header library vendored under `vendor/minicoro/`. It requires exactly one translation unit to instantiate its implementation: `src/minicoro.c` defines `MINICORO_IMPL` before including `minicoro.h`. All other files include `minicoro.h` without defining `MINICORO_IMPL`.
 
-`src/minicoro.c` **must be compiled without `-DGC_THREADS`** and **with `-DMCO_ZERO_MEMORY`** (see [minicoro Limitations](#minicoro-limitations)). `CMakeLists.txt` enforces this via `set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS "-UGC_THREADS;-DMCO_ZERO_MEMORY")`.
+`src/minicoro.c` is compiled as an isolated translation unit with minicoro-specific flags (see [minicoro Limitations](#minicoro-limitations)). CMake enforces:
+
+- always: `-UGC_THREADS -UGC_PTHREADS -DMCO_ZERO_MEMORY`
+- when `-DLIBGOC_VMEM=ON`: additionally `-DMCO_USE_VMEM_ALLOCATOR`
+
+This is implemented via `set_source_files_properties(src/minicoro.c PROPERTIES COMPILE_OPTIONS ...)` in `CMakeLists.txt`.
 
 ---
 
@@ -505,15 +510,17 @@ Each fiber's stack is registered once at birth (in `goc_go_on`, `src/fiber.c`) a
 
 ## minicoro Limitations
 
-libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switching. Three hard constraints apply to all fiber entry functions and must be understood by library embedders:
+libgoc uses [minicoro](https://github.com/edubart/minicoro) for all fiber switching. Four hard constraints apply to all fiber entry functions and must be understood by library embedders:
 
 **C++ exceptions are not supported.** The C++ exception mechanism maintains internal unwinding state that is not preserved across a coroutine context switch. Throwing an exception that propagates across a `mco_yield` / `mco_resume` boundary is undefined behaviour and will typically corrupt the exception handler chain or crash. In mixed C/C++ codebases all fiber entry functions must be declared `extern "C"` and must not allow any C++ exception to escape them.
 
 **Stack management.** By default, libgoc uses canary-protected stacks with overflow detection. This is the portable default and encourages library authors to develop with a platform-independent mindset. The virtual memory allocator can be enabled with `-DLIBGOC_VMEM=ON` for dynamic stack growth — useful when individual fibers need large or variable stacks. If stack overflow is detected in canary mode, the runtime calls `abort()` immediately with a diagnostic message. Avoid large stack-allocated buffers and deep recursion inside fibers regardless of stack mode — use `goc_malloc`-allocated buffers on the GC heap for large data.
 
-**`src/minicoro.c` must be compiled without `-DGC_THREADS`.** minicoro declares a `static MCO_THREAD_LOCAL mco_current_co` variable (a `thread_local` TLS slot) to track the running coroutine per thread. When Boehm GC is compiled with `GC_THREADS` it wraps `pthread_create` and invokes `GC_call_with_stack_base` during thread startup, which walks TLS descriptors. If minicoro's TLS block is visible to that walk before `mco_current_co` is initialised on a new thread, the GC faults with a SIGSEGV inside its own startup code — even if no minicoro function has yet been called. The fix is to compile `src/minicoro.c` in its own isolated translation unit with `-UGC_THREADS`, which `CMakeLists.txt` enforces via `set_source_files_properties`. minicoro never calls any GC function, so the flag is irrelevant to its correctness regardless.
+**`src/minicoro.c` must be compiled without GC thread-wrapper defines (`-UGC_THREADS` and `-UGC_PTHREADS`).** minicoro declares a `static MCO_THREAD_LOCAL mco_current_co` variable (a `thread_local` TLS slot) to track the running coroutine per thread. When Boehm GC thread wrappers are active, thread-startup bookkeeping may walk TLS state during `pthread_create` startup. If minicoro's TLS block is visible before `mco_current_co` is initialised on a new thread, the GC can fault during startup before any minicoro API has been called. The fix is to compile `src/minicoro.c` in its own isolated translation unit with `-UGC_THREADS;-UGC_PTHREADS`, which `CMakeLists.txt` enforces via `set_source_files_properties`.
 
-**`src/minicoro.c` must be compiled with `-DMCO_ZERO_MEMORY`.** minicoro's internal push/pop storage buffer is used to pass values between `mco_push`/`mco_pop` calls across a `mco_yield`/`mco_resume` boundary. When `MCO_ZERO_MEMORY` is not defined, popped bytes remain in the buffer after the pop — if those bytes held a GC-managed pointer, Boehm GC's conservative scanner may keep the referent alive indefinitely because it still sees a pointer-shaped value in the coroutine's allocation. Defining `MCO_ZERO_MEMORY` causes minicoro to `memset` the popped region to zero immediately after copying it to the caller, eliminating the stale-pointer window. This is minicoro's built-in GC-environment support and **must be enabled** when building with Boehm GC. `-UGC_THREADS` and `-DMCO_ZERO_MEMORY` are therefore complementary: the former prevents the TLS-related crash at thread startup; the latter ensures the conservative collector does not retain objects via stale references in coroutine storage.
+**`src/minicoro.c` must be compiled with `-DMCO_ZERO_MEMORY`.** minicoro's internal push/pop storage buffer is used to pass values between `mco_push`/`mco_pop` calls across a `mco_yield`/`mco_resume` boundary. When `MCO_ZERO_MEMORY` is not defined, popped bytes remain in the buffer after the pop — if those bytes held a GC-managed pointer, Boehm GC's conservative scanner may keep the referent alive indefinitely because it still sees a pointer-shaped value in the coroutine's allocation. Defining `MCO_ZERO_MEMORY` causes minicoro to `memset` the popped region to zero immediately after copying it to the caller, eliminating the stale-pointer window. This is minicoro's built-in GC-environment support and **must be enabled** when building with Boehm GC. `-UGC_THREADS;-UGC_PTHREADS` and `-DMCO_ZERO_MEMORY` are complementary: the former isolates minicoro from GC thread-wrapper startup paths; the latter ensures the conservative collector does not retain objects via stale references in coroutine storage.
+
+**When `LIBGOC_VMEM=ON`, `src/minicoro.c` must also be compiled with `-DMCO_USE_VMEM_ALLOCATOR`.** This switches minicoro to its virtual-memory-backed stack allocator, matching libgoc's vmem mode (`LIBGOC_VMEM_ENABLED`) where canary checks are compiled out and stacks can grow dynamically.
 
 ---
 

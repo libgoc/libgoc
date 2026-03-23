@@ -107,9 +107,11 @@ Single-result operations (write, connect, open, read, etc.) return scalars encod
 
 | Operation | Channel delivers |
 |---|---|
-| `goc_io_write`, `goc_io_write2`, `goc_io_shutdown_stream`, `goc_io_tcp_connect`, `goc_io_pipe_connect`, `goc_io_udp_send`, `goc_io_fs_close`, `goc_io_fs_unlink`, `goc_io_fs_rename` | `(void*)(intptr_t)status` — 0 on success, negative libuv error |
-| `goc_io_fs_open` | `(void*)(intptr_t)fd` — fd >= 0 on success, negative libuv error |
-| `goc_io_fs_read`, `goc_io_fs_write`, `goc_io_fs_sendfile` | `(void*)(intptr_t)result` — bytes >= 0 on success, negative libuv error |
+| `goc_io_write`, `goc_io_write2`, `goc_io_shutdown_stream`, `goc_io_tcp_connect`, `goc_io_pipe_connect`, `goc_io_udp_send`, `goc_io_fs_close`, `goc_io_fs_unlink`, `goc_io_fs_rename` | `goc_box_int(status)` — 0 on success, negative libuv error |
+| `goc_io_fs_open` | `goc_box_int(fd)` — fd >= 0 on success, negative libuv error |
+| `goc_io_fs_read`, `goc_io_fs_write`, `goc_io_fs_sendfile` | `goc_box_int(result)` — bytes >= 0 on success, negative libuv error |
+
+Decode scalar channel values with `goc_unbox_int(...)`.
 
 Composite result types (channel delivers a GC-managed pointer):
 
@@ -185,16 +187,16 @@ while ((v = goc_take(rch))->ok == GOC_OK) {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_io_write` | `goc_chan* goc_io_write(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs)` | Initiate an async stream write; return result channel delivering `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. Safe from any context. |
-| `goc_io_write2` | `goc_chan* goc_io_write2(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs, uv_stream_t* send_handle)` | Initiate an async write with handle passing (IPC); return result channel delivering `(void*)(intptr_t)status`. |
+| `goc_io_write` | `goc_chan* goc_io_write(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs)` | Initiate an async stream write; return result channel delivering `goc_box_int(status)`. 0 on success, negative libuv error on failure. Safe from any context. |
+| `goc_io_write2` | `goc_chan* goc_io_write2(uv_stream_t* handle, const uv_buf_t bufs[], unsigned int nbufs, uv_stream_t* send_handle)` | Initiate an async write with handle passing (IPC); return result channel delivering `goc_box_int(status)`. |
 
 ### Shutdown / Connect
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_io_shutdown_stream` | `goc_chan* goc_io_shutdown_stream(uv_stream_t* handle)` | Initiate a stream half-close (write side); return result channel delivering `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
-| `goc_io_tcp_connect` | `goc_chan* goc_io_tcp_connect(uv_tcp_t* handle, const struct sockaddr* addr)` | Initiate a TCP connection; return result channel delivering `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
-| `goc_io_pipe_connect` | `goc_chan* goc_io_pipe_connect(uv_pipe_t* handle, const char* name)` | Initiate a pipe (named pipe / Unix socket) connect; return result channel delivering `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
+| `goc_io_shutdown_stream` | `goc_chan* goc_io_shutdown_stream(uv_stream_t* handle)` | Initiate a stream half-close (write side); return result channel delivering `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
+| `goc_io_tcp_connect` | `goc_chan* goc_io_tcp_connect(uv_tcp_t* handle, const struct sockaddr* addr)` | Initiate a TCP connection; return result channel delivering `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
+| `goc_io_pipe_connect` | `goc_chan* goc_io_pipe_connect(uv_pipe_t* handle, const char* name)` | Initiate a pipe (named pipe / Unix socket) connect; return result channel delivering `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
 
 ---
 
@@ -202,7 +204,7 @@ while ((v = goc_take(rch))->ok == GOC_OK) {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_io_udp_send` | `goc_chan* goc_io_udp_send(uv_udp_t* handle, const uv_buf_t bufs[], unsigned int nbufs, const struct sockaddr* addr)` | Initiate an async UDP send; return result channel delivering `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
+| `goc_io_udp_send` | `goc_chan* goc_io_udp_send(uv_udp_t* handle, const uv_buf_t bufs[], unsigned int nbufs, const struct sockaddr* addr)` | Initiate an async UDP send; return result channel delivering `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
 | `goc_io_udp_recv_start` | `goc_chan* goc_io_udp_recv_start(uv_udp_t* handle)` | Begin receiving UDP datagrams. Returns a channel delivering `goc_io_udp_recv_t*` values, one per datagram. Channel is closed on unrecoverable error. Call `goc_io_udp_recv_stop()` to stop. |
 | `goc_io_udp_recv_stop` | `int goc_io_udp_recv_stop(uv_udp_t* handle)` | Stop receiving UDP datagrams and close the receive channel. Returns 0; takes effect asynchronously. |
 
@@ -214,14 +216,14 @@ All file-system functions are safe to call from any context (fiber or OS thread)
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_io_fs_open` | `goc_chan* goc_io_fs_open(const char* path, int flags, int mode)` | Async file open; channel delivers `(void*)(intptr_t)fd`. fd >= 0 on success, negative libuv error on failure. Use `UV_FS_O_*` flags (e.g. `UV_FS_O_RDONLY`, `UV_FS_O_WRONLY \| UV_FS_O_CREAT`). |
-| `goc_io_fs_close` | `goc_chan* goc_io_fs_close(uv_file file)` | Async file close; channel delivers `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
-| `goc_io_fs_read` | `goc_chan* goc_io_fs_read(uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset)` | Async file read; channel delivers `(void*)(intptr_t)result`. Bytes read >= 0 on success, negative libuv error on failure. Pass `offset == -1` to use the current file position. |
-| `goc_io_fs_write` | `goc_chan* goc_io_fs_write(uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset)` | Async file write; channel delivers `(void*)(intptr_t)result`. Bytes written >= 0 on success, negative libuv error on failure. |
-| `goc_io_fs_unlink` | `goc_chan* goc_io_fs_unlink(const char* path)` | Async file deletion; channel delivers `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
+| `goc_io_fs_open` | `goc_chan* goc_io_fs_open(const char* path, int flags, int mode)` | Async file open; channel delivers `goc_box_int(fd)`. fd >= 0 on success, negative libuv error on failure. Use `UV_FS_O_*` flags (e.g. `UV_FS_O_RDONLY`, `UV_FS_O_WRONLY \| UV_FS_O_CREAT`). |
+| `goc_io_fs_close` | `goc_chan* goc_io_fs_close(uv_file file)` | Async file close; channel delivers `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
+| `goc_io_fs_read` | `goc_chan* goc_io_fs_read(uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset)` | Async file read; channel delivers `goc_box_int(result)`. Bytes read >= 0 on success, negative libuv error on failure. Pass `offset == -1` to use the current file position. |
+| `goc_io_fs_write` | `goc_chan* goc_io_fs_write(uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset)` | Async file write; channel delivers `goc_box_int(result)`. Bytes written >= 0 on success, negative libuv error on failure. |
+| `goc_io_fs_unlink` | `goc_chan* goc_io_fs_unlink(const char* path)` | Async file deletion; channel delivers `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
 | `goc_io_fs_stat` | `goc_chan* goc_io_fs_stat(const char* path)` | Async file stat; channel delivers `goc_io_fs_stat_t*`. |
-| `goc_io_fs_rename` | `goc_chan* goc_io_fs_rename(const char* path, const char* new_path)` | Async file rename; channel delivers `(void*)(intptr_t)status`. 0 on success, negative libuv error on failure. |
-| `goc_io_fs_sendfile` | `goc_chan* goc_io_fs_sendfile(uv_file out_fd, uv_file in_fd, int64_t in_offset, size_t length)` | Async zero-copy file transfer; channel delivers `(void*)(intptr_t)result`. Bytes transferred >= 0 on success, negative libuv error on failure. |
+| `goc_io_fs_rename` | `goc_chan* goc_io_fs_rename(const char* path, const char* new_path)` | Async file rename; channel delivers `goc_box_int(status)`. 0 on success, negative libuv error on failure. |
+| `goc_io_fs_sendfile` | `goc_chan* goc_io_fs_sendfile(uv_file out_fd, uv_file in_fd, int64_t in_offset, size_t length)` | Async zero-copy file transfer; channel delivers `goc_box_int(result)`. Bytes transferred >= 0 on success, negative libuv error on failure. |
 
 **Example — open, write, read, close (fiber context)**
 
@@ -234,7 +236,7 @@ static void file_fiber(void* _) {
     goc_val_t* vfd = goc_take(goc_io_fs_open("/tmp/hello.txt",
                                               UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC,
                                               0644));
-    uv_file fd = (uv_file)(intptr_t)vfd->val;
+    uv_file fd = (uv_file)goc_unbox_int(vfd->val);
     if (fd < 0) return;
 
     /* Write */
@@ -320,7 +322,7 @@ static void io_fiber(void* _) {
     if (r->ch == timeout_ch) {
         printf("open timed out\n");
     } else {
-        uv_file fd = (uv_file)(intptr_t)r->value.val;
+        uv_file fd = (uv_file)goc_unbox_int(r->value.val);
         if (fd >= 0)
             printf("opened fd=%d\n", (int)fd);
     }
