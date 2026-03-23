@@ -12,54 +12,16 @@ on:
       - 'vendor/**'
       - '.github/workflows/ci.yml'
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-  pull_request_review:
-    types:
-      - submitted
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'vendor/**'
+      - '.github/workflows/ci.yml'
 
 jobs:
-  approval-gate:
-    name: Required owner approval
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Validate approval by repository owner
-        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { owner, repo } = context.repo;
-            const pull_number = context.payload.pull_request.number;
-            const requiredApprover = owner;
-
-            const reviews = await github.paginate(github.rest.pulls.listReviews, {
-              owner,
-              repo,
-              pull_number,
-              per_page: 100,
-            });
-
-            const latestReviewStateByUser = new Map();
-            for (const review of reviews) {
-              latestReviewStateByUser.set(review.user.login, review.state);
-            }
-
-            const ownerReviewState = latestReviewStateByUser.get(requiredApprover);
-            if (ownerReviewState !== 'APPROVED') {
-              core.setFailed(`PR requires approval from @${requiredApprover} before merge. Current state: ${ownerReviewState ?? 'none'}`);
-            } else {
-              core.info(`Approval gate passed: @${requiredApprover} has approved.`);
-            }
-
   test:
-    needs:
-      - approval-gate
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -179,9 +141,10 @@ jobs:
 
       # ---- Windows -----------------------------------------------------
       # Uses MSYS2/MinGW-w64 (UCRT64) to provide a POSIX-compatible toolchain
-      # on Windows. This is required because libgoc uses C11 _Atomic directly
-      # and the MSYS2 bdwgc package provides the win32-threaded build of Boehm
-      # GC with GC_allow_register_threads() support needed by goc_thread_create.
+      # on Windows. This is required because libgoc uses pthread.h and C11
+      # _Atomic directly, and calls GC_pthread_create/GC_pthread_join — APIs
+      # that are only present in POSIX (pthreads) builds of Boehm GC, not in
+      # the Win32-threads build that MSVC + vcpkg produce.
       # P8 (safety) tests self-skip on Windows because they rely on fork/waitpid.
       # All other test phases (P1–P7, P9) run normally.
 
