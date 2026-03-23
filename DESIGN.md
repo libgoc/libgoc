@@ -1559,9 +1559,9 @@ Triggered on every push to `main` that touches `src/`, `include/`, `CMakeLists.t
 
 1. **`tag`** — Creates a UTC timestamp tag in the format `yyyy.MM.dd.HH.mm` (e.g. `2026.03.18.12.05`) and pushes it to the repository.
 
-2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside `include/goc.h` and `include/goc_array.h`:
-   - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
-   - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
-   - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
+2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside the full public header set: `include/goc.h`, `include/goc_io.h`, and `include/goc_array.h`:
+    - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
+    - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
+    - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
 
 3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

@@ -88,8 +88,10 @@ jobs:
           mkdir -p dist
           cp build/libgoc.a dist/
           cp include/goc.h dist/
+          cp include/goc_io.h dist/
+          cp include/goc_array.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -127,8 +129,10 @@ jobs:
           mkdir -p dist
           cp build/libgoc.a dist/
           cp include/goc.h dist/
+          cp include/goc_io.h dist/
+          cp include/goc_array.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz libgoc.a goc.h goc_io.h goc_array.h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -179,8 +183,10 @@ jobs:
           mkdir -p dist
           cp build/libgoc.a dist/
           cp include/goc.h dist/
+          cp include/goc_io.h dist/
+          cp include/goc_array.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz libgoc.a goc.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h
 
       - uses: actions/upload-artifact@v4
         with:

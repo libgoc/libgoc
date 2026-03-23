@@ -918,7 +918,7 @@ A shared library target (`goc_shared`) is available via `-DLIBGOC_SHARED=ON`. It
 ```sh
 cmake -B build -DLIBGOC_SHARED=ON
 cmake --build build
-sudo cmake --install build   # installs headers, libgoc.a, libgoc.so, and libgoc.pc
+sudo cmake --install build   # installs goc.h, goc_io.h, goc_array.h, libgoc.a, libgoc.so, and libgoc.pc
 ```
 
 The install step writes a `libgoc.pc` pkg-config file to `<prefix>/lib/pkgconfig/`. Downstream projects can then locate and link libgoc without knowing its install prefix:
