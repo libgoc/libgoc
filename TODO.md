@@ -8,7 +8,7 @@
 
 - [ ] **F3** Telemetry — expose runtime metrics for all pools, worker threads, fibers, channels, mutexes, and their metadata
 
-- [ ] **F4** Memory-managed, mutable dynamic array
+- [x] **F4** Memory-managed, mutable dynamic array (`goc_array` — see [ARRAY.md](./ARRAY.md))
   - **F4.1** Amortized constant-time random access (read / write)
   - **F4.2** Amortized constant-time push / pop from both head and tail
   - **F4.3** Efficient concat (prepending / appending)

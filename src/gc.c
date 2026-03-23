@@ -341,6 +341,14 @@ void* goc_malloc(size_t n) {
 }
 
 /* ---------------------------------------------------------------------------
+ * goc_realloc
+ * ---------------------------------------------------------------------------*/
+
+void* goc_realloc(void* ptr, size_t n) {
+    return GC_realloc(ptr, n);
+}
+
+/* ---------------------------------------------------------------------------
  * live_channels_init  (internal; declared in internal.h)
  *
  * Allocates the live_channels array with an initial capacity of 64 entries

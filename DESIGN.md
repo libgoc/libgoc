@@ -30,6 +30,8 @@
 19. [Testing](#testing)
 20. [CI/CD](#cicd)
 
+> **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
+
 ---
 
 ## Dependencies
@@ -49,16 +51,18 @@
 ```
 libgoc/
 ├── include/
-│   └── goc.h              # Public API header
+│   ├── goc.h              # Public API header
+│   └── goc_array.h        # Dynamic array public API
 ├── src/
 │   ├── alts.c             # goc_alts, goc_alts_sync
 │   ├── timeout.c          # goc_timeout
-│   ├── gc.c               # Boehm GC initialization and goc_malloc
+│   ├── gc.c               # Boehm GC initialization, goc_malloc, goc_realloc
 │   ├── loop.c             # libuv event loop thread
 │   ├── pool.c             # Thread pool workers
 │   ├── fiber.c            # minicoro fiber mechanics
 │   ├── channel.c          # Channel operations
 │   ├── mutex.c            # RW mutexes (channel-backed lock handles)
+│   ├── goc_array.c        # Dynamic array (goc_array)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
@@ -66,7 +70,7 @@ libgoc/
 │   └── config.h           # Build configuration constants (thresholds, etc.)
 ├── tests/
 │   ├── test_harness.h              # Shared harness macros + SIGSEGV/SIGABRT crash handler
-│   ├── test_p1_foundation.c        # Phase 1 — Foundation
+│   ├── test_p1_foundation.c        # Phase 1 — Foundation + dynamic array
 │   ├── test_p2_channels_fibers.c   # Phase 2 — Channels and fiber launch
 │   ├── test_p3_channel_io.c        # Phase 3 — Channel I/O
 │   ├── test_p4_callbacks.c         # Phase 4 — Callbacks
@@ -87,6 +91,7 @@ libgoc/
 ├── libgoc.pc.in           # pkg-config template; expanded by CMake at configure time
 ├── README.md
 ├── DESIGN.md              # This document
+├── ARRAY.md               # Dynamic array design and API reference
 ├── TODO.md                # Planned future work
 └── LICENSE
 ```
@@ -1098,6 +1103,7 @@ void          goc_shutdown(void);
 
 /* Memory */
 void*         goc_malloc(size_t n);
+void*         goc_realloc(void* ptr, size_t n);
 
 /* Channels */
 goc_chan*     goc_chan_make(size_t buf_size);
@@ -1148,6 +1154,20 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool,
 
 /* Scheduler / event loop */
 uv_loop_t*    goc_scheduler(void);
+
+/* Dynamic array (see goc_array.h and ARRAY.md) */
+goc_array*    goc_array_make(size_t initial_cap);
+goc_array*    goc_array_from(void** items, size_t n);
+size_t        goc_array_len(const goc_array* arr);
+void*         goc_array_get(const goc_array* arr, size_t i);
+void          goc_array_set(goc_array* arr, size_t i, void* val);
+void          goc_array_push(goc_array* arr, void* val);
+void*         goc_array_pop(goc_array* arr);
+void          goc_array_push_head(goc_array* arr, void* val);
+void*         goc_array_pop_head(goc_array* arr);
+goc_array*    goc_array_concat(const goc_array* a, const goc_array* b);
+goc_array*    goc_array_slice(const goc_array* arr, size_t start, size_t end);
+void**        goc_array_to_c(const goc_array* arr);
 ```
 
 ### Internal Functions
@@ -1460,9 +1480,9 @@ Triggered on every push to `main` that touches `src/`, `include/`, `CMakeLists.t
 
 1. **`tag`** — Creates a UTC timestamp tag in the format `yyyy.MM.dd.HH.mm` (e.g. `2026.03.18.12.05`) and pushes it to the repository.
 
-2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside `include/goc.h`:
-   - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
-   - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
-   - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
+2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside `include/goc.h` and `include/goc_array.h`:
+   - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
+   - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
+   - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_array.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
 
 3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

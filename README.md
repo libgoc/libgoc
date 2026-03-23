@@ -30,6 +30,7 @@ are available on the [Releases page](https://github.com/divs1210/libgoc/releases
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
+- [Dynamic Array](./ARRAY.md)
 - [Benchmarks](/bench)
 - [TODO](./TODO.md)
 

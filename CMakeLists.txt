@@ -54,6 +54,7 @@ set(GOC_SOURCES
     src/mutex.c
     src/minicoro.c
     src/wsdq.c
+    src/goc_array.c
 )
 
 # ---------------------------------------------------------------------------

@@ -123,6 +123,18 @@ uv_loop_t* goc_scheduler(void);
  */
 void* goc_malloc(size_t n);
 
+/**
+ * goc_realloc() — Resize a GC-heap allocation to n bytes.
+ *
+ * ptr  : a pointer previously returned by goc_malloc() or goc_realloc(),
+ *        or NULL (equivalent to goc_malloc(n)).
+ * n    : new size in bytes.
+ *
+ * Memory is managed by the garbage collector; callers need not free it.
+ * Aborts on allocation failure. Never returns NULL (unless n == 0).
+ */
+void* goc_realloc(void* ptr, size_t n);
+
 /* -------------------------------------------------------------------------
  * Fiber launch
  * ---------------------------------------------------------------------- */
