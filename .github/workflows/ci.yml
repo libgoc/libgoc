@@ -11,13 +11,55 @@ on:
       - 'CMakeLists.txt'
       - 'vendor/**'
       - '.github/workflows/ci.yml'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
   pull_request_review:
     types:
       - submitted
 
 jobs:
+  approval-gate:
+    name: Required owner approval
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Validate approval by repository owner
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = context.payload.pull_request.number;
+            const requiredApprover = owner;
+
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner,
+              repo,
+              pull_number,
+              per_page: 100,
+            });
+
+            const latestReviewStateByUser = new Map();
+            for (const review of reviews) {
+              latestReviewStateByUser.set(review.user.login, review.state);
+            }
+
+            const ownerReviewState = latestReviewStateByUser.get(requiredApprover);
+            if (ownerReviewState !== 'APPROVED') {
+              core.setFailed(`PR requires approval from @${requiredApprover} before merge. Current state: ${ownerReviewState ?? 'none'}`);
+            } else {
+              core.info(`Approval gate passed: @${requiredApprover} has approved.`);
+            }
+
   test:
-    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
+    needs:
+      - approval-gate
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     strategy:
