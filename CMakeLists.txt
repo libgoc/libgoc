@@ -165,7 +165,7 @@ endif()
 enable_testing()
 
 # Discover test source files (requires cmake_path — CMake >= 3.20)
-file(GLOB TEST_SOURCES "tests/test_p*.c")
+file(GLOB TEST_SOURCES "tests/test_p*.c" "tests/test_goc_*.c")
 
 foreach(test_src IN LISTS TEST_SOURCES)
     cmake_path(GET test_src STEM test_name)
