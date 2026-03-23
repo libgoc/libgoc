@@ -26,6 +26,8 @@
  *         (memory is on the Boehm GC heap; callers need not free it)
  *   P1.4  goc_in_fiber() returns false when called from the main OS thread
  *         (the predicate is true only inside a fiber body)
+ *   P1.5  goc_realloc() grows a GC allocation preserving existing data,
+ *         and shrinks it without corrupting surviving bytes
  */
 
 #include <stddef.h>
@@ -111,6 +113,44 @@ static void test_p1_4(void) {
 done:;
 }
 
+/*
+ * P1.5 — goc_realloc() preserves data across grow and shrink
+ *
+ * Allocate a 16-byte buffer, fill it with a known pattern, then grow it to
+ * 32 bytes via goc_realloc().  The original 16 bytes must survive intact.
+ * Shrink back to 8 bytes: the first 8 bytes of the original pattern must
+ * still be correct.  The allocation is intentionally not freed; Boehm GC
+ * will collect it when it becomes unreachable.
+ */
+static void test_p1_5(void) {
+    TEST_BEGIN("P1.5  goc_realloc preserves data across grow and shrink");
+    const size_t SZ = 16;
+
+    /* Allocate and fill with a known pattern. */
+    unsigned char* p = (unsigned char*)goc_malloc(SZ);
+    ASSERT(p != NULL);
+    for (size_t i = 0; i < SZ; i++) {
+        p[i] = (unsigned char)(i + 1);
+    }
+
+    /* Grow to 32 bytes — original 16 bytes must be preserved. */
+    p = (unsigned char*)goc_realloc(p, SZ * 2);
+    ASSERT(p != NULL);
+    for (size_t i = 0; i < SZ; i++) {
+        ASSERT(p[i] == (unsigned char)(i + 1));
+    }
+
+    /* Shrink to 8 bytes — first 8 bytes must still be correct. */
+    p = (unsigned char*)goc_realloc(p, SZ / 2);
+    ASSERT(p != NULL);
+    for (size_t i = 0; i < SZ / 2; i++) {
+        ASSERT(p[i] == (unsigned char)(i + 1));
+    }
+
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -132,6 +172,7 @@ int main(void) {
     test_p1_2();
     test_p1_3();
     test_p1_4();
+    test_p1_5();
     printf("\n");
 
     goc_shutdown();
