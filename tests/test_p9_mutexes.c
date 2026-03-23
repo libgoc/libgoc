@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <time.h>
-#include <pthread.h>
+#include <uv.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -19,53 +19,47 @@
  * The flag is reset after each successful wait, making done_t reusable.
  */
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    int             flag;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
+    int        flag;
 } done_t;
 
 static void done_init(done_t* d) {
-    pthread_mutex_init(&d->mtx, NULL);
-    pthread_cond_init(&d->cond, NULL);
+    uv_mutex_init(&d->mtx);
+    uv_cond_init(&d->cond);
     d->flag = 0;
 }
 static void done_signal(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     d->flag = 1;
-    pthread_cond_signal(&d->cond);
-    pthread_mutex_unlock(&d->mtx);
+    uv_cond_signal(&d->cond);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_wait(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     while (!d->flag)
-        pthread_cond_wait(&d->cond, &d->mtx);
+        uv_cond_wait(&d->cond, &d->mtx);
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_destroy(done_t* d) {
-    pthread_mutex_destroy(&d->mtx);
-    pthread_cond_destroy(&d->cond);
+    uv_mutex_destroy(&d->mtx);
+    uv_cond_destroy(&d->cond);
 }
 
 static bool done_wait_ms(done_t* d, long ms)
 {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-
-    long nsec = ts.tv_nsec + (ms % 1000) * 1000000L;
-    ts.tv_sec += (ms / 1000) + (nsec / 1000000000L);
-    ts.tv_nsec = nsec % 1000000000L;
-
-    pthread_mutex_lock(&d->mtx);
+    uint64_t timeout_ns = (uint64_t)ms * 1000000ULL;
+    uv_mutex_lock(&d->mtx);
     while (!d->flag) {
-        int r = pthread_cond_timedwait(&d->cond, &d->mtx, &ts);
-        if (r == ETIMEDOUT) {
-            pthread_mutex_unlock(&d->mtx);
+        int r = uv_cond_timedwait(&d->cond, &d->mtx, timeout_ns);
+        if (r == UV_ETIMEDOUT) {
+            uv_mutex_unlock(&d->mtx);
             return false;
         }
     }
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
     return true;
 }
 
@@ -119,14 +113,13 @@ typedef struct {
     done_t*    acquired_sem;
 } writer_thread_args_t;
 
-static void* writer_wait_thread(void* arg)
+static void writer_wait_thread(void* arg)
 {
     writer_thread_args_t* a = (writer_thread_args_t*)arg;
     a->lock_ch = goc_write_lock(a->mx);
     done_signal(a->started);
     a->acquired = goc_take_sync(a->lock_ch);
     done_signal(a->acquired_sem);
-    return NULL;
 }
 
 static void test_p9_3(void)
@@ -150,8 +143,8 @@ static void test_p9_3(void)
         .acquired_sem = &acquired,
     };
 
-    pthread_t tid;
-    pthread_create(&tid, NULL, writer_wait_thread, &args);
+    uv_thread_t tid;
+    uv_thread_create(&tid, writer_wait_thread, &args);
 
     done_wait(&started);
     ASSERT(done_wait_ms(&acquired, 20) == false);
@@ -163,7 +156,7 @@ static void test_p9_3(void)
 
     goc_close(args.lock_ch);
 
-    pthread_join(tid, NULL);
+    uv_thread_join(&tid);
     done_destroy(&started);
     done_destroy(&acquired);
 

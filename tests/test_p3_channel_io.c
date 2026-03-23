@@ -80,8 +80,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <unistd.h>
 #include <pthread.h>
+#include <uv.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -340,8 +340,7 @@ static void test_p3_7(void) {
     done_wait(&parked);
 
     /* Give the thread a moment to reach goc_take_sync before closing. */
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
-    nanosleep(&ts, NULL);
+    goc_nanosleep(5000000); /* 5 ms */
 
     goc_close(ch);
     pthread_join(tid, NULL);
@@ -398,8 +397,7 @@ static void test_p3_8(void) {
     done_wait(&ready);
 
     /* Small delay so the fiber has time to park. */
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
-    nanosleep(&ts, NULL);
+    goc_nanosleep(5000000); /* 5 ms */
 
     goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)0xCAFEUL);
     ASSERT(st == GOC_OK);
@@ -457,8 +455,7 @@ static void test_p3_9(void) {
     /* Wait until the thread is about to block. */
     done_wait(&parked);
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
-    nanosleep(&ts, NULL);
+    goc_nanosleep(5000000); /* 5 ms */
 
     goc_close(ch);
     pthread_join(tid, NULL);
@@ -511,8 +508,7 @@ static void test_p3_10(void) {
 
     done_wait(&parked);
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
-    nanosleep(&ts, NULL);
+    goc_nanosleep(5000000); /* 5 ms */
 
     goc_close(ch);
 
@@ -572,8 +568,7 @@ static void test_p3_11(void) {
 
     done_wait(&parked);
 
-    struct timespec ts = { .tv_sec = 0, .tv_nsec = 5000000L /* 5 ms */ };
-    nanosleep(&ts, NULL);
+    goc_nanosleep(5000000); /* 5 ms */
 
     goc_close(ch);
 

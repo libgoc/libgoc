@@ -17,9 +17,8 @@
  *   - libgoc (goc.h)  — runtime under test
  *   - Boehm GC        — must be the threaded variant (bdw-gc-threaded);
  *                        initialised internally by goc_init()
- *   - libuv           — event loop; drives fiber scheduling
- *   - pthreads        — used in P2.3 to race two threads on goc_close();
- *                        mutex + condvar for done_t (see below)
+ *   - libuv           — event loop; drives fiber scheduling, provides
+ *                        uv_thread_t / uv_mutex_t for done_t and P2.3
  *
  * Synchronisation helper — done_t:
  *   A portable mutex+condvar semaphore that lets the main thread (or a
@@ -57,16 +56,15 @@
  *   - goc_shutdown() is called once in main() after all tests complete.
  *   - The test harness uses the same goto-based cleanup pattern as Phase 1;
  *     see the harness section comments for details.
- *   - P2.3 is the only test that creates a raw pthread directly; all others
- *     use goc_go() for fiber launch.
+ *   - P2.3 is the only test that creates a raw OS thread directly (via
+ *     uv_thread_create); all others use goc_go() for fiber launch.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
+#include <uv.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -81,32 +79,32 @@
  * ====================================================================== */
 
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    int             flag;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
+    int        flag;
 } done_t;
 
 static void done_init(done_t* d) {
-    pthread_mutex_init(&d->mtx, NULL);
-    pthread_cond_init(&d->cond, NULL);
+    uv_mutex_init(&d->mtx);
+    uv_cond_init(&d->cond);
     d->flag = 0;
 }
 static void done_signal(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     d->flag = 1;
-    pthread_cond_signal(&d->cond);
-    pthread_mutex_unlock(&d->mtx);
+    uv_cond_signal(&d->cond);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_wait(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     while (!d->flag)
-        pthread_cond_wait(&d->cond, &d->mtx);
+        uv_cond_wait(&d->cond, &d->mtx);
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_destroy(done_t* d) {
-    pthread_mutex_destroy(&d->mtx);
-    pthread_cond_destroy(&d->cond);
+    uv_mutex_destroy(&d->mtx);
+    uv_cond_destroy(&d->cond);
 }
 
 /* =========================================================================
@@ -180,12 +178,11 @@ typedef struct {
  * The racing call from the main thread exercises the close_guard CAS path
  * inside goc_close, which ensures idempotency under concurrent access.
  */
-static void* double_close_thread(void* arg) {
+static void double_close_thread(void* arg) {
     double_close_args_t* a = (double_close_args_t*)arg;
     done_signal(a->ready);
     done_wait(a->go);
     goc_close(a->ch);
-    return NULL;
 }
 
 /*
@@ -211,8 +208,8 @@ static void test_p2_3(void) {
 
     double_close_args_t args = { ch, &ready, &go };
 
-    pthread_t tid;
-    pthread_create(&tid, NULL, double_close_thread, &args);
+    uv_thread_t tid;
+    uv_thread_create(&tid, double_close_thread, &args);
 
     done_wait(&ready);
     /* Both the spawned thread and this thread will call goc_close. Release
@@ -220,7 +217,7 @@ static void test_p2_3(void) {
     done_signal(&go);
     goc_close(ch);
 
-    pthread_join(tid, NULL);
+    uv_thread_join(&tid);
 
     done_destroy(&ready);
     done_destroy(&go);
@@ -388,16 +385,12 @@ typedef struct {
 /*
  * Fiber entry point for P2.7.
  * Sleeps for sleep_us microseconds then signals done before returning.
- * nanosleep() is used in preference to usleep() for POSIX.1-2008 compliance.
+ * goc_nanosleep() is used for cross-platform compatibility.
  */
 static void slow_fiber_fn(void* arg) {
     slow_fiber_args_t* a = (slow_fiber_args_t*)arg;
     /* Simulate work with a short sleep on the fiber's OS thread. */
-    struct timespec ts = {
-        .tv_sec  = 0,
-        .tv_nsec = (long)(a->sleep_us * 1000UL),
-    };
-    nanosleep(&ts, NULL);
+    goc_nanosleep((uint64_t)a->sleep_us * 1000);
     done_signal(a->done);
 }
 

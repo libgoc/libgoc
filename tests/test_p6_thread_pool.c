@@ -17,7 +17,7 @@
  *   - Boehm GC        — must be the threaded variant (bdw-gc-threaded);
  *                        initialised internally by goc_init()
  *   - libuv           — event loop; drives fiber scheduling and timers
- *   - pthreads (mutex + condvar for done_t) — see below
+ *   - libuv mutex+condvar sync helpers for done_t — see below
  *
  * Synchronisation helper — done_t:
  *   A portable mutex+condvar semaphore that lets the main thread (or a waiter
@@ -100,9 +100,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <time.h>
-#include <unistd.h>
-#include <pthread.h>
+#include <uv.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -119,46 +117,44 @@
  * ====================================================================== */
 
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    int             flag;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
+    int        flag;
 } done_t;
 
 static void done_init(done_t* d) {
-    pthread_mutex_init(&d->mtx, NULL);
-    pthread_cond_init(&d->cond, NULL);
+    uv_mutex_init(&d->mtx);
+    uv_cond_init(&d->cond);
     d->flag = 0;
 }
 static void done_signal(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     d->flag = 1;
-    pthread_cond_signal(&d->cond);
-    pthread_mutex_unlock(&d->mtx);
+    uv_cond_signal(&d->cond);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_wait(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     while (!d->flag)
-        pthread_cond_wait(&d->cond, &d->mtx);
+        uv_cond_wait(&d->cond, &d->mtx);
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_destroy(done_t* d) {
-    pthread_mutex_destroy(&d->mtx);
-    pthread_cond_destroy(&d->cond);
+    uv_mutex_destroy(&d->mtx);
+    uv_cond_destroy(&d->cond);
 }
 
 /* =========================================================================
  * Portable barrier helper for tests
  *
- * macOS does not provide pthread_barrier_t/pthread_barrier_* in libpthread.
- * Keep test semantics portable by providing a local 2+ thread barrier shim on
- * __APPLE__, and use native pthread_barrier_* everywhere else.
+ * libuv does not expose a barrier primitive, so we use a uv_mutex + uv_cond
+ * shim on all platforms.
  * ====================================================================== */
 
-#if defined(__APPLE__)
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
     unsigned        parties;
     unsigned        arrived;
     unsigned        generation;
@@ -170,12 +166,8 @@ static int goc_test_barrier_init(goc_test_barrier_t* b,
     (void)attr;
     if (count == 0)
         return -1;
-    if (pthread_mutex_init(&b->mtx, NULL) != 0)
-        return -1;
-    if (pthread_cond_init(&b->cond, NULL) != 0) {
-        pthread_mutex_destroy(&b->mtx);
-        return -1;
-    }
+    uv_mutex_init(&b->mtx);
+    uv_cond_init(&b->cond);
     b->parties = count;
     b->arrived = 0;
     b->generation = 0;
@@ -183,65 +175,41 @@ static int goc_test_barrier_init(goc_test_barrier_t* b,
 }
 
 static int goc_test_barrier_wait(goc_test_barrier_t* b) {
-    pthread_mutex_lock(&b->mtx);
+    uv_mutex_lock(&b->mtx);
     unsigned gen = b->generation;
     b->arrived++;
     if (b->arrived == b->parties) {
         b->arrived = 0;
         b->generation++;
-        pthread_cond_broadcast(&b->cond);
-        pthread_mutex_unlock(&b->mtx);
+        uv_cond_broadcast(&b->cond);
+        uv_mutex_unlock(&b->mtx);
         return 1;
     }
     while (gen == b->generation)
-        pthread_cond_wait(&b->cond, &b->mtx);
-    pthread_mutex_unlock(&b->mtx);
+        uv_cond_wait(&b->cond, &b->mtx);
+    uv_mutex_unlock(&b->mtx);
     return 0;
 }
 
 static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
-    int rc1 = pthread_cond_destroy(&b->cond);
-    int rc2 = pthread_mutex_destroy(&b->mtx);
-    return rc1 != 0 ? rc1 : rc2;
+    uv_cond_destroy(&b->cond);
+    uv_mutex_destroy(&b->mtx);
+    return 0;
 }
-#else
-typedef pthread_barrier_t goc_test_barrier_t;
-
-static int goc_test_barrier_init(goc_test_barrier_t* b,
-                                 const void* attr,
-                                 unsigned count) {
-    return pthread_barrier_init(b, (const pthread_barrierattr_t*)attr, count);
-}
-
-static int goc_test_barrier_wait(goc_test_barrier_t* b) {
-    return pthread_barrier_wait(b);
-}
-
-static int goc_test_barrier_destroy(goc_test_barrier_t* b) {
-    return pthread_barrier_destroy(b);
-}
-#endif
 
 /*
  * done_wait_timeout — like done_wait but gives up after timeout_ms.
  * Returns true if the flag was set, false if the deadline was reached.
  */
 static bool done_wait_timeout(done_t* d, int timeout_ms) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec  += timeout_ms / 1000;
-    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) {
-        ts.tv_sec++;
-        ts.tv_nsec -= 1000000000L;
-    }
-    pthread_mutex_lock(&d->mtx);
+    uint64_t timeout_ns = (uint64_t)timeout_ms * 1000000ULL;
+    uv_mutex_lock(&d->mtx);
     int rc = 0;
     while (!d->flag && rc == 0)
-        rc = pthread_cond_timedwait(&d->cond, &d->mtx, &ts);
+        rc = uv_cond_timedwait(&d->cond, &d->mtx, timeout_ns);
     bool got = (d->flag != 0);
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
     return got;
 }
 
@@ -340,11 +308,7 @@ typedef struct {
 static void test_p6_2_fiber_fn(void* arg) {
     p6_2_args_t* a = (p6_2_args_t*)arg;
     done_signal(a->started);  /* confirm the fiber is live */
-    struct timespec ts = {
-        .tv_sec  = 0,
-        .tv_nsec = (long)(a->delay_us * 1000UL),
-    };
-    nanosleep(&ts, NULL);
+    goc_nanosleep((uint64_t)a->delay_us * 1000);
     /* returns — fiber is done */
 }
 
@@ -787,33 +751,32 @@ typedef struct {
     goc_wsdq*   dq;
     bool*          seen;
     int*           total;
-    pthread_mutex_t* mu;
+    uv_mutex_t* mu;
     _Atomic bool*  done;
 } p6_11_thief_arg;
 
-static void* p6_11_thief(void* arg) {
+static void p6_11_thief(void* arg) {
     p6_11_thief_arg* a = (p6_11_thief_arg*)arg;
     while (true) {
         goc_entry* e = wsdq_steal_top(a->dq);
         if (e != NULL) {
-            pthread_mutex_lock(a->mu);
+            uv_mutex_lock(a->mu);
             a->seen[e->arm_idx] = true;
             (*a->total)++;
-            pthread_mutex_unlock(a->mu);
+            uv_mutex_unlock(a->mu);
             free(e);
         } else if (atomic_load_explicit(a->done, memory_order_acquire)) {
             /* drain loop */
             while ((e = wsdq_steal_top(a->dq)) != NULL) {
-                pthread_mutex_lock(a->mu);
+                uv_mutex_lock(a->mu);
                 a->seen[e->arm_idx] = true;
                 (*a->total)++;
-                pthread_mutex_unlock(a->mu);
+                uv_mutex_unlock(a->mu);
                 free(e);
             }
             break;
         }
     }
-    return NULL;
 }
 
 static void test_p6_11(void) {
@@ -824,15 +787,15 @@ static void test_p6_11(void) {
 
     bool* seen = calloc(P6_N, sizeof(bool));
     int total = 0;
-    pthread_mutex_t mu;
-    pthread_mutex_init(&mu, NULL);
+    uv_mutex_t mu;
+    uv_mutex_init(&mu);
     _Atomic bool done = false;
 
     p6_11_thief_arg arg = { &dq, seen, &total, &mu, &done };
 
-    pthread_t thieves[P6_T];
+    uv_thread_t thieves[P6_T];
     for (int t = 0; t < P6_T; t++)
-        pthread_create(&thieves[t], NULL, p6_11_thief, &arg);
+        uv_thread_create(&thieves[t], p6_11_thief, &arg);
 
     for (int i = 0; i < P6_N; i++)
         wsdq_push_bottom(&dq, make_entry(i));
@@ -840,7 +803,7 @@ static void test_p6_11(void) {
     atomic_store_explicit(&done, true, memory_order_release);
 
     for (int t = 0; t < P6_T; t++)
-        pthread_join(thieves[t], NULL);
+        uv_thread_join(&thieves[t]);
 
     /* Owner drains remainder */
     goc_entry* e;
@@ -854,7 +817,7 @@ static void test_p6_11(void) {
     for (int i = 0; i < P6_N; i++)
         ASSERT(seen[i]);
 
-    pthread_mutex_destroy(&mu);
+    uv_mutex_destroy(&mu);
     free(seen);
     wsdq_destroy(&dq);
     TEST_PASS();
@@ -867,33 +830,32 @@ typedef struct {
     goc_wsdq*    dq;
     bool*           seen;
     int*            total;
-    pthread_mutex_t* mu;
+    uv_mutex_t* mu;
     _Atomic bool*   done;
 } p6_12_thief_arg;
 
-static void* p6_12_thief(void* arg) {
+static void p6_12_thief(void* arg) {
     p6_12_thief_arg* a = (p6_12_thief_arg*)arg;
     goc_entry* e;
     while (true) {
         e = wsdq_steal_top(a->dq);
         if (e != NULL) {
-            pthread_mutex_lock(a->mu);
+            uv_mutex_lock(a->mu);
             a->seen[e->arm_idx] = true;
             (*a->total)++;
-            pthread_mutex_unlock(a->mu);
+            uv_mutex_unlock(a->mu);
             free(e);
         } else if (atomic_load_explicit(a->done, memory_order_acquire)) {
             while ((e = wsdq_steal_top(a->dq)) != NULL) {
-                pthread_mutex_lock(a->mu);
+                uv_mutex_lock(a->mu);
                 a->seen[e->arm_idx] = true;
                 (*a->total)++;
-                pthread_mutex_unlock(a->mu);
+                uv_mutex_unlock(a->mu);
                 free(e);
             }
             break;
         }
     }
-    return NULL;
 }
 
 static void test_p6_12(void) {
@@ -904,25 +866,25 @@ static void test_p6_12(void) {
 
     bool* seen = calloc(P6_N, sizeof(bool));
     int total = 0;
-    pthread_mutex_t mu;
-    pthread_mutex_init(&mu, NULL);
+    uv_mutex_t mu;
+    uv_mutex_init(&mu);
     _Atomic bool done = false;
 
     p6_12_thief_arg arg = { &dq, seen, &total, &mu, &done };
 
-    pthread_t thieves[P6_T];
+    uv_thread_t thieves[P6_T];
     for (int t = 0; t < P6_T; t++)
-        pthread_create(&thieves[t], NULL, p6_12_thief, &arg);
+        uv_thread_create(&thieves[t], p6_12_thief, &arg);
 
     /* Owner: push N entries, immediately try to pop each one back */
     for (int i = 0; i < P6_N; i++) {
         wsdq_push_bottom(&dq, make_entry(i));
         goc_entry* e = wsdq_pop_bottom(&dq);
         if (e != NULL) {
-            pthread_mutex_lock(&mu);
+            uv_mutex_lock(&mu);
             seen[e->arm_idx] = true;
             total++;
-            pthread_mutex_unlock(&mu);
+            uv_mutex_unlock(&mu);
             free(e);
         }
     }
@@ -930,7 +892,7 @@ static void test_p6_12(void) {
     atomic_store_explicit(&done, true, memory_order_release);
 
     for (int t = 0; t < P6_T; t++)
-        pthread_join(thieves[t], NULL);
+        uv_thread_join(&thieves[t]);
 
     /* Owner drains remainder */
     goc_entry* e;
@@ -944,7 +906,7 @@ static void test_p6_12(void) {
     for (int i = 0; i < P6_N; i++)
         ASSERT(seen[i]);
 
-    pthread_mutex_destroy(&mu);
+    uv_mutex_destroy(&mu);
     free(seen);
     wsdq_destroy(&dq);
     TEST_PASS();
@@ -1019,11 +981,10 @@ typedef struct {
     int           count;
 } p6_16_prod_arg;
 
-static void* p6_16_producer(void* arg) {
+static void p6_16_producer(void* arg) {
     p6_16_prod_arg* a = (p6_16_prod_arg*)arg;
     for (int i = 0; i < a->count; i++)
         injector_push(a->inj, make_entry(a->start + i));
-    return NULL;
 }
 
 static void test_p6_16(void) {
@@ -1034,15 +995,15 @@ static void test_p6_16(void) {
 
     int per_thread = P6_N / P6_T;
     p6_16_prod_arg args[P6_T];
-    pthread_t prods[P6_T];
+    uv_thread_t prods[P6_T];
     for (int t = 0; t < P6_T; t++) {
         args[t].inj   = &inj;
         args[t].start = t * per_thread;
         args[t].count = per_thread;
-        pthread_create(&prods[t], NULL, p6_16_producer, &args[t]);
+        uv_thread_create(&prods[t], p6_16_producer, &args[t]);
     }
     for (int t = 0; t < P6_T; t++)
-        pthread_join(prods[t], NULL);
+        uv_thread_join(&prods[t]);
 
     bool* seen = calloc(P6_N, sizeof(bool));
     int total = 0;
@@ -1067,7 +1028,7 @@ done:;
 /*
  * Stress-tests the last-element race between wsdq_pop_bottom (owner, no
  * lock) and wsdq_steal_top (thief, holds steal_lock).  One entry is pushed
- * per round; a pthread_barrier synchronises the owner pop and the thief steal
+ * per round; a barrier synchronises the owner pop and the thief steal
  * so they start simultaneously.  Exactly one must win each round — no double-
  * delivery, no loss, and no hang.
  */
@@ -1080,7 +1041,7 @@ typedef struct {
     int                rounds;
 } p6_17_thief_arg;
 
-static void* p6_17_thief(void* arg) {
+static void p6_17_thief(void* arg) {
     p6_17_thief_arg* a = (p6_17_thief_arg*)arg;
     for (int r = 0; r < a->rounds; r++) {
         goc_test_barrier_wait(a->barrier);   /* race start */
@@ -1091,7 +1052,6 @@ static void* p6_17_thief(void* arg) {
         }
         goc_test_barrier_wait(a->barrier);   /* round end */
     }
-    return NULL;
 }
 
 static void test_p6_17(void) {
@@ -1105,8 +1065,8 @@ static void test_p6_17(void) {
     ASSERT(goc_test_barrier_init(&barrier, NULL, 2) == 0);
 
     p6_17_thief_arg ta = { &dq, &thief_got, &barrier, P6_17_ROUNDS };
-    pthread_t thief;
-    pthread_create(&thief, NULL, p6_17_thief, &ta);
+    uv_thread_t thief;
+    uv_thread_create(&thief, p6_17_thief, &ta);
 
     int owner_got = 0;
     for (int r = 0; r < P6_17_ROUNDS; r++) {
@@ -1120,7 +1080,7 @@ static void test_p6_17(void) {
         goc_test_barrier_wait(&barrier);   /* round end: thief has finished its steal attempt */
     }
 
-    pthread_join(thief, NULL);
+    uv_thread_join(&thief);
     goc_test_barrier_destroy(&barrier);
 
     /* Every pushed entry must be consumed exactly once (no double-delivery, no loss). */
@@ -1234,7 +1194,7 @@ done:;
  *   Repeat N_ROUNDS times:
  *     1. Wait for the previous fiber to complete (guarantees all workers
  *        have had time to drain their deques and go idle in uv_sem_wait).
- *     2. usleep(500) to let all workers settle into sem_wait.
+ *     2. goc_nanosleep(1ms) to let all workers settle into sem_wait.
  *     3. Post one fiber via goc_go_on (external path — called from the
  *        main OS thread, so tl_worker == NULL).
  *     4. Wait up to 2 seconds for it to signal done.
@@ -1266,7 +1226,7 @@ static void test_p6_19(void) {
 
     for (int i = 0; i < P6_19_ROUNDS; i++) {
         /* Give workers time to drain and enter uv_sem_wait. */
-        usleep(500);
+        goc_nanosleep(1000000); /* 1 ms */
 
         /* External post: main thread → tl_worker == NULL → injector path. */
         goc_go_on(pool, p6_19_fiber_fn, &args);
@@ -1427,7 +1387,7 @@ done:;
  *
  * Distinction from P6.18: P6.18 uses 500 children + 3s deadline.
  * P6.21 uses 1000 children with an explicit "deep-idle" pre-settle
- * (usleep before the spawner) to maximise the probability that W1-W3
+ * (goc_nanosleep before the spawner) to maximise the probability that W1-W3
  * are past their steal check when the burst arrives.
  */
 #define P6_21_WORKERS  4
@@ -1465,7 +1425,7 @@ static void test_p6_21(void) {
 
     /* Let all workers settle deep into uv_sem_wait before the burst arrives,
      * maximising the chance they are past the steal phase at step 3. */
-    usleep(5000);
+    goc_nanosleep(5000000); /* 5 ms */
 
     p6_21_arg_t args = { pool, &done, &completed, P6_21_CHILDREN };
     goc_go_on(pool, p6_21_spawner_fn, &args);
