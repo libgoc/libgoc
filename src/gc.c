@@ -351,15 +351,6 @@ void* goc_malloc(size_t n) {
     return GC_malloc(n);
 }
 
-void* goc_realloc(void* ptr, size_t n) {
-    void* p = GC_realloc(ptr, n);
-    if (!p) {
-        fprintf(stderr, "goc_realloc: out of memory\n");
-        abort();
-    }
-    return p;
-}
-
 /* ---------------------------------------------------------------------------
  * goc_realloc
  * ---------------------------------------------------------------------------*/
