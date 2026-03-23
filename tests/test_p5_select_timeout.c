@@ -156,7 +156,7 @@ static void test_p5_1(void) {
     ASSERT(ch != NULL);
 
     /* Pre-load the channel so the take arm is immediately ready. */
-    goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)0xCAFE);
+    goc_status_t st = goc_put_sync(ch, goc_box_uint(0xCAFE));
     ASSERT(st == GOC_OK);
 
     p5_1_args_t args = { .ch = ch, .done = &done };
@@ -167,7 +167,7 @@ static void test_p5_1(void) {
 
     ASSERT(args.result->ch == args.ch);
     ASSERT(args.result->value.ok == GOC_OK);
-    ASSERT((uintptr_t)args.result->value.val == 0xCAFE);
+    ASSERT(goc_unbox_uint(args.result->value.val) == 0xCAFE);
 
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
@@ -218,7 +218,7 @@ static void test_p5_2_taker_fn(void* arg) {
 static void test_p5_2_fiber_fn(void* arg) {
     p5_2_args_t* a = (p5_2_args_t*)arg;
     goc_alt_op ops[] = {
-        { .ch = a->put_ch, .op_kind = GOC_ALT_PUT, .put_val = (void*)(uintptr_t)0xBEEF },
+        { .ch = a->put_ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xBEEF) },
     };
     a->result = goc_alts(ops, 1);
     done_signal(a->done);
@@ -325,14 +325,14 @@ static void test_p5_3(void) {
      * so there is a narrow window; a brief sleep closes it reliably. */
     goc_nanosleep(5000000); /* 5 ms */
 
-    goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)0x1234);
+    goc_status_t st = goc_put_sync(ch, goc_box_uint(0x1234));
     ASSERT(st == GOC_OK);
 
     done_wait(&done);
 
     ASSERT(args.result->ch == args.ch);
     ASSERT(args.result->value.ok == GOC_OK);
-    ASSERT((uintptr_t)args.result->value.val == 0x1234);
+    ASSERT(goc_unbox_uint(args.result->value.val) == 0x1234);
 
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
@@ -360,7 +360,7 @@ static void test_p5_4_fiber_fn(void* arg) {
     p5_4_args_t* a = (p5_4_args_t*)arg;
     done_signal(a->ready);
     goc_alt_op ops[] = {
-        { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = (void*)(uintptr_t)0x5678 },
+        { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0x5678) },
     };
     a->result = goc_alts(ops, 1);
     done_signal(a->done);
@@ -391,7 +391,7 @@ static void test_p5_4(void) {
 
     goc_val_t* v = goc_take_sync(ch);
     ASSERT(v->ok == GOC_OK);
-    ASSERT((uintptr_t)v->val == 0x5678);
+    ASSERT(goc_unbox_uint(v->val) == 0x5678);
 
     done_wait(&done);
 
@@ -499,7 +499,7 @@ static void test_p5_6(void) {
     goc_chan* ch = goc_chan_make(1);
     ASSERT(ch != NULL);
 
-    goc_status_t st = goc_put_sync(ch, (void*)(uintptr_t)0xABCD);
+    goc_status_t st = goc_put_sync(ch, goc_box_uint(0xABCD));
     ASSERT(st == GOC_OK);
 
     p5_6_args_t args = { .ch = ch, .done = &done };
@@ -510,7 +510,7 @@ static void test_p5_6(void) {
 
     ASSERT(args.result->ch == args.ch);         /* take arm wins, not default */
     ASSERT(args.result->value.ok == GOC_OK);
-    ASSERT((uintptr_t)args.result->value.val == 0xABCD);
+    ASSERT(goc_unbox_uint(args.result->value.val) == 0xABCD);
 
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
@@ -651,7 +651,7 @@ static void test_p5_9_fiber_fn(void* arg) {
     p5_9_args_t* a = (p5_9_args_t*)arg;
     done_signal(a->ready);
     goc_alt_op ops[] = {
-        { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = (void*)(uintptr_t)0xDEAD },
+        { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xDEAD) },
     };
     a->result = goc_alts(ops, 1);
     done_signal(a->done);
@@ -780,7 +780,7 @@ typedef struct {
 static void test_p5_11_sender_fn(void* arg) {
     p5_11_sender_args_t* a = (p5_11_sender_args_t*)arg;
     goc_nanosleep((uint64_t)a->delay_us * 1000);
-    goc_put(a->ch, (void*)(uintptr_t)0x9ABC);
+    goc_put(a->ch, goc_box_uint(0x9ABC));
 }
 
 /*
@@ -807,7 +807,7 @@ static void test_p5_11(void) {
 
     ASSERT(r->ch == ch);
     ASSERT(r->value.ok == GOC_OK);
-    ASSERT((uintptr_t)r->value.val == 0x9ABC);
+    ASSERT(goc_unbox_uint(r->value.val) == 0x9ABC);
 
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
@@ -835,7 +835,7 @@ static void test_p5_12_receiver_fn(void* arg) {
     goc_nanosleep((uint64_t)a->delay_us * 1000);
     goc_val_t* v = goc_take(a->ch);
     if (v->ok == GOC_OK) {
-        a->received_val = (uintptr_t)v->val;
+        a->received_val = goc_unbox_uint(v->val);
     }
 }
 
@@ -858,7 +858,7 @@ static void test_p5_12(void) {
     ASSERT(join != NULL);
 
     goc_alt_op ops[] = {
-        { .ch = ch, .op_kind = GOC_ALT_PUT, .put_val = (void*)(uintptr_t)0xF00D },
+        { .ch = ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xF00D) },
     };
     goc_alts_result* r = goc_alts_sync(ops, 1);
 

@@ -149,7 +149,7 @@ typedef struct {
 
 static void sender_fiber_fn(void* arg) {
     sender_args_t* a = (sender_args_t*)arg;
-    goc_put(a->ch, (void*)a->payload);
+    goc_put(a->ch, goc_box_uint(a->payload));
 }
 
 /*
@@ -183,7 +183,7 @@ static void test_p4_1(void) {
     done_wait(&done);
 
     ASSERT(result.ok == GOC_OK);
-    ASSERT((uintptr_t)result.val == 42);
+    ASSERT(goc_unbox_uint(result.val) == 42);
 
     /* Wait for the sender fiber to finish before cleaning up. */
     goc_take_sync(join);
@@ -215,7 +215,7 @@ static void test_p4_2(void) {
     done_t done;
     done_init(&done);
 
-    take_cb_result_t result = { .val = (void*)(uintptr_t)0xFF, .ok = GOC_OK, .done = &done };
+    take_cb_result_t result = { .val = goc_box_uint(0xFF), .ok = GOC_OK, .done = &done };
 
     goc_take_cb(ch, take_cb, &result);
 
@@ -273,7 +273,7 @@ static void taker_fiber_fn(void* arg) {
     taker_args_t* a = (taker_args_t*)arg;
     goc_val_t* v = goc_take(a->ch);
     if (v->ok == GOC_OK) {
-        a->out = (uintptr_t)v->val;
+        a->out = goc_unbox_uint(v->val);
     }
     done_signal(a->done);
 }
@@ -304,7 +304,7 @@ static void test_p4_3(void) {
     put_cb_result_t presult = { .ok = GOC_EMPTY, .done = &put_done };
 
     /* Give the fiber a moment to park in goc_take; then issue the callback put. */
-    goc_put_cb(ch, (void*)(uintptr_t)99, put_cb, &presult);
+    goc_put_cb(ch, goc_box_uint(99), put_cb, &presult);
 
     /* Wait for both the fiber take and the put completion callback. */
     done_wait(&taker_done);
@@ -351,12 +351,12 @@ static void test_p4_4(void) {
     ASSERT(ch != NULL);
 
     /* Fire-and-forget: no completion callback, no user data. */
-    goc_put_cb(ch, (void*)(uintptr_t)77, NULL, NULL);
+    goc_put_cb(ch, goc_box_uint(77), NULL, NULL);
 
     /* The value should now be in the ring buffer. Take it synchronously. */
     goc_val_t* v = goc_take_sync(ch);
     ASSERT(v->ok == GOC_OK);
-    ASSERT((uintptr_t)v->val == 77);
+    ASSERT(goc_unbox_uint(v->val) == 77);
 
     goc_close(ch);
     TEST_PASS();
@@ -387,7 +387,7 @@ static void test_p4_5(void) {
 
     put_cb_result_t result = { .ok = GOC_OK, .done = &done };
 
-    goc_put_cb(ch, (void*)(uintptr_t)55, put_cb, &result);
+    goc_put_cb(ch, goc_box_uint(55), put_cb, &result);
 
     done_wait(&done);
 
@@ -424,7 +424,7 @@ static void test_p4_6(void) {
     put_cb_result_t result = { .ok = GOC_EMPTY, .done = &done };
 
     /* No taker registered — value should go straight into the ring buffer. */
-    goc_put_cb(ch, (void*)(uintptr_t)123, put_cb, &result);
+    goc_put_cb(ch, goc_box_uint(123), put_cb, &result);
 
     /* Wait for the completion callback to confirm the buffer enqueue. */
     done_wait(&done);
@@ -434,7 +434,7 @@ static void test_p4_6(void) {
     /* Now drain the buffered value with a synchronous take. */
     goc_val_t* v = goc_take_sync(ch);
     ASSERT(v->ok == GOC_OK);
-    ASSERT((uintptr_t)v->val == 123);
+    ASSERT(goc_unbox_uint(v->val) == 123);
 
     goc_close(ch);
     done_destroy(&done);

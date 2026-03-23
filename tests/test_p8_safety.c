@@ -319,7 +319,7 @@ static void p8_3_child_fn(void* arg) {
     (void)arg;
     goc_chan* ch = goc_chan_make(1);
     /* Call goc_put from a bare OS thread — must abort(). */
-    goc_put(ch, (void*)(uintptr_t)0xCAFE);
+    goc_put(ch, goc_box_uint(0xCAFE));
     /* Unreachable. */
 }
 
@@ -529,7 +529,7 @@ done:;
 
 static void p8_10_put_sync_from_fiber(void* arg) {
     goc_chan* ch = (goc_chan*)arg;
-    goc_put_sync(ch, (void*)(uintptr_t)0xBEEF);
+    goc_put_sync(ch, goc_box_uint(0xBEEF));
 }
 
 static void p8_10_child_fn(void* arg) {

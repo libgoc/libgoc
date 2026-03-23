@@ -88,12 +88,12 @@ static void player_fn(void* arg) {
         goc_val_t* v = goc_take(a->recv);
         if (v->ok != GOC_OK)
             return;
-        size_t n = (size_t)(uintptr_t)v->val;
+        size_t n = (size_t)goc_unbox_uint(v->val);
         if (n >= a->rounds) {
             goc_close(a->send);
             return;
         }
-        goc_put(a->send, (void*)(uintptr_t)(n + 1));
+        goc_put(a->send, goc_box_uint(n + 1));
     }
 }
 
@@ -114,7 +114,7 @@ static void bench_ping_pong(size_t ping_rounds) {
     goc_chan* j2 = goc_go(player_fn, &args_ab);
 
     uint64_t t0 = uv_hrtime();
-    goc_put(a, (void*)(uintptr_t)0);
+    goc_put(a, goc_box_uint(0));
     goc_take(j1);
     goc_take(j2);
     uint64_t t1 = uv_hrtime();
@@ -162,12 +162,12 @@ static void ring_node_fn(void* arg) {
             goc_close(a->send);
             return;
         }
-        size_t n = (size_t)(uintptr_t)v->val;
+        size_t n = (size_t)goc_unbox_uint(v->val);
         if (n == 0) {
             goc_close(a->send);
             return;
         }
-        goc_put(a->send, (void*)(uintptr_t)(n - 1));
+        goc_put(a->send, goc_box_uint(n - 1));
     }
 }
 
@@ -197,7 +197,7 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     }
 
     uint64_t t0 = uv_hrtime();
-    goc_put(channels[0], (void*)(uintptr_t)ring_hops);
+    goc_put(channels[0], goc_box_uint(ring_hops));
     goc_take_all(joins, ring_nodes);
     uint64_t t1 = uv_hrtime();
 
@@ -326,7 +326,7 @@ static void bench_fan_in(size_t workers, size_t tasks) {
 
     uint64_t t0 = uv_hrtime();
     for (size_t i = 0; i < tasks; i++)
-        goc_put(in, (void*)(uintptr_t)i);
+        goc_put(in, goc_box_uint(i));
     goc_close(in);
 
     goc_take(done);
@@ -422,7 +422,7 @@ typedef struct {
 static void generate_fn(void* arg) {
     generate_args_t* a = (generate_args_t*)arg;
     for (size_t i = 2; i <= a->max; i++) {
-        if (goc_put(a->out, (void*)(uintptr_t)i) != GOC_OK)
+        if (goc_put(a->out, goc_box_uint(i)) != GOC_OK)
             return;
     }
     goc_close(a->out);
@@ -446,9 +446,9 @@ static void filter_fn(void* arg) {
             goc_close(a->out);
             return;
         }
-        size_t n = (size_t)(uintptr_t)v->val;
+        size_t n = (size_t)goc_unbox_uint(v->val);
         if (n % a->prime != 0)
-            goc_put(a->out, (void*)(uintptr_t)n);
+            goc_put(a->out, goc_box_uint(n));
     }
 }
 
@@ -480,7 +480,7 @@ static void sieve_fn(void* arg) {
         goc_val_t* v = goc_take(ch);
         if (v->ok != GOC_OK)
             break;
-        size_t prime = (size_t)(uintptr_t)v->val;
+        size_t prime = (size_t)goc_unbox_uint(v->val);
         count++;
 
         goc_chan*      next  = goc_chan_make(0);
@@ -492,7 +492,7 @@ static void sieve_fn(void* arg) {
         ch = next;
     }
 
-    goc_put(a->result_ch, (void*)(uintptr_t)count);
+    goc_put(a->result_ch, goc_box_uint(count));
 }
 
 /*
@@ -512,7 +512,7 @@ static void bench_prime_sieve(size_t max) {
     goc_val_t* r = goc_take(result_ch);
     uint64_t t1 = uv_hrtime();
 
-    size_t count = (size_t)(uintptr_t)r->val;
+    size_t count = (size_t)goc_unbox_uint(r->val);
     double s     = (double)(t1 - t0) / 1e9;
     int    ms    = (int)(s * 1000);
     double rate  = (double)count / s;

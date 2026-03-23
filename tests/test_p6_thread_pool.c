@@ -597,7 +597,7 @@ static void test_p6_5(void) {
 
     /* Pre-load only the last channel so the winning arm is deterministic. */
     goc_status_t st = goc_put_sync(args.channels[args.winner_idx],
-                                   (void*)(uintptr_t)0xABCD);
+                                   goc_box_uint(0xABCD));
     ASSERT(st == GOC_OK);
 
     goc_chan* join = goc_go(test_p6_5_fiber_fn, &args);
@@ -607,7 +607,7 @@ static void test_p6_5(void) {
 
     ASSERT(args.result->ch == args.channels[args.winner_idx]);
     ASSERT(args.result->value.ok  == GOC_OK);
-    ASSERT((uintptr_t)args.result->value.val == 0xABCD);
+    ASSERT(goc_unbox_uint(args.result->value.val) == 0xABCD);
 
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
@@ -1513,7 +1513,7 @@ static void p6_22_sender_fn(void* arg) {
     p6_22_pair_t* p = (p6_22_pair_t*)arg;
     for (int i = 0; i < P6_22_ROUNDS; i++) {
         /* slow-path put: parks if no receiver is waiting */
-        goc_put(p->req, (void*)(uintptr_t)(i + 1));
+        goc_put(p->req, goc_box_uint(i + 1));
         /* slow-path take at the SAME call depth on every iteration;
          * re-uses the same stack slot for the parking goc_entry each time */
         goc_take(p->ack);

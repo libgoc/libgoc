@@ -108,7 +108,7 @@ static void done_destroy(done_t* d) {
  *
  *   producer_fiber  ─[src_ch]→  transformer_fiber  ─[dst_ch]→  consumer_fiber
  *
- * The producer sends integers 1..N as (void*)(uintptr_t) values.  The
+ * The producer sends integers 1..N as goc_box_uint() values.  The
  * transformer doubles each value and forwards it.  The consumer accumulates
  * the sum into a shared result slot, then signals done.
  *
@@ -139,7 +139,7 @@ typedef struct {
 static void test_p7_1_producer_fn(void* arg) {
     p7_1_producer_args_t* a = (p7_1_producer_args_t*)arg;
     for (int i = 1; i <= a->n; i++) {
-        goc_status_t st = goc_put(a->src_ch, (void*)(uintptr_t)i);
+        goc_status_t st = goc_put(a->src_ch, goc_box_uint(i));
         if (st != GOC_OK) break;
     }
     goc_close(a->src_ch);
@@ -154,8 +154,8 @@ static void test_p7_1_transformer_fn(void* arg) {
     for (;;) {
         goc_val_t* v = goc_take(a->src_ch);
         if (v->ok != GOC_OK) break;
-        uintptr_t doubled = (uintptr_t)v->val * 2;
-        goc_status_t st = goc_put(a->dst_ch, (void*)doubled);
+        uintptr_t doubled = goc_unbox_uint(v->val) * 2;
+        goc_status_t st = goc_put(a->dst_ch, goc_box_uint(doubled));
         if (st != GOC_OK) break;
     }
     goc_close(a->dst_ch);
@@ -170,7 +170,7 @@ static void test_p7_1_consumer_fn(void* arg) {
     for (;;) {
         goc_val_t* v = goc_take(a->dst_ch);
         if (v->ok != GOC_OK) break;
-        sum += (uintptr_t)v->val;
+        sum += goc_unbox_uint(v->val);
     }
     a->sum = sum;
     done_signal(a->done);
@@ -271,7 +271,7 @@ typedef struct {
 static void test_p7_2_producer_fn(void* arg) {
     p7_2_producer_args_t* a = (p7_2_producer_args_t*)arg;
     for (int i = 1; i <= a->n; i++) {
-        goc_status_t st = goc_put(a->work_ch, (void*)(uintptr_t)i);
+        goc_status_t st = goc_put(a->work_ch, goc_box_uint(i));
         if (st != GOC_OK) break;
     }
     goc_close(a->work_ch);
@@ -286,8 +286,8 @@ static void test_p7_2_worker_fn(void* arg) {
     for (;;) {
         goc_val_t* v = goc_take(a->work_ch);
         if (v->ok != GOC_OK) break;
-        uintptr_t result = (uintptr_t)v->val * 2;
-        goc_put(a->result_ch, (void*)result);
+        uintptr_t result = goc_unbox_uint(v->val) * 2;
+        goc_put(a->result_ch, goc_box_uint(result));
     }
     /* Signal that this worker is done by putting a sentinel onto the gate. */
     goc_put(a->gate_ch, NULL);
@@ -346,7 +346,7 @@ static void test_p7_2(void) {
     for (;;) {
         goc_val_t* v = goc_take_sync(result_ch);
         if (v->ok != GOC_OK) break;
-        sum += (uintptr_t)v->val;
+        sum += goc_unbox_uint(v->val);
     }
 
     /* Wait for producer and all worker fibers. */
@@ -384,7 +384,7 @@ typedef struct {
 static void test_p7_3_producer_fn(void* arg) {
     p7_3_producer_args_t* a = (p7_3_producer_args_t*)arg;
     for (int i = 1; i <= a->n; i++) {
-        goc_status_t st = goc_put(a->ch, (void*)(uintptr_t)i);
+        goc_status_t st = goc_put(a->ch, goc_box_uint(i));
         if (st != GOC_OK) break;
     }
     goc_close(a->ch);
@@ -410,7 +410,7 @@ static void test_p7_3(void) {
     for (;;) {
         goc_val_t* v = goc_take_sync(ch);
         if (v->ok != GOC_OK) break;
-        sum += (uintptr_t)v->val;
+        sum += goc_unbox_uint(v->val);
     }
 
     goc_take_sync(pjoin);
@@ -444,7 +444,7 @@ typedef struct {
 
 static void test_p7_4_sender_fn(void* arg) {
     p7_4_sender_args_t* a = (p7_4_sender_args_t*)arg;
-    goc_put(a->ch, (void*)a->id);
+    goc_put(a->ch, goc_box_uint(a->id));
 }
 
 /*
@@ -476,7 +476,7 @@ static void test_p7_4(void) {
     for (int i = 0; i < P7_4_NSENDERS; i++) {
         goc_val_t* v = goc_take_sync(ch);
         ASSERT(v->ok == GOC_OK);
-        uintptr_t id = (uintptr_t)v->val;
+        uintptr_t id = goc_unbox_uint(v->val);
         ASSERT(id < P7_4_NSENDERS);
         ASSERT(seen[id] == 0);   /* no duplicate */
         seen[id] = 1;
@@ -530,7 +530,7 @@ static void test_p7_5_worker_fn(void* arg) {
     goc_nanosleep((uint64_t)a->delay_ms * 1000000);
     /* Ignore the return status: the slow fiber will get GOC_CLOSED if the
      * channel has already been closed by the time it wakes up. */
-    goc_put(a->result_ch, (void*)a->value);
+    goc_put(a->result_ch, goc_box_uint(a->value));
 }
 
 /*
@@ -603,7 +603,7 @@ static void test_p7_5(void) {
     /* The fast fiber must have won: correct index and value. */
     ASSERT(r->ch == result_ch);
     ASSERT(r->value.ok == GOC_OK);
-    ASSERT((uintptr_t)r->value.val == 0xFADE);
+    ASSERT(goc_unbox_uint(r->value.val) == 0xFADE);
 
     TEST_PASS();
 done:;
