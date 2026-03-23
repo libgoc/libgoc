@@ -9,7 +9,6 @@
 
 #include <stdlib.h>
 #include <assert.h>
-#include <pthread.h>
 #include <uv.h>
 #include <gc.h>
 #include "../include/goc.h"
@@ -39,7 +38,7 @@ _Atomic(uv_async_t *) g_wakeup;                 /* exported */
 
 static uv_async_t    *g_wakeup_raw     = NULL;  /* raw pointer behind g_wakeup */
 static uv_async_t    *g_shutdown_async = NULL;
-static pthread_t      g_loop_thread;
+static uv_thread_t    g_loop_thread;
 static mpsc_queue_t   g_cb_queue;
 
 /* --------------------------------------------------------------------------
@@ -164,11 +163,10 @@ static void on_shutdown_signal(uv_async_t *h)
  * Loop thread entry point
  * -------------------------------------------------------------------------- */
 
-static void *loop_thread_fn(void *arg)
+static void loop_thread_fn(void *arg)
 {
     (void)arg;
     while (uv_run(g_loop, UV_RUN_ONCE)) {}
-    return NULL;
 }
 
 /* --------------------------------------------------------------------------
@@ -199,8 +197,8 @@ void loop_init(void)
     cb_queue_init();
 
     /* 6. Spawn the loop thread (GC-registered on all platforms via
-     *    gc_pthread_create — see internal.h). */
-    gc_pthread_create(&g_loop_thread, NULL, loop_thread_fn, NULL);
+     *    gc_uv_thread_create — see internal.h). */
+    gc_uv_thread_create(&g_loop_thread, loop_thread_fn, NULL);
 }
 
 void loop_shutdown(void)
@@ -209,7 +207,7 @@ void loop_shutdown(void)
     uv_async_send(g_shutdown_async);
 
     /* Wait for the loop thread to finish. */
-    gc_pthread_join(g_loop_thread, NULL);
+    gc_uv_thread_join(&g_loop_thread);
 
     /* All handles are closed; the loop should be idle. */
     assert(uv_loop_close(g_loop) == 0);

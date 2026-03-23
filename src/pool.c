@@ -19,9 +19,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
-#include <errno.h>
-#include <pthread.h>
 #include <uv.h>
 #include <gc.h>
 #include "../include/goc.h"
@@ -34,7 +31,7 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    pthread_t      thread;
+    uv_thread_t    thread;
     goc_wsdq    deque;
     goc_injector   injector;   /* MPSC queue: external callers push here */
     uv_sem_t       idle_sem;
@@ -53,8 +50,8 @@ struct goc_pool {
     _Atomic size_t     idle_count;
     _Atomic size_t     next_push_idx;
     _Atomic int        shutdown;
-    pthread_mutex_t    drain_mutex;
-    pthread_cond_t     drain_cond;
+    uv_mutex_t         drain_mutex;
+    uv_cond_t          drain_cond;
     size_t             live_count;        /* spawned fibers not yet completed (includes queued spawns) */
     size_t             resident_count;    /* fibers with an allocated coroutine/stack */
     goc_spawn_req*     pending_spawn_head;
@@ -249,7 +246,7 @@ void pool_submit_spawn(goc_pool* pool,
      * not at intra-pool dependency edges. */
     bool bypass_throttle = (tl_worker != NULL && tl_worker->pool == pool);
 
-    pthread_mutex_lock(&pool->drain_mutex);
+    uv_mutex_lock(&pool->drain_mutex);
 
     /* live_count tracks all accepted spawn requests, including ones still
      * queued behind the throttle. This keeps pool destruction honest: it
@@ -259,7 +256,7 @@ void pool_submit_spawn(goc_pool* pool,
     if (bypass_throttle ||
         (pool->pending_spawn_head == NULL && !pool_spawn_cap_reached_locked(pool))) {
         pool->resident_count++;
-        pthread_mutex_unlock(&pool->drain_mutex);
+        uv_mutex_unlock(&pool->drain_mutex);
 
         goc_entry* entry = goc_fiber_entry_create(pool, fn, arg, join_ch);
         post_to_run_queue(pool, entry);
@@ -268,7 +265,7 @@ void pool_submit_spawn(goc_pool* pool,
 
     goc_spawn_req* req = (goc_spawn_req*)GC_malloc_uncollectable(sizeof(goc_spawn_req));
     if (req == NULL) {
-        pthread_mutex_unlock(&pool->drain_mutex);
+        uv_mutex_unlock(&pool->drain_mutex);
         fprintf(stderr, "libgoc: failed to allocate deferred spawn request\n");
         abort();
     }
@@ -280,7 +277,7 @@ void pool_submit_spawn(goc_pool* pool,
     pool_enqueue_spawn_locked(pool, req);
 
     goc_spawn_req* admitted = pool_collect_admitted_spawns_locked(pool);
-    pthread_mutex_unlock(&pool->drain_mutex);
+    uv_mutex_unlock(&pool->drain_mutex);
 
     pool_dispatch_spawn_list(pool, admitted);
 }
@@ -289,7 +286,7 @@ void pool_submit_spawn(goc_pool* pool,
  * pool_worker_fn — thread entry point (work-stealing loop)
  * ---------------------------------------------------------------------- */
 
-static void* pool_worker_fn(void* arg) {
+static void pool_worker_fn(void* arg) {
     tl_worker     = (goc_worker*)arg;
     goc_pool* pool = tl_worker->pool;
 
@@ -386,20 +383,19 @@ run:
                 goc_fiber_root_unregister(fe->fiber_root_handle);
             mco_destroy(coro);
 
-            pthread_mutex_lock(&pool->drain_mutex);
+            uv_mutex_lock(&pool->drain_mutex);
             if (pool->resident_count > 0)
                 pool->resident_count--;
             pool->live_count--;
             goc_spawn_req* admitted = pool_collect_admitted_spawns_locked(pool);
-            pthread_cond_broadcast(&pool->drain_cond);
-            pthread_mutex_unlock(&pool->drain_mutex);
+            uv_cond_broadcast(&pool->drain_cond);
+            uv_mutex_unlock(&pool->drain_mutex);
 
             pool_dispatch_spawn_list(pool, admitted);
         }
     }
 
     tl_worker = NULL;
-    return NULL;
 }
 
 /* -------------------------------------------------------------------------
@@ -457,9 +453,9 @@ void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
  * ---------------------------------------------------------------------- */
 
 static void pool_abort_if_called_from_worker(goc_pool* pool, const char* api_name) {
-    pthread_t self = pthread_self();
+    uv_thread_t self = uv_thread_self();
     for (size_t i = 0; i < pool->thread_count; i++) {
-        if (pthread_equal(self, pool->workers[i].thread)) {
+        if (uv_thread_equal(&self, &pool->workers[i].thread)) {
             fprintf(stderr,
                     "libgoc: %s called from within target pool worker thread; "
                     "this is unsupported and would deadlock\n",
@@ -493,8 +489,8 @@ goc_pool* goc_pool_make(size_t threads) {
     atomic_store(&pool->next_push_idx, 0);
     atomic_store(&pool->shutdown,      0);
 
-    pthread_mutex_init(&pool->drain_mutex, NULL);
-    pthread_cond_init(&pool->drain_cond, NULL);
+    uv_mutex_init(&pool->drain_mutex);
+    uv_cond_init(&pool->drain_cond);
 
     pool->live_count        = 0;
     pool->resident_count    = 0;
@@ -502,7 +498,7 @@ goc_pool* goc_pool_make(size_t threads) {
     pool->pending_spawn_tail = NULL;
 
     for (size_t i = 0; i < threads; i++) {
-        int rc = gc_pthread_create(&pool->workers[i].thread, NULL,
+        int rc = gc_uv_thread_create(&pool->workers[i].thread,
                                    pool_worker_fn, &pool->workers[i]);
         if (rc != 0) {
             fprintf(stderr,
@@ -525,11 +521,11 @@ void goc_pool_destroy(goc_pool* pool) {
     pool_abort_if_called_from_worker(pool, "goc_pool_destroy");
 
     /* 1. Wait for all live fibers to exit (live_count reaches zero). */
-    pthread_mutex_lock(&pool->drain_mutex);
+    uv_mutex_lock(&pool->drain_mutex);
     while (pool->live_count > 0) {
-        pthread_cond_wait(&pool->drain_cond, &pool->drain_mutex);
+        uv_cond_wait(&pool->drain_cond, &pool->drain_mutex);
     }
-    pthread_mutex_unlock(&pool->drain_mutex);
+    uv_mutex_unlock(&pool->drain_mutex);
 
     /* 2. Signal workers to exit. */
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
@@ -541,7 +537,7 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 4. Reap worker threads. */
     for (size_t i = 0; i < pool->thread_count; i++) {
-        gc_pthread_join(pool->workers[i].thread, NULL);
+        gc_uv_thread_join(&pool->workers[i].thread);
     }
 
     /* 5. Destroy per-worker resources. */
@@ -552,8 +548,8 @@ void goc_pool_destroy(goc_pool* pool) {
     }
 
     /* 6. Destroy drain primitives. */
-    pthread_mutex_destroy(&pool->drain_mutex);
-    pthread_cond_destroy(&pool->drain_cond);
+    uv_mutex_destroy(&pool->drain_mutex);
+    uv_cond_destroy(&pool->drain_cond);
 
     /* 7. Remove from registry (no-op if already removed by destroy_all). */
     registry_remove(pool);
@@ -570,27 +566,25 @@ void goc_pool_destroy(goc_pool* pool) {
 goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     pool_abort_if_called_from_worker(pool, "goc_pool_destroy_timeout");
 
-    /* Build an absolute deadline. */
-    struct timespec deadline;
-    timespec_get(&deadline, TIME_UTC);
-    deadline.tv_sec  += (time_t)(ms / 1000);
-    deadline.tv_nsec += (long)((ms % 1000) * 1000000L);
-    if (deadline.tv_nsec >= 1000000000L) {
-        deadline.tv_sec  += 1;
-        deadline.tv_nsec -= 1000000000L;
-    }
+    /* Build a relative deadline in nanoseconds. */
+    uint64_t deadline = uv_hrtime() + (uint64_t)ms * 1000000ULL;
 
-    pthread_mutex_lock(&pool->drain_mutex);
+    uv_mutex_lock(&pool->drain_mutex);
     int timed_out = 0;
     while (pool->live_count > 0 && !timed_out) {
-        int rc = pthread_cond_timedwait(&pool->drain_cond,
-                                        &pool->drain_mutex,
-                                        &deadline);
-        if (rc == ETIMEDOUT) {
+        uint64_t now = uv_hrtime();
+        if (now >= deadline) {
+            timed_out = 1;
+            break;
+        }
+        int rc = uv_cond_timedwait(&pool->drain_cond,
+                                   &pool->drain_mutex,
+                                   deadline - now);
+        if (rc == UV_ETIMEDOUT) {
             timed_out = 1;
         }
     }
-    pthread_mutex_unlock(&pool->drain_mutex);
+    uv_mutex_unlock(&pool->drain_mutex);
 
     if (timed_out && pool->live_count > 0) {
         /* Pool stays valid and running — do not tear it down. */
@@ -605,11 +599,7 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     }
 
     for (size_t i = 0; i < pool->thread_count; i++) {
-#ifndef _WIN32
-        GC_pthread_join(pool->workers[i].thread, NULL);
-#else
-        pthread_join(pool->workers[i].thread, NULL);
-#endif
+        gc_uv_thread_join(&pool->workers[i].thread);
     }
 
     for (size_t i = 0; i < pool->thread_count; i++) {
@@ -618,8 +608,8 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
         injector_destroy(&pool->workers[i].injector);
     }
 
-    pthread_mutex_destroy(&pool->drain_mutex);
-    pthread_cond_destroy(&pool->drain_cond);
+    uv_mutex_destroy(&pool->drain_mutex);
+    uv_cond_destroy(&pool->drain_cond);
 
     registry_remove(pool);
 

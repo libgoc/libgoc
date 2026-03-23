@@ -115,7 +115,7 @@ When `-DLIBGOC_VMEM=ON` is passed, `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE`
 
 Dependencies are resolved via `pkg-config` (libuv as `libuv`, Boehm GC as `bdw-gc-threaded` — **no fallback**; configure fails loudly if the threaded variant is absent). minicoro is instantiated via `src/minicoro.c` (which defines `MINICORO_IMPL`) and its header is available to all targets via `target_include_directories` pointing at `vendor/minicoro/`.
 
-> **Boehm GC thread registration:** libgoc compiles with `-DGC_THREADS` and requires a Boehm GC built with `--enable-threads` (the `bdw-gc-threaded` pkg-config module). Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime; CMake will fail at configure time if the threaded variant is absent. See `README.md` for per-platform installation instructions. All threads are created via `gc_pthread_create` (defined in `src/internal.h`). On POSIX (Linux/macOS), `gc_pthread_create` is an alias for `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` call is needed or permitted on POSIX (it would double-register and corrupt the GC's internal thread table). On Windows, bdwgc (MSYS2 UCRT64) is compiled with Win32 threads and does not provide `GC_pthread_create`; `gc_pthread_create` is implemented in `gc.c` as a thin wrapper around `pthread_create` that passes a trampoline (`gc_thread_trampoline`) as the thread entry, which calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit.
+> **Boehm GC thread registration:** libgoc compiles with `-DGC_THREADS` and requires a Boehm GC built with `--enable-threads` (the `bdw-gc-threaded` pkg-config module). Linking against a non-threaded build causes `GC_INIT()` to malfunction or segfault at runtime; CMake will fail at configure time if the threaded variant is absent. See `README.md` for per-platform installation instructions. All threads are created via `gc_uv_thread_create` (declared in `src/internal.h`, implemented in `src/gc.c`). It wraps `uv_thread_create` with a trampoline (`gc_uv_thread_trampoline`) that calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit on all platforms. `GC_allow_register_threads()` must have been called first — `goc_init()` does this.
 
 Named constants defined in `config.h`:
 - `GOC_DEAD_COUNT_THRESHOLD 8`
@@ -236,7 +236,7 @@ Boehm GC (bdw-gc) is a **required link-time dependency**. It is not optional and
 
 `goc_init` must be **the first call in `main()`**, before any other library or application code that could trigger GC allocation. It calls `GC_INIT()` unconditionally as its very first operation, then installs the fiber-root push callback, then calls `GC_allow_register_threads()`. `GC_INIT()` performs all one-time GC setup, and `GC_allow_register_threads()` enables multi-thread stack registration. **Callers must not call these functions themselves.**
 
-On POSIX, pool workers and the uv loop thread are created via `gc_pthread_create`, which on POSIX is an alias for `GC_pthread_create` and registers each thread with the collector automatically. On Windows, `GC_pthread_create` is not available (MSYS2 bdwgc uses Win32 threads); `gc_pthread_create` calls `pthread_create` with a trampoline that manually calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit. On POSIX, threads must **not** call `GC_register_my_thread` manually — `GC_pthread_create` already does it; a duplicate call corrupts the GC's internal thread table.
+Pool workers and the uv loop thread are created via `gc_uv_thread_create` on all platforms. It wraps `uv_thread_create` with a trampoline that calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit, ensuring every thread is visible to the collector. `GC_allow_register_threads()` is called by `goc_init()` before any threads are spawned.
 
 **`goc_init` must be called exactly once, as the very first call in `main()`, before any other library or application code that could trigger GC allocation. Calling it more than once is undefined behaviour.**
 
@@ -852,7 +852,7 @@ typedef struct {
 - **Internal caller** (a fiber running on a pool thread, i.e. `tl_worker != NULL && tl_worker->pool == pool`): pushes to the executing worker's own deque and does **not** proactively wake peers. This preserves locality for short handoff-heavy workloads.
 - **External caller** (main thread, libuv loop, another pool): pushes into a round-robin target worker's injector, then posts that worker's `idle_sem` if any worker is idle.
 
-All threads — pool workers and the uv loop thread — are created via `gc_pthread_create`. On POSIX (Linux/macOS), `gc_pthread_create` is a macro alias for `GC_pthread_create`, which wraps the thread start with `GC_call_with_stack_base` so each thread is automatically registered with the collector; no manual `GC_register_my_thread` / `GC_unregister_my_thread` call is needed or permitted on POSIX. On Windows, `gc_pthread_create` calls `pthread_create` with a trampoline (`gc_thread_trampoline` in `gc.c`) that calls `GC_register_my_thread` at thread start and `GC_unregister_my_thread` at thread exit.
+All threads — pool workers and the uv loop thread — are created via `gc_uv_thread_create` (implemented in `gc.c`). It wraps `uv_thread_create` with a trampoline (`gc_uv_thread_trampoline`) that calls `GC_register_my_thread` at thread start and `GC_unregister_my_thread` at thread exit on all platforms.
 
 > **`_Thread_local` and minicoro.** `tl_worker` is a `_Thread_local` pointer to the currently executing `goc_worker`. minicoro switches stacks, not OS threads, so `tl_worker` always reflects the OS thread running the fiber and is always correct for internal/external routing decisions. A stolen fiber running on a different worker correctly sees `tl_worker == &workers[thief_index]` after the steal.
 
@@ -1237,7 +1237,7 @@ Once both close callbacks have fired, the loop has no remaining active handles a
 
 **Step 4 — Join the loop thread.**
 
-`pthread_join(g_loop_thread)` blocks until `loop_thread_fn` exits. After this point:
+`gc_uv_thread_join(&g_loop_thread)` blocks until `loop_thread_fn` exits. After this point:
 
 - All `on_wakeup` and `on_shutdown_signal` deliveries are guaranteed to have completed.
 - No libuv callback will ever fire again.

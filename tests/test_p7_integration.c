@@ -57,7 +57,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <uv.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -71,32 +71,32 @@
  * ====================================================================== */
 
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    int             flag;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
+    int        flag;
 } done_t;
 
 static void done_init(done_t* d) {
-    pthread_mutex_init(&d->mtx, NULL);
-    pthread_cond_init(&d->cond, NULL);
+    uv_mutex_init(&d->mtx);
+    uv_cond_init(&d->cond);
     d->flag = 0;
 }
 static void done_signal(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     d->flag = 1;
-    pthread_cond_signal(&d->cond);
-    pthread_mutex_unlock(&d->mtx);
+    uv_cond_signal(&d->cond);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_wait(done_t* d) {
-    pthread_mutex_lock(&d->mtx);
+    uv_mutex_lock(&d->mtx);
     while (!d->flag)
-        pthread_cond_wait(&d->cond, &d->mtx);
+        uv_cond_wait(&d->cond, &d->mtx);
     d->flag = 0;
-    pthread_mutex_unlock(&d->mtx);
+    uv_mutex_unlock(&d->mtx);
 }
 static void done_destroy(done_t* d) {
-    pthread_mutex_destroy(&d->mtx);
-    pthread_cond_destroy(&d->cond);
+    uv_mutex_destroy(&d->mtx);
+    uv_cond_destroy(&d->cond);
 }
 
 /* =========================================================================

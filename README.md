@@ -766,8 +766,8 @@ sudo apt update
 sudo apt install cmake libuv1-dev libatomic-ops-dev pkg-config build-essential
 
 # Ubuntu's libgc-dev is NOT compiled with --enable-threads, which libgoc requires.
-# GC_allow_register_threads and the GC_pthread_create / GC_pthread_join wrappers
-# are absent in the system package and will cause a crash at runtime.
+# GC_allow_register_threads is required for libgoc's gc_uv_thread_create/
+# gc_uv_thread_join wrappers; the system package can crash at runtime.
 # Build Boehm GC from source instead:
 wget https://github.com/ivmai/bdwgc/releases/download/v8.2.6/gc-8.2.6.tar.gz
 tar xf gc-8.2.6.tar.gz && cd gc-8.2.6

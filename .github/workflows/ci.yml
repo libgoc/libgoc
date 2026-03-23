@@ -141,10 +141,9 @@ jobs:
 
       # ---- Windows -----------------------------------------------------
       # Uses MSYS2/MinGW-w64 (UCRT64) to provide a POSIX-compatible toolchain
-      # on Windows. This is required because libgoc uses pthread.h and C11
-      # _Atomic directly, and calls GC_pthread_create/GC_pthread_join — APIs
-      # that are only present in POSIX (pthreads) builds of Boehm GC, not in
-      # the Win32-threads build that MSVC + vcpkg produce.
+      # on Windows. This is required because libgoc uses C11 _Atomic directly
+      # and the MSYS2 bdwgc package provides the win32-threaded build of Boehm
+      # GC with GC_allow_register_threads() support needed by gc_uv_thread_create.
       # P8 (safety) tests self-skip on Windows because they rely on fork/waitpid.
       # All other test phases (P1–P7, P9) run normally.
 
