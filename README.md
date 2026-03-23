@@ -101,7 +101,7 @@ static void player_fiber(void* arg) {
 
     goc_val_t* v;
     while ((v = goc_take(a->recv))->ok == GOC_OK) {
-        int count = (int)goc_unbox_int(v->val);
+        int count = goc_unbox_int(v->val);
         printf("%s %d\n", a->name, count);
         if (count >= N_ROUNDS) {
             goc_close(a->send);
