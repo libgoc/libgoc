@@ -38,21 +38,33 @@ All benchmarks produce a single line per run:
 ```
 === Pool Size: 1 ===
 GOMAXPROCS=1
-Channel ping-pong: 200000 round trips in 87ms (2280645 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 222ms (2243222 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 333ms (599056 msg/s)
-Spawn idle tasks: 200000 goroutines in 1062ms (188282 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1178ms (1919 primes/s)
+Channel ping-pong: 200000 round trips in 81ms (2450068 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 208ms (2396744 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 301ms (663626 msg/s)
+Spawn idle tasks: 200000 goroutines in 1238ms (161433 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1249ms (1810 primes/s)
+
+=== Pool Size: 2 ===
+GOMAXPROCS=2
+Channel ping-pong: 200000 round trips in 87ms (2292035 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 217ms (2298805 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 280ms (712778 msg/s)
+Spawn idle tasks: 200000 goroutines in 475ms (420510 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 549ms (4114 primes/s)
+
+=== Pool Size: 4 ===
+GOMAXPROCS=4
+Channel ping-pong: 200000 round trips in 87ms (2277465 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2250022 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 269ms (741545 msg/s)
+Spawn idle tasks: 200000 goroutines in 358ms (557693 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 293ms (7694 primes/s)
 
 === Pool Size: 8 ===
 GOMAXPROCS=8
-Channel ping-pong: 200000 round trips in 88ms (2257564 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 222ms (2250942 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 304ms (657846 msg/s)
-Spawn idle tasks: 200000 goroutines in 406ms (492388 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 160ms (14136 primes/s)
+Channel ping-pong: 200000 round trips in 87ms (2277539 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 221ms (2254470 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 267ms (747653 msg/s)
+Spawn idle tasks: 200000 goroutines in 345ms (579313 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 159ms (14206 primes/s)
 ```
-
-CPU-bound benchmarks (spawn, sieve) scale with GOMAXPROCS; communication-bound
-ones (ping-pong, ring) remain roughly flat since the bottleneck is channel
-round-trip latency, not parallelism.

@@ -82,35 +82,35 @@ make -C clojure run-all
 ```
 === Pool Size: 1 ===
 GOMAXPROCS=1
-Channel ping-pong: 200000 round trips in 82ms (2431608 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 208ms (2395887 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 335ms (595850 msg/s)
-Spawn idle tasks: 200000 goroutines in 1292ms (154711 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1190ms (1900 primes/s)
+Channel ping-pong: 200000 round trips in 81ms (2450068 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 208ms (2396744 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 301ms (663626 msg/s)
+Spawn idle tasks: 200000 goroutines in 1238ms (161433 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1249ms (1810 primes/s)
 
 === Pool Size: 2 ===
 GOMAXPROCS=2
-Channel ping-pong: 200000 round trips in 91ms (2192214 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 217ms (2297843 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 287ms (696528 msg/s)
-Spawn idle tasks: 200000 goroutines in 508ms (393206 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 558ms (4053 primes/s)
+Channel ping-pong: 200000 round trips in 87ms (2292035 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 217ms (2298805 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 280ms (712778 msg/s)
+Spawn idle tasks: 200000 goroutines in 475ms (420510 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 549ms (4114 primes/s)
 
 === Pool Size: 4 ===
 GOMAXPROCS=4
-Channel ping-pong: 200000 round trips in 89ms (2240324 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 216ms (2305941 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 265ms (753517 msg/s)
-Spawn idle tasks: 200000 goroutines in 452ms (441883 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 290ms (7787 primes/s)
+Channel ping-pong: 200000 round trips in 87ms (2277465 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2250022 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 269ms (741545 msg/s)
+Spawn idle tasks: 200000 goroutines in 358ms (557693 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 293ms (7694 primes/s)
 
 === Pool Size: 8 ===
 GOMAXPROCS=8
-Channel ping-pong: 200000 round trips in 87ms (2292833 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 217ms (2298159 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 265ms (752862 msg/s)
-Spawn idle tasks: 200000 goroutines in 358ms (558500 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 155ms (14526 primes/s)
+Channel ping-pong: 200000 round trips in 87ms (2277539 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 221ms (2254470 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 267ms (747653 msg/s)
+Spawn idle tasks: 200000 goroutines in 345ms (579313 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 159ms (14206 primes/s)
 ```
 
 ### libgoc canary — (default) — (`make -C libgoc run-all`)
@@ -118,35 +118,35 @@ Prime sieve: 2262 primes up to 20000 in 155ms (14526 primes/s)
 ```
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 224ms (892022 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 1398ms (357644 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1436ms (139226 msg/s)
-Spawn idle tasks: 200000 fibers in 2374ms (84244 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1597ms (1416 primes/s)
+Channel ping-pong: 200000 round trips in 128ms (1558221 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 653ms (764691 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 759ms (263350 msg/s)
+Spawn idle tasks: 200000 fibers in 1518ms (131733 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 830ms (2722 primes/s)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 219ms (912402 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 1256ms (397976 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1443ms (138512 msg/s)
-Spawn idle tasks: 200000 fibers in 2350ms (85079 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1167ms (1938 primes/s)
+Channel ping-pong: 200000 round trips in 131ms (1523077 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 649ms (770295 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 967ms (206796 msg/s)
+Spawn idle tasks: 200000 fibers in 1286ms (155421 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 887ms (2549 primes/s)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 111ms (1788707 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 698ms (716300 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 773ms (258405 msg/s)
-Spawn idle tasks: 200000 fibers in 1392ms (143669 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 801ms (2821 primes/s)
+Channel ping-pong: 200000 round trips in 116ms (1715892 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 680ms (734346 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 862ms (231845 msg/s)
+Spawn idle tasks: 200000 fibers in 1309ms (152715 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 883ms (2560 primes/s)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 88ms (2248271 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 495ms (1008686 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 840ms (238041 msg/s)
-Spawn idle tasks: 200000 fibers in 1203ms (166231 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 877ms (2577 primes/s)
+Channel ping-pong: 200000 round trips in 98ms (2021993 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 497ms (1004947 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 867ms (230415 msg/s)
+Spawn idle tasks: 200000 fibers in 1322ms (151212 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 893ms (2531 primes/s)
 ```
 
 ### libgoc vmem (`make -C libgoc LIBGOC_VMEM=ON BUILD_DIR=../../build-bench-vmem build run-all`)
@@ -154,35 +154,35 @@ Prime sieve: 2262 primes up to 20000 in 877ms (2577 primes/s)
 ```
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 739ms (270336 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 18645ms (26816 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 808ms (247494 msg/s)
-Spawn idle tasks: 200000 fibers in 3041ms (65766 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 2790ms (811 primes/s)
+Channel ping-pong: 200000 round trips in 356ms (560870 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14388ms (34750 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 881ms (226977 msg/s)
+Spawn idle tasks: 200000 fibers in 3189ms (62697 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3553ms (637 primes/s)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 337ms (592109 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 13771ms (36308 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 785ms (254468 msg/s)
-Spawn idle tasks: 200000 fibers in 11263ms (17756 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 2374ms (952 primes/s)
+Channel ping-pong: 200000 round trips in 442ms (452244 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 12795ms (39076 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1009ms (198157 msg/s)
+Spawn idle tasks: 200000 fibers in 3227ms (61968 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3219ms (703 primes/s)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 283ms (706642 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 14543ms (34380 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 733ms (272542 msg/s)
-Spawn idle tasks: 200000 fibers in 3064ms (65263 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 3184ms (710 primes/s)
+Channel ping-pong: 200000 round trips in 301ms (663829 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14892ms (33574 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 735ms (271943 msg/s)
+Spawn idle tasks: 200000 fibers in 3112ms (64251 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3691ms (613 primes/s)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 225ms (886815 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 10013ms (49935 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 652ms (306298 msg/s)
-Spawn idle tasks: 200000 fibers in 3156ms (63358 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 3141ms (720 primes/s)
+Channel ping-pong: 200000 round trips in 221ms (903838 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10420ms (47982 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 839ms (238363 msg/s)
+Spawn idle tasks: 200000 fibers in 10663ms (18756 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2447ms (924 primes/s)
 ```
 
 ### Clojure core.async (`make -C clojure run-all`)
@@ -190,35 +190,35 @@ Prime sieve: 2262 primes up to 20000 in 3141ms (720 primes/s)
 ```
 === Pool Size: 1 ===
 CLOJURE_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 153ms (1301978 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 191ms (2608232 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 652ms (306730 msg/s)
-Spawn idle tasks: 200000 go-blocks in 301ms (663426 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1545ms (1463 primes/s)
+Channel ping-pong: 200000 round trips in 143ms (1393573 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 163ms (3060197 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 596ms (335299 msg/s)
+Spawn idle tasks: 200000 go-blocks in 245ms (816057 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1043ms (2167 primes/s)
 
 === Pool Size: 2 ===
 CLOJURE_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 266ms (750500 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 265ms (1884720 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 572ms (349289 msg/s)
-Spawn idle tasks: 200000 go-blocks in 290ms (689487 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1031ms (2192 primes/s)
+Channel ping-pong: 200000 round trips in 220ms (908386 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 253ms (1974783 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 537ms (372276 msg/s)
+Spawn idle tasks: 200000 go-blocks in 216ms (923576 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 973ms (2324 primes/s)
 
 === Pool Size: 4 ===
 CLOJURE_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 261ms (763754 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 253ms (1975028 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 583ms (342562 msg/s)
-Spawn idle tasks: 200000 go-blocks in 268ms (745718 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1179ms (1917 primes/s)
+Channel ping-pong: 200000 round trips in 248ms (803577 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 239ms (2090092 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 542ms (368716 msg/s)
+Spawn idle tasks: 200000 go-blocks in 226ms (882022 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1303ms (1735 primes/s)
 
 === Pool Size: 8 ===
 CLOJURE_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 311ms (641775 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 272ms (1836152 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 610ms (327600 msg/s)
-Spawn idle tasks: 200000 go-blocks in 300ms (664562 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1560ms (1449 primes/s)
+Channel ping-pong: 200000 round trips in 262ms (761833 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 228ms (2189096 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 551ms (362718 msg/s)
+Spawn idle tasks: 200000 go-blocks in 239ms (835404 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1417ms (1596 primes/s)
 ```
 
 ## Report: libgoc vs. Go Baseline (+ Clojure)
@@ -232,50 +232,50 @@ This report evaluates the performance of **libgoc canary**, **libgoc vmem**, and
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2,431,608 | 892,022 **(0.37x)** | 270,336 **(0.11x)** | 1,301,978 **(0.54x)** |
-| **2** | 2,192,214 | 912,402 **(0.42x)** | 592,109 **(0.27x)** | 750,500 **(0.34x)** |
-| **4** | 2,240,324 | 1,788,707 **(0.80x)** | 706,642 **(0.32x)** | 763,754 **(0.34x)** |
-| **8** | 2,292,833 | 2,248,271 **(0.98x)** | 886,815 **(0.39x)** | 641,775 **(0.28x)** |
+| **1** | 2,450,068 | 1,558,221 **(0.64x)** | 560,870 **(0.23x)** | 1,393,573 **(0.57x)** |
+| **2** | 2,292,035 | 1,523,077 **(0.66x)** | 452,244 **(0.20x)** | 908,386 **(0.40x)** |
+| **4** | 2,277,465 | 1,715,892 **(0.75x)** | 663,829 **(0.29x)** | 803,577 **(0.35x)** |
+| **8** | 2,277,539 | 2,021,993 **(0.89x)** | 903,838 **(0.40x)** | 761,833 **(0.33x)** |
 
 ### Ring (hops/s)
 *Measures message passing latency across a circular topology.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2,395,887 | 357,644 **(0.15x)** | 26,816 **(0.01x)** | 2,608,232 **(1.09x)** |
-| **2** | 2,297,843 | 397,976 **(0.17x)** | 36,308 **(0.02x)** | 1,884,720 **(0.82x)** |
-| **4** | 2,305,941 | 716,300 **(0.31x)** | 34,380 **(0.01x)** | 1,975,028 **(0.86x)** |
-| **8** | 2,298,159 | 1,008,686 **(0.44x)** | 49,935 **(0.02x)** | 1,836,152 **(0.80x)** |
+| **1** | 2,396,744 | 764,691 **(0.32x)** | 34,750 **(0.01x)** | 3,060,197 **(1.28x)** |
+| **2** | 2,298,805 | 770,295 **(0.34x)** | 39,076 **(0.02x)** | 1,974,783 **(0.86x)** |
+| **4** | 2,250,022 | 734,346 **(0.33x)** | 33,574 **(0.01x)** | 2,090,092 **(0.93x)** |
+| **8** | 2,254,470 | 1,004,947 **(0.45x)** | 47,982 **(0.02x)** | 2,189,096 **(0.97x)** |
 
 ### Selective receive / fan-out / fan-in (msg/s)
 *Evaluates complex orchestration and selection logic.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 595,850 | 139,226 **(0.23x)** | 247,494 **(0.42x)** | 306,730 **(0.51x)** |
-| **2** | 696,528 | 138,512 **(0.20x)** | 254,468 **(0.37x)** | 349,289 **(0.50x)** |
-| **4** | 753,517 | 258,405 **(0.34x)** | 272,542 **(0.36x)** | 342,562 **(0.45x)** |
-| **8** | 752,862 | 238,041 **(0.32x)** | 306,298 **(0.41x)** | 327,600 **(0.44x)** |
+| **1** | 663,626 | 263,350 **(0.40x)** | 226,977 **(0.34x)** | 335,299 **(0.51x)** |
+| **2** | 712,778 | 206,796 **(0.29x)** | 198,157 **(0.28x)** | 372,276 **(0.52x)** |
+| **4** | 741,545 | 231,845 **(0.31x)** | 271,943 **(0.37x)** | 368,716 **(0.50x)** |
+| **8** | 747,653 | 230,415 **(0.31x)** | 238,363 **(0.32x)** | 362,718 **(0.49x)** |
 
 ### Spawn idle tasks (tasks/s)
 *Tests the efficiency of task creation and scheduling.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 154,711 | 84,244 **(0.54x)** | 65,766 **(0.43x)** | 663,426 **(4.29x)** |
-| **2** | 393,206 | 85,079 **(0.22x)** | 17,756 **(0.05x)** | 689,487 **(1.75x)** |
-| **4** | 441,883 | 143,669 **(0.33x)** | 65,263 **(0.15x)** | 745,718 **(1.69x)** |
-| **8** | 558,500 | 166,231 **(0.30x)** | 63,358 **(0.11x)** | 664,562 **(1.19x)** |
+| **1** | 161,433 | 131,733 **(0.82x)** | 62,697 **(0.39x)** | 816,057 **(5.06x)** |
+| **2** | 420,510 | 155,421 **(0.37x)** | 61,968 **(0.15x)** | 923,576 **(2.20x)** |
+| **4** | 557,693 | 152,715 **(0.27x)** | 64,251 **(0.12x)** | 882,022 **(1.58x)** |
+| **8** | 579,313 | 151,212 **(0.26x)** | 18,756 **(0.03x)** | 835,404 **(1.44x)** |
 
 ### Prime sieve (primes/s)
 *High-concurrency filtering test.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 1,900 | 1,416 **(0.75x)** | 811 **(0.43x)** | 1,463 **(0.77x)** |
-| **2** | 4,053 | 1,938 **(0.48x)** | 952 **(0.23x)** | 2,192 **(0.54x)** |
-| **4** | 7,787 | 2,821 **(0.36x)** | 710 **(0.09x)** | 1,917 **(0.25x)** |
-| **8** | 14,526 | 2,577 **(0.18x)** | 720 **(0.05x)** | 1,449 **(0.10x)** |
+| **1** | 1,810 | 2,722 **(1.50x)** | 637 **(0.35x)** | 2,167 **(1.20x)** |
+| **2** | 4,114 | 2,549 **(0.62x)** | 703 **(0.17x)** | 2,324 **(0.56x)** |
+| **4** | 7,694 | 2,560 **(0.33x)** | 613 **(0.08x)** | 1,735 **(0.23x)** |
+| **8** | 14,206 | 2,531 **(0.18x)** | 924 **(0.07x)** | 1,596 **(0.11x)** |
 
 ---
 
@@ -285,16 +285,16 @@ Geometric mean of the ×Go multipliers across pool sizes 1, 2, 4, 8.
 
 | Benchmark | libgoc (canary) | libgoc (vmem) | Clojure |
 | :--- | :---: | :---: | :---: |
-| Ping-pong | 0.59× | 0.25× | 0.36× |
-| Ring | 0.24× | 0.02× | 0.88× |
-| Fan-out/Fan-in | 0.27× | 0.39× | 0.48× |
-| Spawn idle | 0.33× | 0.13× | 1.97× |
-| Prime sieve | 0.39× | 0.15× | 0.32× |
+| Ping-pong | 0.73× | 0.28× | 0.41× |
+| Ring | 0.36× | 0.01× | 1.01× |
+| Fan-out/Fan-in | 0.33× | 0.32× | 0.50× |
+| Spawn idle | 0.32× | 0.13× | 2.18× |
+| Prime sieve | 0.41× | 0.13× | 0.36× |
 
 **Takeaways:**
-- libgoc canary ping-pong scales strongly with pool size, reaching near-parity with Go at pool=8 (0.98×). Ring throughput also crosses 1 M hops/s at pool=8 (0.44×).
-- Spawn idle tasks improved dramatically over previous runs (84–166k tasks/s vs ~18k), driven by scheduler improvements. Still behind Go due to fixed-size stack materialisation cost vs. Go's dynamically-sized goroutines.
-- Fan-out/fan-in canary throughput (139–258k msg/s) is below previous numbers, suggesting regression in selective-receive/alts overhead worth investigating.
-- vmem fan-out has improved vs. the prior run (247–306k msg/s, 0.39× geomean) and now exceeds canary on this benchmark — likely because vmem's larger virtual stacks reduce stack-overflow guard overhead.
-- vmem ring remains severely bottlenecked by TLB/page-fault pressure from mmap-backed stacks (~27–50k hops/s vs. Go's 2.3 M).
-- Clojure's ring/spawn advantages come from its continuation-passing, heap-allocated go-block model, which avoids stack materialisation entirely.
+- libgoc canary's ping-pong performance now reaches 0.89× Go at pool=8, with a geometric mean of 0.73×—a clear improvement, though still trailing Go at lower pool sizes.
+- Ring throughput for canary is up to 1M hops/s at pool=8 (0.45× Go), with a geometric mean of 0.36×. vmem remains extremely slow on this test (0.01×).
+- Fan-out/fan-in for both canary and vmem is stable (0.33× and 0.32×), with Clojure at 0.50×. No major regressions, but Go remains well ahead.
+- Spawn idle tasks: canary is at 0.32× Go, vmem at 0.13×. Clojure's advantages come from its continuation-passing, heap-allocated go-block model, which avoids stack materialisation entirely.
+- Prime sieve: canary and Clojure are close (0.41× and 0.36×), vmem lags (0.13×). Notably, canary outperforms Go at pool=1 on this test (1.50×).
+- Overall, canary shows improved scaling and stability, vmem is only competitive on selective receive, and Clojure continues to excel at task creation and ring topologies.
