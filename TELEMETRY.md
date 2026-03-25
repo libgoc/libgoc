@@ -39,34 +39,51 @@
 
 ## Event Types
 
-### Pool Events
-| Field         | Description                       |
-|--------------|-----------------------------------|
-| `id`         | Pool pointer (cast to int)        |
-| `status`     | Created, Destroyed                |
-| `thread_count` | Number of worker threads         |
+### Pool Events (`GOC_STATS_EVENT_POOL_STATUS`)
+| Field          | Type    | Description                   |
+|----------------|---------|-------------------------------|
+| `id`           | `void*` | Pool pointer                  |
+| `status`       | `int`   | See `goc_stats_pool_status`   |
+| `thread_count` | `int`   | Number of worker threads      |
 
-### Worker Events
-| Field         | Description                       |
-|--------------|-----------------------------------|
-| `id`         | Worker index                      |
-| `status`     | Created, Running, Idle, Stopped   |
-| `pending_jobs` | Number of live fibers            |
+| `goc_stats_pool_status` | Value | Meaning          |
+|-------------------------|-------|------------------|
+| `GOC_POOL_CREATED`      | `0`   | Pool initialised |
+| `GOC_POOL_DESTROYED`    | `1`   | Pool torn down   |
 
-### Fiber Events
-| Field           | Description                       |
-|-----------------|-----------------------------------|
-| `id`            | Fiber id                          |
-| `last_worker_id`| Last worker to run this fiber     |
-| `status`        | Created, Completed                |
+### Worker Events (`GOC_STATS_EVENT_WORKER_STATUS`)
+| Field          | Type  | Description                    |
+|----------------|-------|--------------------------------|
+| `id`           | `int` | Worker index                   |
+| `status`       | `int` | See `goc_stats_worker_status`  |
+| `pending_jobs` | `int` | Live fiber count in the pool   |
 
-### Channel Events
-| Field         | Description                       |
-|--------------|-----------------------------------|
-| `id`         | Channel pointer (cast to int)     |
-| `status`     | Open (1), Closed (0)              |
-| `buf_size`   | Buffer size (if any)              |
-| `item_count` | Number of items in buffer         |
+| `goc_stats_worker_status` | Value | Meaning                       |
+|---------------------------|-------|-------------------------------|
+| `GOC_WORKER_CREATED`      | `0`   | Thread started                |
+| `GOC_WORKER_RUNNING`      | `1`   | Picked up a fiber to execute  |
+| `GOC_WORKER_IDLE`         | `2`   | No work; sleeping on semaphore|
+| `GOC_WORKER_STOPPED`      | `3`   | Thread exiting                |
+
+### Fiber Events (`GOC_STATS_EVENT_FIBER_STATUS`)
+| Field            | Type  | Description                         |
+|------------------|-------|-------------------------------------|
+| `id`             | `int` | Monotonically increasing fiber ID   |
+| `last_worker_id` | `int` | Worker that last ran this fiber (`-1` if not yet scheduled) |
+| `status`         | `int` | See `goc_stats_fiber_status`        |
+
+| `goc_stats_fiber_status` | Value | Meaning                      |
+|--------------------------|-------|------------------------------|
+| `GOC_FIBER_CREATED`      | `0`   | Fiber allocated and enqueued |
+| `GOC_FIBER_COMPLETED`    | `1`   | Fiber function returned      |
+
+### Channel Events (`GOC_STATS_EVENT_CHANNEL_STATUS`)
+| Field        | Type  | Description                   |
+|--------------|-------|-------------------------------|
+| `id`         | `int` | Channel pointer (cast to int) |
+| `status`     | `int` | `1` = open, `0` = closed      |
+| `buf_size`   | `int` | Declared buffer capacity      |
+| `item_count` | `int` | Items in buffer at event time |
 
 ---
 
@@ -143,14 +160,32 @@ Macros emit events if telemetry is enabled, or become no-ops otherwise:
 
 
 
-### Default callback and custom callback
+### Default stdout output
 
-By default, after `goc_stats_init()`, all events are printed to stdout. To suppress this or handle events differently, call `goc_stats_set_callback` with your own function or with `NULL` to disable.
+After `goc_stats_init()`, all events are printed to stdout by the built-in default callback. For a program that creates a pool, spawns a fiber, and shuts down, the output looks like:
+
+```
+[goc_stats] WORKER @ 1748000000000000000: id=0 status=0 pending=0
+[goc_stats] WORKER @ 1748000000001000000: id=1 status=0 pending=0
+[goc_stats] POOL @ 1748000000002000000: pool=0x55a1b2c3d000 status=0 threads=2
+[goc_stats] FIBER @ 1748000000003000000: id=0 last_worker=-1 status=0
+[goc_stats] WORKER @ 1748000000004000000: id=0 status=1 pending=1
+[goc_stats] FIBER @ 1748000000005000000: id=0 last_worker=0 status=1
+[goc_stats] WORKER @ 1748000000006000000: id=0 status=2 pending=0
+[goc_stats] POOL @ 1748000000007000000: pool=0x55a1b2c3d000 status=1 threads=2
+[goc_stats] WORKER @ 1748000000008000000: id=0 status=3 pending=0
+[goc_stats] WORKER @ 1748000000009000000: id=1 status=3 pending=0
+```
+
+See the [Event Types](#event-types) tables for status enum values.
+
+### Custom callback
+
+To suppress the default output or handle events differently, call `goc_stats_set_callback` with your own function or with `NULL` to disable.
 
 ```c
 #include "goc_stats.h"
 
-// Custom callback example
 static void my_stats_cb(const struct goc_stats_event* ev, void* ud) {
     // ... handle event ...
 }

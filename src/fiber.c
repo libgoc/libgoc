@@ -92,8 +92,8 @@ goc_entry* goc_fiber_entry_create(goc_pool* pool,
     /* 7. Write the canary value so pool_worker_fn can detect stack overflow. */
     goc_stack_canary_set(entry->stack_canary_ptr);
 
-    /* Telemetry: fiber created */
-    GOC_STATS_FIBER_STATUS(entry->id, 0, GOC_FIBER_CREATED);
+    /* Telemetry: fiber created; -1 = not yet scheduled on any worker */
+    GOC_STATS_FIBER_STATUS(entry->id, -1, GOC_FIBER_CREATED);
 
     return entry;
 }

@@ -297,7 +297,7 @@ static void test_s2_1(void) {
 
     const struct goc_stats_event* created = find_any_fiber_created();
     ASSERT(created != NULL);
-    ASSERT(created->data.fiber.last_worker_id == 0);
+    ASSERT(created->data.fiber.last_worker_id == -1);
     ASSERT(created->timestamp > 0);
     int fiber_id = created->data.fiber.id;
 
