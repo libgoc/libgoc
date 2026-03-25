@@ -93,6 +93,13 @@ typedef struct {
 /* Helper: decode scalar from channel take. */
 #define INT_VAL(v) ((int)(intptr_t)(v)->val)
 
+/* put_cb that closes the channel once the value has been delivered. */
+static void close_on_put(goc_status_t ok, void* ud)
+{
+    (void)ok;
+    goc_close((goc_chan*)ud);
+}
+
 /* -------------------------------------------------------------------------
  * goc_io_fs_open
  * ---------------------------------------------------------------------- */
@@ -103,8 +110,7 @@ static void on_fs_open(uv_fs_t* req)
     uv_file fd = (uv_file)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(fd), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(fd), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -116,8 +122,7 @@ goc_chan* goc_io_fs_open(const char* path, int flags, int mode)
     ctx->ch = ch;
     int rc = uv_fs_open(g_loop, &ctx->req, path, flags, mode, on_fs_open);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -136,8 +141,7 @@ static void on_fs_close(uv_fs_t* req)
     int result = (int)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -149,8 +153,7 @@ goc_chan* goc_io_fs_close(uv_file file)
     ctx->ch = ch;
     int rc = uv_fs_close(g_loop, &ctx->req, file, on_fs_close);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -169,8 +172,7 @@ static void on_fs_read(uv_fs_t* req)
     ssize_t result = (ssize_t)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -185,8 +187,7 @@ goc_chan* goc_io_fs_read(uv_file file,
     int rc = uv_fs_read(g_loop, &ctx->req, file, bufs, nbufs, offset,
                         on_fs_read);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -205,8 +206,7 @@ static void on_fs_write(uv_fs_t* req)
     ssize_t result = (ssize_t)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -221,8 +221,7 @@ goc_chan* goc_io_fs_write(uv_file file,
     int rc = uv_fs_write(g_loop, &ctx->req, file, bufs, nbufs, offset,
                          on_fs_write);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -241,8 +240,7 @@ static void on_fs_unlink(uv_fs_t* req)
     int result = (int)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -254,8 +252,7 @@ goc_chan* goc_io_fs_unlink(const char* path)
     ctx->ch = ch;
     int rc = uv_fs_unlink(g_loop, &ctx->req, path, on_fs_unlink);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -277,8 +274,7 @@ static void on_fs_stat(uv_fs_t* req)
         res->statbuf = req->statbuf;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, res, NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, res, close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -292,8 +288,7 @@ goc_chan* goc_io_fs_stat(const char* path)
     if (rc < 0) {
         goc_io_fs_stat_t* res = (goc_io_fs_stat_t*)goc_malloc(sizeof(goc_io_fs_stat_t));
         res->ok = GOC_IO_ERR;
-        goc_put_cb(ch, res, NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, res, close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -312,8 +307,7 @@ static void on_fs_rename(uv_fs_t* req)
     int result = (int)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -325,8 +319,7 @@ goc_chan* goc_io_fs_rename(const char* path, const char* new_path)
     ctx->ch = ch;
     int rc = uv_fs_rename(g_loop, &ctx->req, path, new_path, on_fs_rename);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -345,8 +338,7 @@ static void on_fs_sendfile(uv_fs_t* req)
     ssize_t result = (ssize_t)req->result;
     uv_fs_req_cleanup(req);
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, SCALAR(result), NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, SCALAR(result), close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -360,8 +352,7 @@ goc_chan* goc_io_fs_sendfile(uv_file out_fd, uv_file in_fd,
     int rc = uv_fs_sendfile(g_loop, &ctx->req, out_fd, in_fd, in_offset,
                             length, on_fs_sendfile);
     if (rc < 0) {
-        goc_put_cb(ch, SCALAR(rc), NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -394,8 +385,7 @@ static void on_getaddrinfo(uv_getaddrinfo_t* req, int status,
     r->ok  = (status == 0) ? GOC_IO_OK : GOC_IO_ERR;
     r->res = res;
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, r, NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, r, close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -414,8 +404,7 @@ goc_chan* goc_io_getaddrinfo(const char* node, const char* service,
                                    sizeof(goc_io_getaddrinfo_t));
         r->ok  = GOC_IO_ERR;
         r->res = NULL;
-        goc_put_cb(ch, r, NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, r, close_on_put, ch);
         free(ctx);
         return ch;
     }
@@ -451,8 +440,7 @@ static void on_getnameinfo(uv_getnameinfo_t* req, int status,
     r->hostname[sizeof(r->hostname) - 1] = '\0';
     r->service[sizeof(r->service)  - 1] = '\0';
     uv_handle_chan_unregister(ctx->ch);
-    goc_put_cb(ctx->ch, r, NULL, NULL);
-    goc_close(ctx->ch);
+    goc_put_cb(ctx->ch, r, close_on_put, ctx->ch);
     free(ctx);
 }
 
@@ -470,8 +458,7 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags)
         r->ok         = GOC_IO_ERR;
         r->hostname[0] = '\0';
         r->service[0]  = '\0';
-        goc_put_cb(ch, r, NULL, NULL);
-        goc_close(ch);
+        goc_put_cb(ch, r, close_on_put, ch);
         free(ctx);
         return ch;
     }
