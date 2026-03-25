@@ -103,6 +103,8 @@ libgoc/
 ├── README.md
 ├── DESIGN.md              # This document
 ├── ARRAY.md               # Dynamic array design and API reference
+├── TELEMETRY.md           # goc_stats async telemetry system
+├── OPTIMIZATION.md        # Prioritized optimization roadmap and benchmark signals
 ├── TODO.md                # Planned future work
 └── LICENSE
 ```
