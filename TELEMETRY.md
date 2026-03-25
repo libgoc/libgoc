@@ -23,16 +23,16 @@
 
 ## Overview
 
-`goc_stats` provides an asynchronous telemetry system for libgoc. It emits events for key runtime objects (fibers, workers, channels) at lifecycle and status transitions. Events are delivered immediately on the emitting thread, allowing for low-latency monitoring, debugging, and integration with external systems.
+`goc_stats` provides an asynchronous telemetry system for libgoc. It emits events for key runtime objects (fibers, workers, channels) at lifecycle and status transitions. Events are pushed onto an internal lock-free MPSC queue and delivered on the libuv loop thread, so emitting threads are never blocked by the callback.
 
 ---
 
 ## Design
 
-- **Asynchronous delivery:** Events are emitted immediately on the thread that triggers them (pool worker, main thread, etc.).
+- **Asynchronous delivery:** Each event is copied into a heap-allocated node and pushed onto a lock-free MPSC queue. The emitting thread then calls `uv_async_send` on a single persistent handle and returns immediately. The loop thread drains the queue and fires the callback.
 - **Event types:** pool, fiber, worker, and channel events are supported. Each event includes a timestamp and relevant fields.
 - **Build-time enable/disable:** Telemetry is enabled by defining `GOC_ENABLE_STATS` at build time. When disabled, all macros become no-ops and have zero runtime cost. **Note:** THIS IS DISABLED IN PRE-BUILT BINARIES.
-- **Thread safety:** The callback may be invoked from any thread.
+- **Thread safety:** `goc_stats_set_callback` is safe to call from any thread. The callback always runs on the loop thread; no additional locking is needed to access loop-thread state from it.
 
 ---
 
@@ -108,7 +108,7 @@ void goc_stats_set_callback(goc_stats_callback cb, void* ud);
 
 By default, a callback is installed that prints all events to stdout in a human-readable format. This is useful for debugging and quick inspection. You can override this by calling `goc_stats_set_callback` with your own function. Pass `NULL` to disable all event delivery.
 
-The callback is called with no internal locks held and may be replaced at any time.
+The callback is always invoked on the libuv loop thread, with no internal locks held, and may be replaced at any time from any thread. `goc_stats_shutdown()` blocks until all queued events have been delivered, so it is safe to tear down callback resources immediately after it returns. Calling `goc_stats_set_callback(NULL, NULL)` disables delivery for subsequent events; any events already in the queue at that moment will be drained and silently dropped.
 
 ### Event Structure
 
