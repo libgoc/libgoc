@@ -1,6 +1,6 @@
 # libgoc - Telemetry (`goc_stats`)
 
-> Asynchronous, event-based telemetry for fibers, workers, and channels in libgoc.
+> Asynchronous, event-based telemetry for pools, workers, fibers, and channels in libgoc.
 
 ---
 
