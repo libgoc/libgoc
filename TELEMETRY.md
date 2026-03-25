@@ -215,6 +215,4 @@ GOC_STATS_CHANNEL_STATUS(goc_box_int(ch), 0, ch->buf_size, 0); // channel close
 
 ## Testing
 
-- See `tests/test_goc_stats.c` for comprehensive tests of event emission, callback delivery, and field correctness.
-- Run with telemetry enabled to verify all event types and edge cases.
-
+See `tests/test_goc_stats.c` for tests.
