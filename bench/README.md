@@ -292,9 +292,9 @@ Geometric mean of the ×Go multipliers across pool sizes 1, 2, 4, 8.
 | Prime sieve | 0.41× | 0.13× | 0.36× |
 
 **Takeaways:**
-- libgoc canary ping-pong scales strongly with pool size, reaching near-parity with Go at pool=8 (0.98×). Ring throughput also crosses 1 M hops/s at pool=8 (0.44×).
-- Spawn idle tasks improved dramatically over previous runs (84–166k tasks/s vs ~18k), driven by scheduler improvements. Still behind Go due to fixed-size stack materialisation cost vs. Go's dynamically-sized goroutines.
-- Fan-out/fan-in canary throughput (139–258k msg/s) is below previous numbers, suggesting regression in selective-receive/alts overhead worth investigating.
-- vmem fan-out has improved vs. the prior run (247–306k msg/s, 0.39× geomean) and now exceeds canary on this benchmark — likely because vmem's larger virtual stacks reduce stack-overflow guard overhead.
-- vmem ring remains severely bottlenecked by TLB/page-fault pressure from mmap-backed stacks (~27–50k hops/s vs. Go's 2.3 M).
-- Clojure's ring/spawn advantages come from its continuation-passing, heap-allocated go-block model, which avoids stack materialisation entirely.
+- libgoc canary's ping-pong performance now reaches 0.89× Go at pool=8, with a geometric mean of 0.73×—a clear improvement, though still trailing Go at lower pool sizes.
+- Ring throughput for canary is up to 1M hops/s at pool=8 (0.45× Go), with a geometric mean of 0.36×. vmem remains extremely slow on this test (0.01×).
+- Fan-out/fan-in for both canary and vmem is stable (0.33× and 0.32×), with Clojure at 0.50×. No major regressions, but Go remains well ahead.
+- Spawn idle tasks: canary is at 0.32× Go, vmem at 0.13×. Clojure's advantages come from its continuation-passing, heap-allocated go-block model, which avoids stack materialisation entirely.
+- Prime sieve: canary and Clojure are close (0.41× and 0.36×), vmem lags (0.13×). Notably, canary outperforms Go at pool=1 on this test (1.50×).
+- Overall, canary shows improved scaling and stability, vmem is only competitive on selective receive, and Clojure continues to excel at task creation and ring topologies.
