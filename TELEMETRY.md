@@ -29,9 +29,9 @@
 
 ## Design
 
-- **Asynchronous delivery:** Events are emitted immediately on the thread that triggers them (pool worker, main thread, etc.). Callbacks must be fast and non-blocking.
+- **Asynchronous delivery:** Events are emitted immediately on the thread that triggers them (pool worker, main thread, etc.).
 - **Event types:** pool, fiber, worker, and channel events are supported. Each event includes a timestamp and relevant fields.
-- **Build-time enable/disable:** Telemetry is enabled by defining `GOC_ENABLE_STATS` at build time. When disabled, all macros become no-ops and have zero runtime cost.
+- **Build-time enable/disable:** Telemetry is enabled by defining `GOC_ENABLE_STATS` at build time. When disabled, all macros become no-ops and have zero runtime cost. **Note:** THIS IS DISABLED IN PRE-BUILT BINARIES.
 - **Thread safety:** The callback may be invoked from any thread. Use a mutex or buffer to hand off events for heavy processing.
 
 ---
