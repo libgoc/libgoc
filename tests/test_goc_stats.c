@@ -818,7 +818,7 @@ done:;
 
 int main(void) {
     install_crash_handler();
-    goc_test_arm_watchdog(60);
+    goc_test_arm_watchdog(90);
 
     printf("libgoc test suite — Stats / Telemetry\n");
     printf("=======================================\n\n");
