@@ -25,6 +25,7 @@
 typedef struct stats_node {
     _Atomic(struct stats_node *) next;
     struct goc_stats_event       ev;
+    bool                         is_barrier;
 } stats_node;
 
 static _Atomic(stats_node *) g_sq_head;   /* producers exchange here */
@@ -48,13 +49,14 @@ static void sq_push(stats_node *node) {
 /* Pop on the loop thread only.
  * Copies the event into *out, frees the old sentinel, returns true.
  * Returns false when the queue is empty (g_sq_tail->next == NULL). */
-static bool sq_pop(struct goc_stats_event *out) {
+static bool sq_pop(struct goc_stats_event *out, bool *is_barrier) {
     stats_node *tail = g_sq_tail;
     stats_node *next = atomic_load_explicit(&tail->next, memory_order_acquire);
     if (!next) return false;
-    *out      = next->ev;  /* copy before advancing */
-    g_sq_tail = next;      /* next is now the new sentinel */
-    free(tail);            /* old sentinel is no longer referenced */
+    *out        = next->ev;  /* copy before advancing */
+    *is_barrier = next->is_barrier;
+    g_sq_tail   = next;      /* next is now the new sentinel */
+    free(tail);              /* old sentinel is no longer referenced */
     return true;
 }
 
@@ -80,6 +82,10 @@ static uv_mutex_t                   g_close_mutex;
 static uv_cond_t                    g_close_cond;
 static int                          g_close_done     = 0;
 
+static uv_mutex_t                   g_flush_mutex;
+static uv_cond_t                    g_flush_cond;
+static int                          g_flush_done     = 0;
+
 /* --------------------------------------------------------------------------
  * Helpers
  * -------------------------------------------------------------------------- */
@@ -90,14 +96,19 @@ static uint64_t goc_stats_now(void) {
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
 
-/* Drain the queue and fire the callback for each event. Loop thread only. */
-static void stats_drain(void) {
+/* Drain the queue and fire the callback for each event. Loop thread only.
+ * Returns true if a flush barrier was consumed. */
+static bool stats_drain(void) {
     goc_stats_callback cb = atomic_load_explicit(&g_cb, memory_order_acquire);
     void *ud              = atomic_load_explicit(&g_cb_ud, memory_order_relaxed);
     struct goc_stats_event ev;
-    while (sq_pop(&ev)) {
+    bool saw_barrier = false;
+    bool is_barrier;
+    while (sq_pop(&ev, &is_barrier)) {
+        if (is_barrier) { saw_barrier = true; continue; }
         if (cb) cb(&ev, ud);
     }
+    return saw_barrier;
 }
 
 static void stats_on_close(uv_handle_t *h) {
@@ -110,9 +121,17 @@ static void stats_on_close(uv_handle_t *h) {
     uv_mutex_unlock(&g_close_mutex);
 }
 
-/* Loop-thread callback: drain events; if closing, drain once more then close. */
+/* Loop-thread callback: drain events; signal flush waiters; handle close. */
 static void stats_on_async(uv_async_t *h) {
-    stats_drain();
+    bool flushed = stats_drain();
+
+    if (flushed) {
+        uv_mutex_lock(&g_flush_mutex);
+        g_flush_done = 1;
+        uv_cond_signal(&g_flush_cond);
+        uv_mutex_unlock(&g_flush_mutex);
+    }
+
     if (atomic_load_explicit(&g_stats_closing, memory_order_acquire)) {
         stats_drain(); /* catch anything pushed just before the flag was set */
         uv_close((uv_handle_t *)h, stats_on_close);
@@ -139,18 +158,35 @@ static void goc_stats_default_callback(const struct goc_stats_event *ev, void *u
                    ev->data.pool.id, ev->data.pool.status, ev->data.pool.thread_count);
             break;
         case GOC_STATS_EVENT_WORKER_STATUS:
-            printf("id=%d pool=%p status=%d pending=%d\n",
-                   ev->data.worker.id, ev->data.worker.pool_id,
-                   ev->data.worker.status, ev->data.worker.pending_jobs);
+            if (ev->data.worker.status == GOC_WORKER_STOPPED)
+                printf("id=%d pool=%p status=%d pending=%d steals=%llu/%llu\n",
+                       ev->data.worker.id, ev->data.worker.pool_id,
+                       ev->data.worker.status, ev->data.worker.pending_jobs,
+                       (unsigned long long)ev->data.worker.steal_successes,
+                       (unsigned long long)ev->data.worker.steal_attempts);
+            else
+                printf("id=%d pool=%p status=%d pending=%d\n",
+                       ev->data.worker.id, ev->data.worker.pool_id,
+                       ev->data.worker.status, ev->data.worker.pending_jobs);
             break;
         case GOC_STATS_EVENT_FIBER_STATUS:
             printf("id=%d last_worker=%d status=%d\n",
                    ev->data.fiber.id, ev->data.fiber.last_worker_id, ev->data.fiber.status);
             break;
         case GOC_STATS_EVENT_CHANNEL_STATUS:
-            printf("id=%d status=%d buf_size=%d item_count=%d\n",
-                   ev->data.channel.id, ev->data.channel.status,
-                   ev->data.channel.buf_size, ev->data.channel.item_count);
+            if (ev->data.channel.status == 0)
+                printf("id=%d status=%d buf_size=%d item_count=%d"
+                       " scans(t/p)=%llu/%llu compactions=%llu removed=%llu\n",
+                       ev->data.channel.id, ev->data.channel.status,
+                       ev->data.channel.buf_size, ev->data.channel.item_count,
+                       (unsigned long long)ev->data.channel.taker_scans,
+                       (unsigned long long)ev->data.channel.putter_scans,
+                       (unsigned long long)ev->data.channel.compaction_runs,
+                       (unsigned long long)ev->data.channel.entries_removed);
+            else
+                printf("id=%d status=%d buf_size=%d item_count=%d\n",
+                       ev->data.channel.id, ev->data.channel.status,
+                       ev->data.channel.buf_size, ev->data.channel.item_count);
             break;
         default:
             printf("(unknown event)\n");
@@ -179,6 +215,8 @@ void goc_stats_init(void) {
         uv_mutex_init(&g_cb_mutex);
         uv_mutex_init(&g_close_mutex);
         uv_cond_init(&g_close_cond);
+        uv_mutex_init(&g_flush_mutex);
+        uv_cond_init(&g_flush_cond);
     }
 
     uv_mutex_lock(&g_cb_mutex);
@@ -203,14 +241,29 @@ void goc_stats_init(void) {
 void goc_stats_shutdown(void) {
     if (!atomic_load_explicit(&stats_enabled, memory_order_acquire)) return;
 
+    // (1) Double-check event loop state: only proceed if async handle is valid
+    if (g_stats_async == NULL) {
+        // Already closed, nothing to do
+        g_close_done = 1;
+        return;
+    }
+
+    // (2) Atomic state reset: reset g_close_done before signaling
+    g_close_done = 0;
     atomic_store_explicit(&stats_enabled,   0, memory_order_release);
     atomic_store_explicit(&g_stats_closing, 1, memory_order_release);
     uv_async_send(g_stats_async);
 
+    // (4) Lost wakeup protection: if async is closed after signaling, skip wait
     uv_mutex_lock(&g_close_mutex);
-    while (!g_close_done)
-        uv_cond_wait(&g_close_cond, &g_close_mutex);
-    uv_mutex_unlock(&g_close_mutex);
+    if (g_stats_async == NULL) {
+        g_close_done = 1;
+        uv_mutex_unlock(&g_close_mutex);
+    } else {
+        while (!g_close_done)
+            uv_cond_wait(&g_close_cond, &g_close_mutex);
+        uv_mutex_unlock(&g_close_mutex);
+    }
 
     uv_mutex_lock(&g_cb_mutex);
     atomic_store_explicit(&g_cb,    NULL, memory_order_release);
@@ -231,7 +284,8 @@ static void goc_stats_dispatch(const struct goc_stats_event *ev) {
 
     stats_node *node = (stats_node *)malloc(sizeof(stats_node));
     if (!node) return;
-    node->ev = *ev;
+    node->ev         = *ev;
+    node->is_barrier = false;
 
     sq_push(node);
     uv_async_send(g_stats_async);
@@ -247,14 +301,17 @@ void goc_stats_submit_event_pool(void *id, int status, int thread_count) {
     goc_stats_dispatch(&ev);
 }
 
-void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pending_jobs) {
+void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pending_jobs,
+                                   uint64_t steal_attempts, uint64_t steal_successes) {
     struct goc_stats_event ev;
-    ev.type                     = GOC_STATS_EVENT_WORKER_STATUS;
-    ev.timestamp                = goc_stats_now();
-    ev.data.worker.id           = id;
-    ev.data.worker.pool_id      = pool_id;
-    ev.data.worker.status       = status;
-    ev.data.worker.pending_jobs = pending_jobs;
+    ev.type                       = GOC_STATS_EVENT_WORKER_STATUS;
+    ev.timestamp                  = goc_stats_now();
+    ev.data.worker.id             = id;
+    ev.data.worker.pool_id        = pool_id;
+    ev.data.worker.status         = status;
+    ev.data.worker.pending_jobs   = pending_jobs;
+    ev.data.worker.steal_attempts = steal_attempts;
+    ev.data.worker.steal_successes = steal_successes;
     goc_stats_dispatch(&ev);
 }
 
@@ -268,15 +325,41 @@ void goc_stats_submit_event_fiber(int id, int last_worker_id, int status) {
     goc_stats_dispatch(&ev);
 }
 
-void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count) {
+void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count,
+                                    uint64_t taker_scans, uint64_t putter_scans,
+                                    uint64_t compaction_runs, uint64_t entries_removed) {
     struct goc_stats_event ev;
-    ev.type                    = GOC_STATS_EVENT_CHANNEL_STATUS;
-    ev.timestamp               = goc_stats_now();
-    ev.data.channel.id         = id;
-    ev.data.channel.status     = status;
-    ev.data.channel.buf_size   = buf_size;
-    ev.data.channel.item_count = item_count;
+    ev.type                          = GOC_STATS_EVENT_CHANNEL_STATUS;
+    ev.timestamp                     = goc_stats_now();
+    ev.data.channel.id               = id;
+    ev.data.channel.status           = status;
+    ev.data.channel.buf_size         = buf_size;
+    ev.data.channel.item_count       = item_count;
+    ev.data.channel.taker_scans      = taker_scans;
+    ev.data.channel.putter_scans     = putter_scans;
+    ev.data.channel.compaction_runs  = compaction_runs;
+    ev.data.channel.entries_removed  = entries_removed;
     goc_stats_dispatch(&ev);
+}
+
+void goc_stats_flush(void) {
+    if (!atomic_load_explicit(&stats_enabled, memory_order_acquire)) return;
+
+    uv_mutex_lock(&g_flush_mutex);
+    g_flush_done = 0;
+    uv_mutex_unlock(&g_flush_mutex);
+
+    /* Push a barrier sentinel; flush-done fires only when it is dequeued. */
+    stats_node *barrier = (stats_node *)malloc(sizeof(stats_node));
+    atomic_store_explicit(&barrier->next, NULL, memory_order_relaxed);
+    barrier->is_barrier = true;
+    sq_push(barrier);
+    uv_async_send(g_stats_async);
+
+    uv_mutex_lock(&g_flush_mutex);
+    while (!g_flush_done)
+        uv_cond_wait(&g_flush_cond, &g_flush_mutex);
+    uv_mutex_unlock(&g_flush_mutex);
 }
 
 #else /* !GOC_ENABLE_STATS */
@@ -284,6 +367,11 @@ void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_c
 void goc_stats_set_callback(goc_stats_callback cb, void *ud) { (void)cb; (void)ud; }
 void goc_stats_init(void)     {}
 void goc_stats_shutdown(void) {}
+void goc_stats_flush(void)    {}
 bool goc_stats_is_enabled(void) { return false; }
+
+void   goc_timeout_get_stats(uint64_t *a, uint64_t *e) { *a = 0; *e = 0; }
+size_t goc_cb_queue_get_hwm(void)                       { return 0; }
+void   goc_pool_get_steal_stats(uint64_t *a, uint64_t *s) { *a = 0; *s = 0; }
 
 #endif /* GOC_ENABLE_STATS */

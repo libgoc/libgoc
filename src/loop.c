@@ -42,6 +42,10 @@ static uv_async_t    *g_shutdown_async = NULL;
 static uv_thread_t    g_loop_thread;
 static mpsc_queue_t   g_cb_queue;
 
+/* Callback queue depth tracking — relaxed atomics; zero hot-path overhead */
+static _Atomic size_t g_cb_queue_depth = 0;
+static _Atomic size_t g_cb_queue_hwm   = 0;
+
 /* --------------------------------------------------------------------------
  * MPSC queue implementation
  * -------------------------------------------------------------------------- */
@@ -63,6 +67,16 @@ static void cb_queue_push(mpsc_node *node)
     mpsc_node *prev = atomic_exchange_explicit(&g_cb_queue.head, node,
                                                memory_order_acq_rel);
     atomic_store_explicit(&prev->next, node, memory_order_release);
+
+    /* Update depth and high-water mark (relaxed — approximate is fine). */
+    size_t depth = atomic_fetch_add_explicit(&g_cb_queue_depth, 1, memory_order_relaxed) + 1;
+    size_t hwm   = atomic_load_explicit(&g_cb_queue_hwm, memory_order_relaxed);
+    while (depth > hwm) {
+        if (atomic_compare_exchange_weak_explicit(&g_cb_queue_hwm, &hwm, depth,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed))
+            break;
+    }
 }
 
 /* Dequeue from g_cb_queue (consumer — loop thread only).
@@ -76,7 +90,14 @@ static goc_entry *cb_queue_pop(void)
     g_cb_queue.tail = next;         /* advance tail past sentinel */
     goc_entry *e = next->entry;
     /* Old tail (sentinel) is now garbage — GC will collect it. */
+    atomic_fetch_sub_explicit(&g_cb_queue_depth, 1, memory_order_relaxed);
     return e;
+}
+
+/* Accessor — safe to call from any thread at any time. */
+size_t goc_cb_queue_get_hwm(void)
+{
+    return atomic_load_explicit(&g_cb_queue_hwm, memory_order_relaxed);
 }
 
 /* --------------------------------------------------------------------------

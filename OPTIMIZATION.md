@@ -39,6 +39,67 @@ Based on `bench/libgoc/README.md` results (canary mode, pool=1–8):
 - **vmem mode** behaves as a bounded-correctness/stress configuration: ring in particular is 20–40× slower than canary due to TLB/page-fault pressure. vmem is not a target for performance parity work.
 - **Timeout/callback-heavy workloads are not yet explicitly benchmarked**, so those optimizations remain important but lower-confidence until coverage is added.
 
+### Phase 0 telemetry baseline (canary, `GOC_ENABLE_STATS=1`, 2026-03-26)
+
+Raw `bench_print_stats()` output across pool sizes 1–8:
+
+```
+=== Pool Size: 1 ===
+Channel ping-pong: 200000 round trips in 235ms (849952 round trips/s)
+  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Ring benchmark: 500000 hops across 128 tasks in 1325ms (377350 hops/s)
+  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1401ms (142754 msg/s)
+  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Spawn idle tasks: 200000 fibers in 4240ms (47159 tasks/s)
+  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 821ms (2755 primes/s)
+  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+
+=== Pool Size: 2 ===
+Channel ping-pong: 200000 round trips in 126ms (1587155 round trips/s)
+  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Ring benchmark: 500000 hops across 128 tasks in 670ms (745783 hops/s)
+  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1065ms (187682 msg/s)
+  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Spawn idle tasks: 200000 fibers in 2712ms (73731 tasks/s)
+  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 936ms (2416 primes/s)
+  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+
+=== Pool Size: 4 ===
+Channel ping-pong: 200000 round trips in 120ms (1653954 round trips/s)
+  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Ring benchmark: 500000 hops across 128 tasks in 776ms (643707 hops/s)
+  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 906ms (220541 msg/s)
+  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Spawn idle tasks: 200000 fibers in 2966ms (67427 tasks/s)
+  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 811ms (2788 primes/s)
+  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+
+=== Pool Size: 8 ===
+Channel ping-pong: 200000 round trips in 100ms (1992066 round trips/s)
+  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Ring benchmark: 500000 hops across 128 tasks in 514ms (972028 hops/s)
+  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 849ms (235570 msg/s)
+  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Spawn idle tasks: 200000 fibers in 2919ms (68508 tasks/s)
+  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 818ms (2764 primes/s)
+  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+```
+
+**Key findings:**
+
+- **Steal success rate is 0% across all pool sizes and all benchmarks.** Attempts scale with pool size (0 → 2 → 12 → 56 lifetime total across 5 benchmarks), but not a single steal ever succeeds. This confirms the scheduler is effectively push-based: when a fiber is woken, it is pushed directly onto the target worker's deque, so by the time an idle worker probes for work the deque is already drained. Work stealing is purely a fallback that never fires in practice.
+- **Timeouts: 0/0 everywhere.** No benchmark exercises the timeout subsystem. Timeout and callback-queue optimizations remain unvalidated by the current benchmark suite — per the coverage-gap rule above, those items stay gated until dedicated benchmarks exist.
+- **cb-queue hwm: 0 everywhere.** The callback queue never accumulates depth under any of these workloads, including the 200k-fiber mass-wakeup in spawn idle. This is consistent with the push-based wakeup path bypassing the callback queue for fiber resumes.
+- **Throughput numbers (updated baseline):** ping-pong 850k–1992k rtt/s; ring 377k–972k hops/s; fan-in 143k–236k msg/s; spawn 47k–74k tasks/s; sieve ~2.8k primes/s at pool=1/4/8.
+
 ---
 
 ## Phase 0 — Instrumentation First (Highest ROI, Lowest Risk)
@@ -52,25 +113,19 @@ The `goc_stats` subsystem (enabled via `-DGOC_ENABLE_STATS=ON`) already covers:
 - Fiber lifecycle (created, completed, last worker ID)
 - Channel lifecycle (open/closed, buffer size, item count at event time)
 
-### Remaining gaps
+### Phase 0 — Completed
 
-1. Add runtime counters (compile-time gated, extending `goc_stats` or a separate lightweight path) for:
-   - channel queue scan lengths
-   - dead-entry compaction runs and removed entries
-   - callback queue depth/high-water mark
-   - timeout allocations and expirations
-   - per-worker dequeue/pop/steal attempts + successes
-2. Add benchmark output fields for these counters.
-3. Add a short tuning section in docs mapping workload types to key knobs.
+All Phase 0 instrumentation gaps have been filled:
 
-### Expected Impact
+- **Channel alts scan counters**: `taker_scans` and `putter_scans` atomic counters on `goc_chan`, incremented in all three `alts` code paths (`alts_try_immediate`, `goc_alts`, `goc_alts_sync`). Reported in the channel close event.
+- **Compaction telemetry**: `compaction_runs` and `entries_removed` counters on `goc_chan`, updated in `compact_dead_entries` and in `goc_close` for entries removed at close time. Reported in the channel close event.
+- **Callback queue high-water mark**: `g_cb_queue_depth` / `g_cb_queue_hwm` atomics in `loop.c`; accessible via `goc_cb_queue_get_hwm()`.
+- **Timeout counters**: `g_timeout_allocations` / `g_timeout_expirations` atomics in `timeout.c`; accessible via `goc_timeout_get_stats()`.
+- **Per-worker steal counters**: `steal_attempts` / `steal_successes` on `goc_worker` and global aggregates `g_steal_attempts` / `g_steal_successes` in `pool.c`; per-worker values reported on `STOPPED` events; global aggregate accessible via `goc_pool_get_steal_stats()`.
+- **`goc_stats_flush()`**: new synchronous flush API that blocks until the async delivery loop has drained all in-flight events; used in tests to avoid races.
+- **Benchmark stats output**: `bench_print_stats()` helper in `bench/libgoc/bench.c` prints a one-line summary of all three accessor values at the end of each benchmark.
 
-- Fills the blind spots not covered by current telemetry (scheduler steal efficiency, compaction churn, timer pressure).
-- Prevents optimizing the wrong subsystem in Phases 1–2.
-
-### Risk
-
-- Low (mostly additive, diagnostics-focused).
+See `TELEMETRY.md` for the updated API reference.
 
 ---
 

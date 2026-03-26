@@ -14,6 +14,7 @@
 	- [Callback Registration](#callback-registration)
 	- [Event Structure](#event-structure)
 	- [Emission Macros](#emission-macros)
+	- [Telemetry Accessors](#telemetry-accessors)
 5. [Build Flags](#build-flags)
 6. [Examples](#examples)
 7. [Testing](#testing)
@@ -52,12 +53,14 @@
 | `GOC_POOL_DESTROYED`    | `1`   | Pool torn down   |
 
 ### Worker Events (`GOC_STATS_EVENT_WORKER_STATUS`)
-| Field          | Type    | Description                    |
-|----------------|---------|--------------------------------|
-| `id`           | `int`   | Worker index                   |
-| `pool_id`      | `void*` | Pool pointer                   |
-| `status`       | `int`   | See `goc_stats_worker_status`  |
-| `pending_jobs` | `int`   | Live fiber count in the pool   |
+| Field              | Type       | Description                                                        |
+|--------------------|------------|--------------------------------------------------------------------|
+| `id`               | `int`      | Worker index                                                       |
+| `pool_id`          | `void*`    | Pool pointer                                                       |
+| `status`           | `int`      | See `goc_stats_worker_status`                                      |
+| `pending_jobs`     | `int`      | Live fiber count in the pool                                       |
+| `steal_attempts`   | `uint64_t` | Lifetime steal attempts for this worker (only meaningful at `STOPPED`) |
+| `steal_successes`  | `uint64_t` | Lifetime steal successes for this worker (only meaningful at `STOPPED`) |
 
 | `goc_stats_worker_status` | Value | Meaning                       |
 |---------------------------|-------|-------------------------------|
@@ -79,12 +82,16 @@
 | `GOC_FIBER_COMPLETED`    | `1`   | Fiber function returned      |
 
 ### Channel Events (`GOC_STATS_EVENT_CHANNEL_STATUS`)
-| Field        | Type  | Description                   |
-|--------------|-------|-------------------------------|
-| `id`         | `int` | Channel pointer (cast to int) |
-| `status`     | `int` | `1` = open, `0` = closed      |
-| `buf_size`   | `int` | Declared buffer capacity      |
-| `item_count` | `int` | Items in buffer at event time |
+| Field              | Type       | Description                                                              |
+|--------------------|------------|--------------------------------------------------------------------------|
+| `id`               | `int`      | Channel pointer (cast to int)                                            |
+| `status`           | `int`      | `1` = open, `0` = closed                                                 |
+| `buf_size`         | `int`      | Declared buffer capacity                                                 |
+| `item_count`       | `int`      | Items in buffer at event time                                            |
+| `taker_scans`      | `uint64_t` | Times a take arm scanned this channel in `goc_alts` (only at close)     |
+| `putter_scans`     | `uint64_t` | Times a put arm scanned this channel in `goc_alts` (only at close)      |
+| `compaction_runs`  | `uint64_t` | Times `compact_dead_entries` ran on this channel (only at close)        |
+| `entries_removed`  | `uint64_t` | Total dead entries removed across all compactions (only at close)       |
 
 ---
 
@@ -98,6 +105,11 @@
 void goc_stats_init(void);
 void goc_stats_shutdown(void);
 bool goc_stats_is_enabled(void);
+
+/* Block until the stats delivery loop has drained all in-flight events.
+ * Use before resetting test buffers to avoid races with the async delivery
+ * thread.  No-op when stats are disabled. */
+void goc_stats_flush(void);
 ```
 
 ### Callback Registration
@@ -118,10 +130,26 @@ struct goc_stats_event {
 	enum goc_stats_event_type type;
 	uint64_t timestamp;
 	union {
-		struct { int id; int status; int thread_count; } pool;
-		struct { int id; void* pool_id; int status; int pending_jobs; } worker;
+		struct { void* id; int status; int thread_count; } pool;
+		struct {
+			int      id;
+			void*    pool_id;
+			int      status;
+			int      pending_jobs;
+			uint64_t steal_attempts;   /* only meaningful at STOPPED */
+			uint64_t steal_successes;  /* only meaningful at STOPPED */
+		} worker;
 		struct { int id; int last_worker_id; int status; } fiber;
-		struct { int id; int status; int buf_size; int item_count; } channel;
+		struct {
+			int      id;
+			int      status;
+			int      buf_size;
+			int      item_count;
+			uint64_t taker_scans;     /* only at close */
+			uint64_t putter_scans;    /* only at close */
+			uint64_t compaction_runs; /* only at close */
+			uint64_t entries_removed; /* only at close */
+		} channel;
 	} data;
 };
 ```
@@ -134,19 +162,36 @@ Macros emit events if telemetry is enabled, or become no-ops otherwise:
 #ifdef GOC_ENABLE_STATS
 #  define GOC_STATS_POOL_STATUS(id, status, thread_count) \
 	goc_stats_submit_event_pool((id), (status), (thread_count))
-#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs) \
-	goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs))
+#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, steal_suc) \
+	goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs), (steal_att), (steal_suc))
 #  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status) \
 	goc_stats_submit_event_fiber((id), (last_worker_id), (status))
-#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count) \
-	goc_stats_submit_event_channel((id), (status), (buf_size), (item_count))
+#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) \
+	goc_stats_submit_event_channel((id), (status), (buf_size), (item_count), (ts), (ps), (cr), (er))
 #else
-#  define GOC_STATS_POOL_STATUS(id, status, thread_count)            ((void)0)
-#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs) ((void)0)
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)         ((void)0)
-#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count) ((void)0)
+#  define GOC_STATS_POOL_STATUS(id, status, thread_count)                             ((void)0)
+#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, suc)  ((void)0)
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)                          ((void)0)
+#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er)  ((void)0)
 #endif
 ```
+
+### Telemetry Accessors
+
+When `GOC_ENABLE_STATS` is defined, three global accessor functions are available for reading aggregate runtime counters directly (without going through the callback mechanism):
+
+```c
+/* Steal counters — aggregate across all pools and workers, lifetime totals */
+void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes);
+
+/* Timeout channel counters */
+void goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
+
+/* Callback queue peak depth since process start */
+size_t goc_cb_queue_get_hwm(void);
+```
+
+When `GOC_ENABLE_STATS` is not defined these functions are still present but always write zeros / return zero, so callers do not need `#ifdef` guards.
 
 ---
 
@@ -204,12 +249,16 @@ int main(void) {
 ### Emitting events (internal use)
 
 ```c
-GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_CREATED, thread_count); // pool created
-GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_DESTROYED, thread_count); // pool destroyed
-GOC_STATS_WORKER_STATUS(worker_id, pool, GOC_WORKER_RUNNING, pending_jobs);
+GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_CREATED, thread_count);
+GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_DESTROYED, thread_count);
+/* steal_attempts and steal_successes are 0 except at STOPPED */
+GOC_STATS_WORKER_STATUS(worker_id, pool, GOC_WORKER_RUNNING, pending_jobs, 0, 0);
+GOC_STATS_WORKER_STATUS(worker_id, pool, GOC_WORKER_STOPPED, 0, steal_att, steal_suc);
 GOC_STATS_FIBER_STATUS(fiber_id, last_worker_id, GOC_FIBER_CREATED);
-GOC_STATS_CHANNEL_STATUS(goc_box_int(ch), 1, ch->buf_size, 0); // channel open
-GOC_STATS_CHANNEL_STATUS(goc_box_int(ch), 0, ch->buf_size, 0); // channel close
+/* scan/compaction counters are 0 at open; populated at close */
+GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, 1, ch->buf_size, 0, 0, 0, 0, 0); // open
+GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, 0, ch->buf_size, ch->item_count,
+                         taker_scans, putter_scans, compaction_runs, entries_removed); // close
 ```
 
 ---

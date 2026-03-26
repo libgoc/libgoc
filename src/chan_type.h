@@ -2,6 +2,7 @@
 #define GOC_CHAN_TYPE_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdatomic.h>
 #include <uv.h>
 
@@ -21,6 +22,11 @@ struct goc_chan {
     int          closed;
     size_t       dead_count;
     _Atomic int  close_guard;  /* CAS 0→1 to serialise close; prevents double-close races */
+    /* Telemetry counters — incremented with memory_order_relaxed; read at close time */
+    _Atomic uint64_t taker_scans;     /* times a take arm scanned this channel in alts */
+    _Atomic uint64_t putter_scans;    /* times a put arm scanned this channel in alts */
+    _Atomic uint64_t compaction_runs; /* times compact_dead_entries ran on this channel */
+    _Atomic uint64_t entries_removed; /* total dead entries removed across all compactions */
     void       (*on_close)(void*);
     void*        on_close_ud;
 };

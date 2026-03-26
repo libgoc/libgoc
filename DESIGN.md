@@ -289,13 +289,13 @@ See [libuv Role](#libuv-role) above.
 
 ```c
 typedef struct {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    int             ready;
+    uv_mutex_t mtx;
+    uv_cond_t  cond;
+    int        ready;
 } goc_sync_t;
 ```
 
-A single-use binary semaphore backed by a `pthread_mutex_t` + `pthread_cond_t` pair. Used by the `GOC_SYNC` blocking path in `goc_take_sync`, `goc_put_sync`, and `goc_alts_sync` instead of `sem_t`, which is non-functional for unnamed POSIX semaphores on macOS (`sem_init` returns `ENOSYS`). `goc_sync_post` may be called before or after `goc_sync_wait`; if post fires first, wait returns immediately. Defined in `src/internal.h`.
+A single-use binary semaphore backed by a `uv_mutex_t` + `uv_cond_t` pair. Used by the `GOC_SYNC` blocking path in `goc_take_sync`, `goc_put_sync`, and `goc_alts_sync` instead of `sem_t`, which is non-functional for unnamed POSIX semaphores on macOS (`sem_init` returns `ENOSYS`). `goc_sync_post` may be called before or after `goc_sync_wait`; if post fires first, wait returns immediately. Defined in `src/internal.h`.
 
 ### Value (`goc_val_t`)
 
@@ -359,11 +359,15 @@ typedef enum { GOC_FIBER, GOC_CALLBACK, GOC_SYNC } goc_entry_kind;
 
 typedef struct goc_entry {
     goc_entry_kind    kind;
+    uint64_t          id;           /* monotonically increasing fiber ID assigned at creation */
+    void*             fiber_root_handle; /* opaque handle returned by goc_fiber_root_register */
     _Atomic int       cancelled;    /* alts: skip if set; written/read from multiple pool threads */
     _Atomic int       woken;        /* set by try_claim_wake before dispatch; prevents double-wake (second line of defence after fired) */
     _Atomic int*      fired;        /* shared flag for goc_alts; NULL for plain take/put entries; CAS'd 0→1 by try_claim_wake */
     struct goc_entry* next;
     goc_pool*         pool;         /* pool to re-enqueue this fiber on after a channel wake */
+    struct goc_chan*   ch;           /* target channel for pending _cb operations */
+    bool              is_put;       /* direction flag for pending _cb operations */
 
     /* GOC_FIBER */
     mco_coro*         coro;         /* minicoro coroutine handle */
@@ -686,13 +690,19 @@ At the **top of `goc_take` and `goc_put`**, immediately after acquiring the lock
 
 ```c
 typedef struct {
-    pthread_t      thread;
-    goc_wsdq    deque;       /* Chase–Lev work-stealing deque (owner-push/pop + thief-steal) */
-    goc_injector   injector;    /* MPSC queue: external callers push here; owner pops */
-    uv_sem_t       idle_sem;    /* posted when work is available; worker sleeps on this */
-    size_t         index;       /* worker index in pool->workers[] */
-    goc_pool*      pool;        /* back-pointer to owning pool */
+    pthread_t        thread;
+    goc_wsdq         deque;           /* Chase–Lev work-stealing deque (owner-push/pop + thief-steal) */
+    goc_injector     injector;        /* MPSC queue: external callers push here; owner pops */
+    uv_sem_t         idle_sem;        /* posted when work is available; worker sleeps on this */
+    size_t           index;           /* worker index in pool->workers[] */
+    goc_pool*        pool;            /* back-pointer to owning pool */
+    _Atomic uint64_t steal_attempts;  /* total steal attempts from this worker's deque */
+    _Atomic uint64_t steal_successes; /* successful steals from this worker's deque */
 } goc_worker;
+
+/* Pool-wide steal aggregates (file-scope globals in pool.c): */
+/* static _Atomic uint64_t g_steal_attempts  = 0; */
+/* static _Atomic uint64_t g_steal_successes = 0; */
 
 typedef struct goc_pool {
     goc_worker*        workers;        /* array of thread_count workers */
@@ -704,8 +714,8 @@ typedef struct goc_pool {
 
     /* Drain synchronisation — drain_mutex protects live_count,
        resident_count, pending_spawn_*, and drain_cond. */
-    pthread_mutex_t drain_mutex;
-    pthread_cond_t  drain_cond;
+    uv_mutex_t drain_mutex;
+    uv_cond_t  drain_cond;
     size_t          live_count;        /* accepted spawn requests not yet completed, including
                                           deferred spawn requests waiting behind the admission cap */
     size_t          resident_count;    /* fibers that have an allocated coroutine/stack right now */
@@ -1259,7 +1269,27 @@ libgoc provides channel-based wrappers for libuv I/O operations in a separate he
 
 ## Telemetry (`goc_stats`)
 
-libgoc provides an optional, synchronous telemetry system via `include/goc_stats.h` and `src/goc_stats.c`. When enabled (`-DGOC_ENABLE_STATS=ON`), the runtime emits structured events at key lifecycle points: pool creation/destruction, worker state transitions (created → running → idle → stopped), fiber creation/completion, and channel open/close. Events are delivered synchronously on the emitting thread via a user-supplied callback registered with `goc_stats_set_callback`. A default callback that prints all events to stdout is installed by `goc_stats_init`.
+libgoc provides an optional, **asynchronous** telemetry system via `include/goc_stats.h` and `src/goc_stats.c`. When enabled (`-DGOC_ENABLE_STATS=ON`), the runtime emits structured events at key lifecycle points: pool creation/destruction, worker state transitions (created → running → idle → stopped), fiber creation/completion, and channel open/close.
+
+**Delivery model.** Events are pushed by the emitting thread into a Vyukov-style MPSC queue (backed by `stats_node` elements linked through `g_sq_head` / `g_sq_tail`) and delivered to the user-supplied callback on a dedicated background **delivery loop thread** started by `goc_stats_init`. This means the callback is never invoked on the emitting thread; it always runs on the delivery thread. A default callback that prints all events to stdout is installed by `goc_stats_init`. Register a custom callback with `goc_stats_set_callback`.
+
+**`goc_stats_flush`.** `goc_stats_flush()` blocks the calling thread until the delivery loop has drained all in-flight events from the internal queue. It must be called before inspecting or resetting test buffers to avoid a race with the async delivery thread. Example use case: in tests, call `goc_stats_flush()` after the operation under test and before asserting on the captured events.
+
+```c
+void goc_stats_flush(void);   /* Block until all queued events have been delivered */
+```
+
+**Accessor functions** (available when `GOC_ENABLE_STATS` is defined):
+
+```c
+void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
+size_t goc_cb_queue_get_hwm(void);
+void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes);
+```
+
+- `goc_timeout_get_stats` — returns cumulative timeout allocation and expiration counts.
+- `goc_cb_queue_get_hwm` — returns the high-water mark of the callback queue depth.
+- `goc_pool_get_steal_stats` — returns pool-wide steal attempt and success counts (aggregates across all workers via the `g_steal_attempts` / `g_steal_successes` globals in `pool.c`).
 
 When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STATUS`, `GOC_STATS_WORKER_STATUS`, `GOC_STATS_FIBER_STATUS`, `GOC_STATS_CHANNEL_STATUS`) expand to `((void)0)` and have zero runtime cost.
 
@@ -1275,10 +1305,11 @@ When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STA
 2. **`gc.c`** — Register the `push_fiber_roots` callback via `goc_fiber_roots_init()` / `GC_set_push_other_roots`.
 3. **`gc.c`** — Call `GC_allow_register_threads()`.
 4. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`).
-5. **`pool.c`** — Initialise the global pool registry.
-6. **`mutex.c`** — Initialise the global RW-mutex registry.
-7. **`loop.c`** — Call `loop_init()`: allocate/init `g_loop`, `g_wakeup`, and `g_shutdown_async`; initialise the callback queue; then spawn the loop thread.
-8. **`pool.c`** — Determine the default worker count from `GOC_POOL_THREADS` or `max(4, uv_available_parallelism())`, then call `goc_pool_make(N)` for the default pool.
+5. **`gc.c`** — Call `live_uv_handles_init()`: initialise the `live_uv_handles` array that tracks GC-visible `goc_chan*` pointers held by in-flight async I/O (`timeout.c`, `goc_io.c`). This must happen before any `goc_timeout` or `goc_io_*` call.
+6. **`pool.c`** — Initialise the global pool registry.
+7. **`mutex.c`** — Initialise the global RW-mutex registry.
+8. **`loop.c`** — Call `loop_init()`: allocate/init `g_loop`, `g_wakeup`, and `g_shutdown_async`; initialise the callback queue; then spawn the loop thread.
+9. **`pool.c`** — Determine the default worker count from `GOC_POOL_THREADS` or `max(4, uv_available_parallelism())`, then call `goc_pool_make(N)` for the default pool.
 
 ---
 

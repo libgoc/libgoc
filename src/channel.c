@@ -101,14 +101,20 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
  * -------------------------------------------------------------------------- */
 void compact_dead_entries(goc_chan* ch)
 {
+#ifdef GOC_ENABLE_STATS
+    uint64_t removed = 0;
+#endif
     /* Compact takers */
     goc_entry* last_taker = NULL;
     goc_entry** pp = &ch->takers;
     while (*pp) {
         goc_entry* e = *pp;
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;   /* unlink */
-        else {
+#ifdef GOC_ENABLE_STATS
+            removed++;
+#endif
+        } else {
             last_taker = e;
             pp = &e->next;
         }
@@ -120,9 +126,12 @@ void compact_dead_entries(goc_chan* ch)
     pp = &ch->putters;
     while (*pp) {
         goc_entry* e = *pp;
-        if (atomic_load_explicit(&e->cancelled, memory_order_acquire))
+        if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
-        else {
+#ifdef GOC_ENABLE_STATS
+            removed++;
+#endif
+        } else {
             last_putter = e;
             pp = &e->next;
         }
@@ -130,6 +139,10 @@ void compact_dead_entries(goc_chan* ch)
     ch->putters_tail = last_putter;
 
     ch->dead_count = 0;
+#ifdef GOC_ENABLE_STATS
+    atomic_fetch_add_explicit(&ch->compaction_runs,  1,       memory_order_relaxed);
+    atomic_fetch_add_explicit(&ch->entries_removed,  removed, memory_order_relaxed);
+#endif
 }
 
 /* --------------------------------------------------------------------------
@@ -149,8 +162,9 @@ goc_chan* goc_chan_make(size_t buf_size)
     uv_mutex_init(ch->lock);
 
     chan_register(ch);
-    /* Telemetry: channel opened */
-    GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, /*status=*/1, (int)ch->buf_size, (int)ch->item_count);
+    /* Telemetry: channel opened — scan/compaction counters start at 0 */
+    GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, /*status=*/1, (int)ch->buf_size, (int)ch->item_count,
+                             0, 0, 0, 0);
     return ch;
 }
 
@@ -235,16 +249,38 @@ void goc_close(goc_chan* ch)
     uv_mutex_lock(ch->lock);
     ch->closed = 1;
 
-    /* Telemetry: channel closed */
-    GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, /*status=*/0, (int)ch->buf_size, (int)ch->item_count);
-// Update item_count in goc_put and goc_take
-// These helpers are in channel_internal.h, but we can patch the main goc_put/goc_take logic here
+    /* Count non-cancelled waiters before waking — entries may be stack-allocated
+     * (GOC_SYNC) and freed by their owner thread the moment we post the semaphore,
+     * so we must not read them after wake_all_parked_entries. */
+#ifdef GOC_ENABLE_STATS
+    uint64_t close_removed = 0;
+    for (goc_entry* e = ch->takers; e != NULL; e = e->next)
+        if (!atomic_load_explicit(&e->cancelled, memory_order_acquire))
+            close_removed++;
+    for (goc_entry* e = ch->putters; e != NULL; e = e->next)
+        if (!atomic_load_explicit(&e->cancelled, memory_order_acquire))
+            close_removed++;
+#endif
 
     /* Wake all parked takers with GOC_CLOSED */
     wake_all_parked_entries(ch->takers);
 
     /* Wake all parked putters with GOC_CLOSED */
     wake_all_parked_entries(ch->putters);
+
+#ifdef GOC_ENABLE_STATS
+    if (close_removed > 0) {
+        atomic_fetch_add_explicit(&ch->entries_removed, close_removed, memory_order_relaxed);
+        atomic_fetch_add_explicit(&ch->compaction_runs, 1,             memory_order_relaxed);
+    }
+#endif
+
+    /* Telemetry: channel closed — piggyback lifetime scan/compaction counters */
+    GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, /*status=*/0, (int)ch->buf_size, (int)ch->item_count,
+                             atomic_load_explicit(&ch->taker_scans,     memory_order_relaxed),
+                             atomic_load_explicit(&ch->putter_scans,    memory_order_relaxed),
+                             atomic_load_explicit(&ch->compaction_runs, memory_order_relaxed),
+                             atomic_load_explicit(&ch->entries_removed, memory_order_relaxed));
 
     on_close = ch->on_close;
     on_close_ud = ch->on_close_ud;

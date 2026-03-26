@@ -32,13 +32,19 @@
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    uv_thread_t    thread;
-    goc_wsdq    deque;
-    goc_injector   injector;   /* MPSC queue: external callers push here */
-    uv_sem_t       idle_sem;
-    size_t         index;
-    goc_pool*      pool;
+    uv_thread_t      thread;
+    goc_wsdq         deque;
+    goc_injector     injector;        /* MPSC queue: external callers push here */
+    uv_sem_t         idle_sem;
+    size_t           index;
+    goc_pool*        pool;
+    _Atomic uint64_t steal_attempts;  /* relaxed counter; read at STOPPED event */
+    _Atomic uint64_t steal_successes;
 } goc_worker;
+
+/* Global lifetime steal totals across all pools/workers — read via accessor */
+static _Atomic uint64_t g_steal_attempts  = 0;
+static _Atomic uint64_t g_steal_successes = 0;
 
 /* -------------------------------------------------------------------------
  * goc_pool — full definition (opaque outside pool.c)
@@ -264,7 +270,7 @@ void pool_submit_spawn(goc_pool* pool,
         GOC_STATS_WORKER_STATUS(
             (int)atomic_load_explicit(&pool->next_push_idx, memory_order_relaxed)
                  % (int)pool->thread_count,
-            pool, GOC_WORKER_RUNNING, (int)live);
+            pool, GOC_WORKER_RUNNING, (int)live, 0, 0);
         post_to_run_queue(pool, entry);
         return;
     }
@@ -322,8 +328,18 @@ static void pool_worker_fn(void* arg) {
             for (size_t i = 0; i < pool->thread_count; i++) {
                 size_t victim = (tl_worker->index + offset + i) % pool->thread_count;
                 if (victim == tl_worker->index) continue;
+#ifdef GOC_ENABLE_STATS
+                atomic_fetch_add_explicit(&tl_worker->steal_attempts, 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(&g_steal_attempts,           1, memory_order_relaxed);
+#endif
                 entry = wsdq_steal_top(&pool->workers[victim].deque);
-                if (entry != NULL) goto run;
+                if (entry != NULL) {
+#ifdef GOC_ENABLE_STATS
+                    atomic_fetch_add_explicit(&tl_worker->steal_successes, 1, memory_order_relaxed);
+                    atomic_fetch_add_explicit(&g_steal_successes,           1, memory_order_relaxed);
+#endif
+                    goto run;
+                }
             }
         }
 
@@ -343,10 +359,10 @@ static void pool_worker_fn(void* arg) {
             goto run;
         }
 
-        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_IDLE, (int)pool->live_count);
+        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_IDLE, (int)pool->live_count, 0, 0);
         uv_sem_wait(&tl_worker->idle_sem);
         atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
-        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count);
+        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
         continue;   /* re-check shutdown and try again */
 
 run:
@@ -400,12 +416,14 @@ run:
             uv_cond_broadcast(&pool->drain_cond);
             uv_mutex_unlock(&pool->drain_mutex);
 
-            GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count);
+            GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
             pool_dispatch_spawn_list(pool, admitted);
         }
     }
 
-    GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_STOPPED, 0);
+    GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_STOPPED, 0,
+                            atomic_load_explicit(&tl_worker->steal_attempts,  memory_order_relaxed),
+                            atomic_load_explicit(&tl_worker->steal_successes, memory_order_relaxed));
     tl_worker = NULL;
 }
 
@@ -494,6 +512,8 @@ goc_pool* goc_pool_make(size_t threads) {
         uv_sem_init(&pool->workers[i].idle_sem, 0);
         pool->workers[i].index = i;
         pool->workers[i].pool  = pool;
+        atomic_store_explicit(&pool->workers[i].steal_attempts,  0, memory_order_relaxed);
+        atomic_store_explicit(&pool->workers[i].steal_successes, 0, memory_order_relaxed);
     }
 
     atomic_store(&pool->idle_count,    0);
@@ -517,7 +537,7 @@ goc_pool* goc_pool_make(size_t threads) {
                     i + 1, threads, rc);
             abort();
         }
-        GOC_STATS_WORKER_STATUS((int)i, pool, GOC_WORKER_CREATED, 0);
+        GOC_STATS_WORKER_STATUS((int)i, pool, GOC_WORKER_CREATED, 0, 0, 0);
     }
 
     GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_CREATED, (int)threads);
@@ -630,4 +650,13 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     free(pool);
 
     return GOC_DRAIN_OK;
+}
+
+/* -------------------------------------------------------------------------
+ * goc_pool_get_steal_stats — aggregate steal counters across all pools/workers
+ * ---------------------------------------------------------------------- */
+void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes)
+{
+    *attempts  = atomic_load_explicit(&g_steal_attempts,  memory_order_relaxed);
+    *successes = atomic_load_explicit(&g_steal_successes, memory_order_relaxed);
 }

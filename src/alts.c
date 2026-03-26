@@ -27,6 +27,7 @@
 #include <gc.h>
 #include "minicoro.h"
 #include "../include/goc.h"
+#include "../include/goc_stats.h"
 #include "channel_internal.h"
 
 /* -------------------------------------------------------------------------
@@ -107,6 +108,9 @@ static goc_alts_result alts_try_immediate(goc_alt_op *ops, size_t *indices, size
 
         if (ops[i].op_kind == GOC_ALT_TAKE) {
             uv_mutex_lock(ch->lock);
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->taker_scans, 1, memory_order_relaxed);
+#endif
             void *val = NULL;
             if (chan_take_from_buffer(ch, &val)) {
                 uv_mutex_unlock(ch->lock);
@@ -123,6 +127,9 @@ static goc_alts_result alts_try_immediate(goc_alt_op *ops, size_t *indices, size
             uv_mutex_unlock(ch->lock);
         } else { /* GOC_ALT_PUT */
             uv_mutex_lock(ch->lock);
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->putter_scans, 1, memory_order_relaxed);
+#endif
             if (ch->closed) {
                 uv_mutex_unlock(ch->lock);
                 return (goc_alts_result){ .ch = ch, .value = { .val = NULL, .ok = GOC_CLOSED } };
@@ -315,6 +322,9 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
         goc_chan *ch = ops[i].ch;
 
         if (ops[i].op_kind == GOC_ALT_TAKE) {
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->taker_scans, 1, memory_order_relaxed);
+#endif
             void *val = NULL;
             if (chan_take_from_buffer(ch, &val)) {
                 for (size_t j = n_unique; j-- > 0; )
@@ -342,6 +352,9 @@ goc_alts_result* goc_alts(goc_alt_op *ops, size_t n) {
             }
 
         } else { /* GOC_ALT_PUT */
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->putter_scans, 1, memory_order_relaxed);
+#endif
             if (ch->closed) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
@@ -552,6 +565,9 @@ goc_alts_result* goc_alts_sync(goc_alt_op *ops, size_t n) {
         goc_chan *ch = ops[i].ch;
 
         if (ops[i].op_kind == GOC_ALT_TAKE) {
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->taker_scans, 1, memory_order_relaxed);
+#endif
             void *val = NULL;
             if (chan_take_from_buffer(ch, &val)) {
                 for (size_t j = n_unique; j-- > 0; )
@@ -582,6 +598,9 @@ goc_alts_result* goc_alts_sync(goc_alt_op *ops, size_t n) {
             }
 
         } else { /* GOC_ALT_PUT */
+#ifdef GOC_ENABLE_STATS
+            atomic_fetch_add_explicit(&ch->putter_scans, 1, memory_order_relaxed);
+#endif
             if (ch->closed) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);

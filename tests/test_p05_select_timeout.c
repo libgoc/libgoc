@@ -66,6 +66,7 @@
 
 #include "test_harness.h"
 #include "goc.h"
+#include "goc_stats.h"
 
 /* =========================================================================
  * done_t — lightweight fiber-to-main synchronisation via mutex + condvar
@@ -992,6 +993,111 @@ static void test_p5_14(void) {
 done:;
 }
 
+/* --- P5.15: goc_timeout_get_stats reflects test-suite timeout usage ----- */
+
+/*
+ * P5.15 — goc_timeout_get_stats reflects timeout allocations and expirations
+ *
+ * By this point P5.10 and P5.13 have each called goc_timeout() once, so
+ * allocations must be >= 2.  Expirations must be <= allocations (a timeout
+ * that has not yet fired is not an error).
+ */
+static void test_p5_15(void) {
+    TEST_BEGIN("P5.15  goc_timeout_get_stats: allocs >= 2, expires <= allocs");
+
+    uint64_t allocs, expires;
+    goc_timeout_get_stats(&allocs, &expires);
+
+    /* P5.10 and P5.13 each allocate one timeout channel. */
+    ASSERT(allocs >= 2);
+    ASSERT(expires <= allocs);
+
+    TEST_PASS();
+done:;
+}
+
+/* --- P5.16: alts close event carries taker_scans ------------------------ */
+
+/*
+ * Minimal stats event buffer used only by P5.16.
+ */
+
+typedef struct {
+    struct goc_stats_event ev;
+    int                    found;
+} p5_16_capture_t;
+
+static void p5_16_cb(const struct goc_stats_event* ev, void* ud) {
+    p5_16_capture_t* c = (p5_16_capture_t*)ud;
+    if (ev->type != GOC_STATS_EVENT_CHANNEL_STATUS) return;
+    if (ev->data.channel.status != 0) return; /* only capture close events */
+    if (!c->found) {
+        c->ev    = *ev;
+        c->found = 1;
+    }
+}
+
+typedef struct {
+    goc_chan* ch;
+    done_t*   ready;
+} p5_16_args_t;
+
+static void test_p5_16_fiber_fn(void* arg) {
+    p5_16_args_t* a = (p5_16_args_t*)arg;
+    done_signal(a->ready); /* signal: about to park in goc_alts */
+    goc_alt_op ops[] = { { .ch = a->ch, .op_kind = GOC_ALT_TAKE } };
+    goc_alts(ops, 1); /* parks; no putter — increments taker_scans */
+}
+
+
+/*
+ * P5.16 — channel close event carries taker_scans >= 1 after alts park
+ *
+ * A fiber calls goc_alts with a single take arm on an empty channel.  It
+ * finds no match, increments taker_scans, then parks.  Closing the channel
+ * unblocks the fiber and emits a CHANNEL_STATUS close event.  The event must
+ * report taker_scans >= 1.
+ */
+static void test_p5_16(void) {
+    TEST_BEGIN("P5.16  alts close event: taker_scans >= 1 after parked take arm");
+
+    goc_chan* ch = goc_chan_make(0);
+    ASSERT(ch != NULL);
+
+    /* Register callback after chan_make so the open event is not captured. */
+    p5_16_capture_t cap = { .found = 0 };
+    goc_stats_set_callback(p5_16_cb, &cap);
+
+    done_t ready;
+    done_init(&ready);
+
+    p5_16_args_t args = { .ch = ch, .ready = &ready };
+    goc_chan* join = goc_go(test_p5_16_fiber_fn, &args);
+    ASSERT(join != NULL);
+
+    /* Wait until the fiber has signalled it is about to park, then give it
+     * a brief moment to actually reach mco_yield inside goc_alts. */
+    done_wait(&ready);
+    goc_nanosleep(5000000); /* 5 ms — mirrors P5.8 */
+
+    /* Closing the channel unblocks the fiber and emits the close event. */
+    goc_close(ch);
+    goc_take_sync(join); /* wait for fiber to finish */
+
+    /* Flush the stats delivery pipeline so the close event reaches p5_16_cb
+     * before we read cap.found. */
+    goc_stats_flush();
+
+    ASSERT(cap.found);
+    ASSERT(cap.ev.data.channel.taker_scans >= 1);
+
+    goc_stats_set_callback(NULL, NULL);
+    done_destroy(&ready);
+
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -1007,6 +1113,9 @@ int main(void) {
     printf("=================================================\n\n");
 
     goc_init();
+    goc_stats_init();
+    /* Suppress the verbose default callback; tests install their own. */
+    goc_stats_set_callback(NULL, NULL);
 
     printf("Phase 5 — Select and timeout\n");
     test_p5_1();
@@ -1023,8 +1132,11 @@ int main(void) {
     test_p5_12();
     test_p5_13();
     test_p5_14();
+    test_p5_15();
+    test_p5_16();
     printf("\n");
 
+    goc_stats_shutdown();
     goc_shutdown();
 
     printf("=================================================\n");

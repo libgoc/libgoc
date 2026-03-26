@@ -29,6 +29,8 @@
  *   S3.2  Buffered channel: buf_size and item_count after put/take
  *   S3.3  Multiple fibers and channels: all events unique and present
  *   S4.1  goc_stats_shutdown() disables stats delivery
+ *   S5.1  Worker STOPPED event carries valid steal_attempts/steal_successes
+ *   S6.1  goc_cb_queue_get_hwm() reflects peak callback-queue depth
  *
  *   (See test source for details on each scenario.)
  */
@@ -36,6 +38,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <uv.h>
@@ -52,7 +55,7 @@
  * A condvar lets blocking drain helpers sleep until new events arrive.
  * ====================================================================== */
 
-#define EVENT_BUF_CAP 512
+#define EVENT_BUF_CAP 2048
 
 static struct goc_stats_event g_events[EVENT_BUF_CAP];
 static size_t                 g_event_count = 0;   /* total events received */
@@ -101,11 +104,15 @@ static const struct goc_stats_event* next_event(void) {
     return ev;
 }
 
-/* Non-blocking: discard all currently buffered events; return the count. */
+/* Flush the stats delivery pipeline then discard all buffered events.
+ * goc_stats_flush() blocks until the loop thread has drained its MPSC queue,
+ * ensuring no in-flight events land in g_events[] after the reset. */
 static int drain_pending_events(void) {
+    goc_stats_flush();
     uv_mutex_lock(&g_event_mutex);
     int n = (int)(g_event_count - g_read_pos);
-    g_read_pos = g_event_count;
+    g_read_pos    = 0;
+    g_event_count = 0;
     uv_mutex_unlock(&g_event_mutex);
     return n;
 }
@@ -183,7 +190,7 @@ static const struct goc_stats_event* find_any_worker_status(
 
 static void emit_worker_event(void* arg) {
     (void)arg;
-    GOC_STATS_WORKER_STATUS(/*id=*/42, /*pool_id=*/NULL, GOC_WORKER_RUNNING, /*pending_jobs=*/5);
+    GOC_STATS_WORKER_STATUS(/*id=*/42, /*pool_id=*/NULL, GOC_WORKER_RUNNING, /*pending_jobs=*/5, /*steal_att=*/0, /*steal_suc=*/0);
 }
 
 static void emit_fiber_event(void* arg) {
@@ -193,7 +200,7 @@ static void emit_fiber_event(void* arg) {
 
 static void emit_channel_event(void* arg) {
     (void)arg;
-    GOC_STATS_CHANNEL_STATUS(/*id=*/99, /*status=*/0, /*buf_size=*/16, /*item_count=*/4);
+    GOC_STATS_CHANNEL_STATUS(/*id=*/99, /*status=*/0, /*buf_size=*/16, /*item_count=*/4, /*ts=*/0, /*ps=*/0, /*cr=*/0, /*er=*/0);
 }
 
 
@@ -233,6 +240,9 @@ static void test_s1_3(void) {
     ASSERT(ev->data.worker.pool_id      == NULL);
     ASSERT(ev->data.worker.status       == GOC_WORKER_RUNNING);
     ASSERT(ev->data.worker.pending_jobs == 5);
+    /* New: assert steal_attempts == 0 and steal_successes == 0 */
+    ASSERT(ev->data.worker.steal_attempts == 0);
+    ASSERT(ev->data.worker.steal_successes == 0);
     TEST_PASS();
 done:;
 }
@@ -268,6 +278,11 @@ static void test_s1_5(void) {
     ASSERT(ev->data.channel.status     == 0);
     ASSERT(ev->data.channel.buf_size   == 16);
     ASSERT(ev->data.channel.item_count == 4);
+    /* New: assert taker_scans == 0, putter_scans == 0, compaction_runs == 0, entries_removed == 0 */
+    ASSERT(ev->data.channel.taker_scans == 0);
+    ASSERT(ev->data.channel.putter_scans == 0);
+    ASSERT(ev->data.channel.compaction_runs == 0);
+    ASSERT(ev->data.channel.entries_removed == 0);
     TEST_PASS();
 done:;
 }
@@ -504,6 +519,285 @@ done:;
 }
 
 /*
+ * S3.4 — close event carries non-zero taker_scans/putter_scans
+ */
+static void s3_4_fiber(void* arg) {
+    goc_chan* ch = (goc_chan*)arg;
+    goc_alt_op ops[] = {
+        { .ch = ch, .op_kind = GOC_ALT_TAKE },
+    };
+    goc_alts(ops, 1); // parks, increments taker_scans
+}
+
+static void test_s3_4(void) {
+    TEST_BEGIN("S3.4  channel close event carries non-zero taker_scans/putter_scans");
+    goc_chan* ch = goc_chan_make(0);
+    int ch_id = (int)(intptr_t)ch;
+    drain_pending_events();
+    
+    goc_chan* join = goc_go(s3_4_fiber, ch);
+    goc_nanosleep(1000000); // 1ms to ensure fiber parks
+    goc_close(ch); // triggers close event
+    goc_take_sync(join); // cleanup
+    
+    const struct goc_stats_event* close_ev = NULL;
+    for (int i = 0; i < MAX_DRAIN; i++) {
+        const struct goc_stats_event* ev = find_channel_event(ch_id);
+        if (!ev) break;
+        if (ev->data.channel.status == 0) {
+            close_ev = ev;
+            break;
+        }
+    }
+    ASSERT(close_ev != NULL);
+    ASSERT(close_ev->data.channel.taker_scans >= 1);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * S3.5 — close event carries non-zero compaction_runs/entries_removed
+ */
+#ifndef GOC_DEAD_COUNT_THRESHOLD
+#define GOC_DEAD_COUNT_THRESHOLD 8
+#endif
+static _Atomic int s3_5_parked = 0;
+static void s3_5_fiber(void* arg) {
+    atomic_fetch_add_explicit(&s3_5_parked, 1, memory_order_relaxed);
+    goc_chan* ch = (goc_chan*)arg;
+    goc_alt_op ops[] = {
+        { .ch = ch, .op_kind = GOC_ALT_TAKE },
+    };
+    goc_alts(ops, 1); // parks, will be cancelled
+}
+
+static void s3_5_fiber_2(void* ub) {
+    goc_chan* ch = (goc_chan*)ub;
+    goc_take(ch);
+}
+
+static void test_s3_5(void) {
+    TEST_BEGIN("S3.5  channel close event carries non-zero compaction_runs/entries_removed");
+    goc_chan* ch = goc_chan_make(0);
+    int ch_id = goc_unbox_int(ch);
+    drain_pending_events();
+    
+    // Spawn enough fibers parked on the channel 
+    // to create "dead" entries above the compaction threshold
+    // when they are cancelled by the close.
+    int n_fibers = GOC_DEAD_COUNT_THRESHOLD * 2;
+    atomic_store_explicit(&s3_5_parked, 0, memory_order_relaxed);
+    for (int i = 0; i < n_fibers; i++)
+        goc_go(s3_5_fiber, ch);
+
+    // Wait for all fibers to park
+    int wait_loops = 0;
+    while (atomic_load_explicit(&s3_5_parked, memory_order_relaxed) < n_fibers && wait_loops++ < 1000) {
+        goc_nanosleep(100); // 0.1ms
+    }
+
+    // trigger compaction by doing a take in another fiber, 
+    // which will see the dead entries and cause them to be removed
+    goc_go(s3_5_fiber_2, ch);
+
+    goc_close(ch);
+    
+    const struct goc_stats_event* close_ev = NULL;
+    for (int i = 0; i < MAX_DRAIN * MAX_DRAIN; i++) {
+        const struct goc_stats_event* ev = next_event();
+        if (!ev) break;
+        if (ev->type == GOC_STATS_EVENT_CHANNEL_STATUS &&
+            ev->data.channel.id == ch_id &&
+            ev->data.channel.status == GOC_CLOSED) {
+            close_ev = ev;
+            break;
+        }
+    }
+    ASSERT(close_ev != NULL);
+    ASSERT(close_ev->data.channel.compaction_runs >= 1);
+    ASSERT(close_ev->data.channel.entries_removed >= 1);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * S5.1 — Worker STOPPED event carries valid steal_attempts/steal_successes
+ */
+static void test_s5_1(void) {
+    TEST_BEGIN("S5.1  worker STOPPED event carries steal_attempts/steal_successes");
+    drain_pending_events();
+
+    goc_pool* pool = goc_pool_make(2);
+    void* pool_id = pool;
+
+    /* Submit many short fibers to provoke work stealing between the 2 workers.
+     * Each fiber emits ~4 events (FIBER_CREATED, FIBER_COMPLETED, join_ch
+     * CHANNEL_OPEN, CHANNEL_CLOSE) plus worker RUNNING/IDLE transitions, so
+     * EVENT_BUF_CAP must be large enough to absorb all of them before the two
+     * STOPPED events are emitted. */
+    for (int i = 0; i < 64; i++)
+        goc_go_on(pool, noop_fiber, NULL);
+
+    goc_pool_destroy(pool);
+
+    /* Flush the async delivery pipeline so all STOPPED events emitted by the
+     * workers are guaranteed to be in g_events[] before the scan loop runs. */
+    goc_stats_flush();
+
+    /* Collect all STOPPED events for this pool's workers and validate fields.
+     * Use a large scan window: 256 fibers × (CREATED + COMPLETED + IDLE) events
+     * can easily exceed MAX_DRAIN before the two STOPPED events appear. */
+    int stopped_found = 0;
+    for (int i = 0; i < 1024; i++) {
+        const struct goc_stats_event* ev = next_event();
+        if (!ev) break;
+        if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
+        if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
+        if (ev->data.worker.pool_id != pool_id) continue;
+        ASSERT(ev->data.worker.steal_attempts >= 0);
+        ASSERT(ev->data.worker.steal_successes <= ev->data.worker.steal_attempts);
+        stopped_found++;
+    }
+    ASSERT(stopped_found >= 2);
+
+    TEST_PASS();
+done:;
+}
+
+/*
+ * S6.1 — goc_cb_queue_get_hwm() reflects peak callback-queue depth
+ *
+ * Issue a burst of goc_put_cb / goc_take_cb calls so that at least one
+ * callback entry is enqueued, then assert that the high-water mark is >= 1.
+ */
+#define S6_1_N 8
+
+typedef struct {
+    _Atomic int rem;
+    uv_mutex_t  mtx;
+    uv_cond_t   cond;
+} s6_1_state_t;
+
+static void s6_1_take_cb(void* val, goc_status_t ok, void* vud) {
+    (void)val; (void)ok;
+    s6_1_state_t* s = vud;
+    uv_mutex_lock(&s->mtx);
+    if (atomic_fetch_sub_explicit(&s->rem, 1, memory_order_relaxed) == 1)
+        uv_cond_signal(&s->cond);
+    uv_mutex_unlock(&s->mtx);
+}
+
+static void test_s6_1(void) {
+    TEST_BEGIN("S6.1  goc_cb_queue_get_hwm reflects peak depth");
+
+    s6_1_state_t s;
+    atomic_store(&s.rem, S6_1_N);
+    uv_mutex_init(&s.mtx);
+    uv_cond_init(&s.cond);
+
+    goc_chan* chs[S6_1_N];
+    for (int i = 0; i < S6_1_N; i++)
+        chs[i] = goc_chan_make(0);
+
+    /* Register take callbacks first so put_cb delivers immediately via the
+     * parked-taker path, ensuring entries pass through the callback queue. */
+    for (int i = 0; i < S6_1_N; i++)
+        goc_take_cb(chs[i], s6_1_take_cb, &s);
+    for (int i = 0; i < S6_1_N; i++)
+        goc_put_cb(chs[i], (void*)(uintptr_t)(i + 1), NULL, NULL);
+
+    /* Wait for all take callbacks to fire. */
+    uv_mutex_lock(&s.mtx);
+    while (atomic_load_explicit(&s.rem, memory_order_relaxed) > 0)
+        uv_cond_wait(&s.cond, &s.mtx);
+    uv_mutex_unlock(&s.mtx);
+
+    ASSERT(goc_cb_queue_get_hwm() >= 1);
+
+    for (int i = 0; i < S6_1_N; i++)
+        goc_close(chs[i]);
+    uv_cond_destroy(&s.cond);
+    uv_mutex_destroy(&s.mtx);
+
+    TEST_PASS();
+done:;
+}
+
+/*
+ * S6.2 — goc_timeout_get_stats tracks allocations and expirations
+ *
+ * 1. Read baseline (allocs0, expires0).
+ * 2. Create N timeout channels via goc_timeout().
+ * 3. Assert allocs - allocs0 == N.
+ * 4. Wait for all to fire; assert expires - expires0 == N.
+ */
+
+#define S6_2_N 4
+
+static void test_s6_2(void) {
+    TEST_BEGIN("S6.2  goc_timeout_get_stats tracks allocations and expirations");
+
+    uint64_t allocs0, expires0;
+    goc_timeout_get_stats(&allocs0, &expires0);
+
+    goc_chan* chs[S6_2_N];
+    for (int i = 0; i < S6_2_N; i++)
+        chs[i] = goc_timeout(20); /* 20 ms */
+
+    uint64_t allocs1, expires1;
+    goc_timeout_get_stats(&allocs1, &expires1);
+    ASSERT(allocs1 - allocs0 == S6_2_N);
+
+    /* Wait for all timeout channels to fire (they close on expiry). */
+
+    for (int i = 0; i < S6_2_N; i++)
+        goc_take_sync(chs[i]);
+
+    /* Robust: poll for expirations with timeout (max 100ms total) */
+    const int max_wait_ms = 100;
+    int waited = 0;
+    do {
+        goc_timeout_get_stats(&allocs1, &expires1);
+        if ((int)(expires1 - expires0) == S6_2_N) break;
+        goc_nanosleep(1000); /* 1ms */
+        waited++;
+    } while (waited < max_wait_ms);
+    ASSERT(expires1 - expires0 == S6_2_N);
+
+    TEST_PASS();
+done:;
+}
+
+/*
+ * S6.3 — goc_pool_get_steal_stats returns non-decreasing totals
+ *
+ * 1. Read baseline (att0, suc0).
+ * 2. Create a 2-worker pool; spawn many short fibers to cause stealing; destroy.
+ * 3. Assert att1 >= att0, suc1 >= suc0, (suc1 - suc0) <= (att1 - att0).
+ */
+static void test_s6_3(void) {
+    TEST_BEGIN("S6.3  goc_pool_get_steal_stats returns non-decreasing totals");
+
+    uint64_t att0, suc0;
+    goc_pool_get_steal_stats(&att0, &suc0);
+
+    goc_pool* pool = goc_pool_make(2);
+    for (int i = 0; i < 64; i++)
+        goc_go_on(pool, noop_fiber, NULL);
+    goc_pool_destroy(pool);
+
+    uint64_t att1, suc1;
+    goc_pool_get_steal_stats(&att1, &suc1);
+
+    ASSERT(att1 >= att0);
+    ASSERT(suc1 >= suc0);
+    ASSERT((suc1 - suc0) <= (att1 - att0));
+
+    TEST_PASS();
+done:;
+}
+
+/*
  * S4_1 — goc_stats_shutdown() disables stats delivery
  */
 static void test_s4_1(void) {
@@ -548,6 +842,12 @@ int main(void) {
     test_s3_1();
     test_s3_2();
     test_s3_3();
+    test_s3_4();
+    test_s3_5();
+    test_s5_1();
+    test_s6_1();
+    test_s6_2();
+    test_s6_3();
     test_s4_1();
     printf("\n");
 

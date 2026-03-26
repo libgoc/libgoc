@@ -49,11 +49,47 @@
  */
 
 #include "goc.h"
+#include "goc_stats.h"
 
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <uv.h>
+
+
+/* =========================================================================
+ * Stats helper (GOC_ENABLE_STATS only)
+ * =========================================================================
+ *
+ * Reads the three global telemetry accessors and prints a one-line summary.
+ * Called at the end of each benchmark function so per-run counters can be
+ * compared across benchmark configurations.
+ *
+ * steal stats    — lifetime totals from goc_pool_get_steal_stats; deltas
+ *                  across a single benchmark run are not isolated here, so
+ *                  treat these as cumulative floor values.
+ * timeout stats  — lifetime alloc/expiration counts from goc_timeout_get_stats
+ * cb queue hwm   — peak callback-queue depth since the last reset (lifetime)
+ * =========================================================================
+ */
+#ifdef GOC_ENABLE_STATS
+static void bench_print_stats(void) {
+    uint64_t steal_att = 0, steal_suc = 0;
+    goc_pool_get_steal_stats(&steal_att, &steal_suc);
+
+    uint64_t to_allocs = 0, to_expires = 0;
+    goc_timeout_get_stats(&to_allocs, &to_expires);
+
+    size_t cb_hwm = goc_cb_queue_get_hwm();
+
+    printf("  [stats] steal: %" PRIu64 " attempts / %" PRIu64 " successes"
+           "  |  timeouts: %" PRIu64 " alloc / %" PRIu64 " fired"
+           "  |  cb-queue hwm: %zu\n",
+           steal_att, steal_suc, to_allocs, to_expires, cb_hwm);
+}
+#else
+static inline void bench_print_stats(void) {}
+#endif
 
 
 /* =========================================================================
@@ -124,6 +160,7 @@ static void bench_ping_pong(size_t ping_rounds) {
     double rate = (double)(ping_rounds) / s;
     printf("Channel ping-pong: %zu round trips in %dms (%.0f round trips/s)\n",
            ping_rounds, ms, rate);
+    bench_print_stats();
 }
 
 
@@ -206,6 +243,7 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
     double rate = (double)(ring_hops) / s;
     printf("Ring benchmark: %zu hops across %zu tasks in %dms (%.0f hops/s)\n",
            ring_hops, ring_nodes, ms, rate);
+    bench_print_stats();
 }
 
 
@@ -338,6 +376,7 @@ static void bench_fan_in(size_t workers, size_t tasks) {
     double rate = (double)tasks / s;
     printf("Selective receive / fan-out / fan-in: %zu messages with %zu workers in %dms (%.0f msg/s)\n",
            tasks, workers, ms, rate);
+    bench_print_stats();
 }
 
 
@@ -388,6 +427,7 @@ static void bench_spawn_idle(size_t count) {
     double rate = (double)count / s;
     printf("Spawn idle tasks: %zu fibers in %dms (%.0f tasks/s)\n",
            count, ms, rate);
+    bench_print_stats();
 }
 
 
@@ -518,6 +558,7 @@ static void bench_prime_sieve(size_t max) {
     double rate  = (double)count / s;
     printf("Prime sieve: %zu primes up to %zu in %dms (%.0f primes/s)\n",
            count, max, ms, rate);
+    bench_print_stats();
 }
 
 

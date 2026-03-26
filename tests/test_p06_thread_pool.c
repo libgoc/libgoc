@@ -89,6 +89,15 @@
  *          before publishing the bitmap bit, preventing push_fiber_roots from
  *          reading stale stack pointers from a freed previous occupant
  *
+ *   P6.24   (GOC_ENABLE_STATS only) steal fields on STOPPED events are valid:
+ *          after goc_pool_destroy each STOPPED event must satisfy
+ *          steal_successes <= steal_attempts
+ *
+ *   P6.25   (GOC_ENABLE_STATS only) goc_pool_get_steal_stats is consistent with
+ *          per-worker STOPPED event totals: sum of steal_attempts across all
+ *          STOPPED events for the pool's workers equals the delta reported by
+ *          goc_pool_get_steal_stats before and after that pool's lifetime
+ *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
  *   - goc_shutdown() is called once in main() after all tests complete.
@@ -107,6 +116,9 @@
 #include "test_harness.h"
 #include "goc.h"
 #include "wsdq.h"
+#ifdef GOC_ENABLE_STATS
+#include "goc_stats.h"
+#endif
 
 /* =========================================================================
  * done_t — lightweight fiber-to-main synchronisation via mutex + condvar
@@ -1602,6 +1614,134 @@ done:;
     done_destroy(&done);
 }
 
+/* =========================================================================
+ * P6.24 / P6.25 — steal telemetry tests (GOC_ENABLE_STATS only)
+ * ====================================================================== */
+
+#ifdef GOC_ENABLE_STATS
+
+/* Minimal local event buffer for P6.24 / P6.25.
+ * We install a temporary callback, run the pool, then restore the old one. */
+#define P6_STEAL_EV_CAP 1024
+
+typedef struct {
+    struct goc_stats_event buf[P6_STEAL_EV_CAP];
+    size_t                 count;
+    uv_mutex_t             mtx;
+} p6_steal_evbuf_t;
+
+static void p6_steal_collect(const struct goc_stats_event* ev, void* ud) {
+    p6_steal_evbuf_t* b = (p6_steal_evbuf_t*)ud;
+    uv_mutex_lock(&b->mtx);
+    if (b->count < P6_STEAL_EV_CAP)
+        b->buf[b->count++] = *ev;
+    uv_mutex_unlock(&b->mtx);
+}
+
+/* Fiber that does nothing; used to create work for stealing. */
+static void p6_steal_noop(void* arg) { (void)arg; }
+
+/*
+ * P6.24 — steal fields on STOPPED events are valid.
+ *
+ * After goc_pool_destroy() each STOPPED event for the pool must satisfy
+ * steal_successes <= steal_attempts.
+ */
+static void test_p6_24(void) {
+    TEST_BEGIN("P6.24  steal fields on STOPPED events are valid");
+
+    p6_steal_evbuf_t evbuf = { .count = 0 };
+    uv_mutex_init(&evbuf.mtx);
+
+    goc_stats_init();
+    goc_stats_set_callback(p6_steal_collect, &evbuf);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+    void* pool_id = pool;
+
+    /* Burst of short fibers to provoke work stealing. */
+    for (int i = 0; i < 64; i++)
+        goc_go_on(pool, p6_steal_noop, NULL);
+
+    goc_pool_destroy(pool);
+    goc_stats_flush();
+    goc_stats_shutdown();
+
+    int stopped_found = 0;
+    uv_mutex_lock(&evbuf.mtx);
+    for (size_t i = 0; i < evbuf.count; i++) {
+        const struct goc_stats_event* ev = &evbuf.buf[i];
+        if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
+        if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
+        if (ev->data.worker.pool_id != pool_id) continue;
+        ASSERT(ev->data.worker.steal_successes <= ev->data.worker.steal_attempts);
+        stopped_found++;
+    }
+    uv_mutex_unlock(&evbuf.mtx);
+
+    ASSERT(stopped_found >= 2);
+
+    TEST_PASS();
+done:
+    uv_mutex_destroy(&evbuf.mtx);
+}
+
+/*
+ * P6.25 — goc_pool_get_steal_stats is consistent with per-worker STOPPED totals.
+ *
+ * The sum of steal_attempts across all STOPPED events for the pool's workers
+ * must equal the delta reported by goc_pool_get_steal_stats before and after
+ * that pool's lifetime.
+ */
+static void test_p6_25(void) {
+    TEST_BEGIN("P6.25  goc_pool_get_steal_stats consistent with STOPPED event totals");
+
+    p6_steal_evbuf_t evbuf = { .count = 0 };
+    uv_mutex_init(&evbuf.mtx);
+
+    goc_stats_init();
+    goc_stats_set_callback(p6_steal_collect, &evbuf);
+
+    uint64_t att0 = 0, suc0 = 0;
+    goc_pool_get_steal_stats(&att0, &suc0);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+    void* pool_id = pool;
+
+    for (int i = 0; i < 64; i++)
+        goc_go_on(pool, p6_steal_noop, NULL);
+
+    goc_pool_destroy(pool);
+    goc_stats_flush();
+
+    uint64_t att1 = 0, suc1 = 0;
+    goc_pool_get_steal_stats(&att1, &suc1);
+
+    goc_stats_shutdown();
+
+    /* Sum steal_attempts from STOPPED events belonging to this pool. */
+    uint64_t ev_att_sum = 0;
+    uv_mutex_lock(&evbuf.mtx);
+    for (size_t i = 0; i < evbuf.count; i++) {
+        const struct goc_stats_event* ev = &evbuf.buf[i];
+        if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
+        if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
+        if (ev->data.worker.pool_id != pool_id) continue;
+        ev_att_sum += ev->data.worker.steal_attempts;
+    }
+    uv_mutex_unlock(&evbuf.mtx);
+
+    ASSERT((att1 - att0) == ev_att_sum);
+
+    TEST_PASS();
+done:
+    uv_mutex_destroy(&evbuf.mtx);
+}
+
+#endif /* GOC_ENABLE_STATS */
+
 /* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
 /*
  * Bug being tested (gc.c goc_fiber_root_register):
@@ -1718,6 +1858,10 @@ int main(void) {
     test_p6_21();
     test_p6_22();
     test_p6_23();
+#ifdef GOC_ENABLE_STATS
+    test_p6_24();
+    test_p6_25();
+#endif
     printf("\n");
 
     if (!g_skip_shutdown) {

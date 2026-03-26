@@ -197,11 +197,12 @@ foreach(test_src IN LISTS TEST_SOURCES)
         set(GOC_LINK_TARGET goc)
     endif()
 
-    # test_goc_stats needs the full library compiled with GOC_ENABLE_STATS so
-    # that the instrumentation macros in pool.c, fiber.c, and channel.c are
-    # active.  When GOC_ENABLE_STATS is OFF the regular 'goc' library has them
-    # as no-ops, so build a dedicated variant and link against it instead.
-    if(test_name STREQUAL "test_goc_stats" AND NOT GOC_ENABLE_STATS)
+    # Tests always run with GOC_ENABLE_STATS active so that stats APIs are
+    # available unconditionally (no #ifdef guards needed in test sources).
+    # When GOC_ENABLE_STATS is OFF the regular 'goc' library has the
+    # instrumentation macros as no-ops, so build a dedicated variant with
+    # the flag enabled and link all tests against it instead.
+    if(NOT GOC_ENABLE_STATS)
         if(NOT TARGET goc_stats_instrumented)
             add_library(goc_stats_instrumented STATIC ${GOC_SOURCES} src/goc_stats.c)
             goc_configure_target(goc_stats_instrumented)
@@ -229,19 +230,9 @@ foreach(test_src IN LISTS TEST_SOURCES)
     if(LIBGOC_VMEM)
         target_compile_definitions(${test_name} PRIVATE LIBGOC_VMEM_ENABLED)
     endif()
-    if(GOC_ENABLE_STATS)
-        target_compile_definitions(${test_name} PRIVATE GOC_ENABLE_STATS)
-    endif()
+    # Stats always enabled for tests (see goc_stats_instrumented above).
+    target_compile_definitions(${test_name} PRIVATE GOC_ENABLE_STATS)
     target_compile_definitions(${test_name} PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
-
-    # test_goc_stats always runs with telemetry enabled, independent of the
-    # GOC_ENABLE_STATS option.  The define is added here so that the test's
-    # own source (test_goc_stats.c) sees the stats API.  The library sources
-    # (pool.c, fiber.c, channel.c, goc_stats.c) are covered by the
-    # goc_stats_instrumented library built above.
-    if(test_name STREQUAL "test_goc_stats" AND NOT GOC_ENABLE_STATS)
-        target_compile_definitions(${test_name} PRIVATE GOC_ENABLE_STATS)
-    endif()
 
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()

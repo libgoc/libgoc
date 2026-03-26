@@ -9,9 +9,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <uv.h>
 #include "../include/goc.h"
+#include "../include/goc_stats.h"
 #include "internal.h"
+
+/* Lifetime timeout counters — relaxed atomics, read via accessor at teardown */
+static _Atomic uint64_t g_timeout_allocations = 0;
+static _Atomic uint64_t g_timeout_expirations  = 0;
 
 /* -------------------------------------------------------------------------
  * Internal types
@@ -39,6 +46,7 @@ static void on_timeout(uv_timer_t* t)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
     goc_chan* ch = tctx->ch;
+    atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
     uv_handle_chan_unregister(ch);
     goc_close(ch);
     uv_close((uv_handle_t*)t, free_handle_cb);
@@ -111,6 +119,8 @@ goc_chan* goc_timeout(uint64_t ms)
         return ch;
     }
 
+    atomic_fetch_add_explicit(&g_timeout_allocations, 1, memory_order_relaxed);
+
     /* Signal the event loop thread to start the timer. */
     rc = uv_async_send(&req->async);
     if (rc < 0) {
@@ -124,4 +134,10 @@ goc_chan* goc_timeout(uint64_t ms)
     }
 
     return ch;
+}
+
+void goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations)
+{
+    *allocations = atomic_load_explicit(&g_timeout_allocations, memory_order_relaxed);
+    *expirations  = atomic_load_explicit(&g_timeout_expirations,  memory_order_relaxed);
 }

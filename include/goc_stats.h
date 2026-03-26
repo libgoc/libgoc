@@ -58,9 +58,25 @@ struct goc_stats_event {
     uint64_t timestamp;
     union {
         struct { void* id; int status; int thread_count; } pool;
-        struct { int id; void* pool_id; int status; int pending_jobs; } worker;
+        struct {
+            int      id;
+            void*    pool_id;
+            int      status;
+            int      pending_jobs;
+            uint64_t steal_attempts;   /* lifetime steal attempts (only meaningful at STOPPED) */
+            uint64_t steal_successes;  /* lifetime steal successes (only meaningful at STOPPED) */
+        } worker;
         struct { int id; int last_worker_id; int status; } fiber;
-        struct { int id; int status; int buf_size; int item_count; } channel;
+        struct {
+            int      id;
+            int      status;
+            int      buf_size;
+            int      item_count;
+            uint64_t taker_scans;     /* alts take-arm scans on this channel (only at close) */
+            uint64_t putter_scans;    /* alts put-arm scans on this channel (only at close) */
+            uint64_t compaction_runs; /* compact_dead_entries calls (only at close) */
+            uint64_t entries_removed; /* dead entries removed across all compactions (only at close) */
+        } channel;
     } data;
 };
 
@@ -87,15 +103,28 @@ void goc_stats_init(void);
 void goc_stats_shutdown(void);
 bool goc_stats_is_enabled(void);
 
+/* Block until the stats delivery loop has drained all in-flight events from
+ * the internal queue and delivered them to the registered callback.  Use this
+ * before resetting test buffers to avoid a race between the async delivery
+ * thread and the consumer. No-op when stats are disabled. */
+void goc_stats_flush(void);
+
 /* -------------------------------------------------------------------------
  * Internal emit functions (called by macros below; not for direct use)
  * ---------------------------------------------------------------------- */
 
 #ifdef GOC_ENABLE_STATS
 void goc_stats_submit_event_pool(void* id, int status, int thread_count);
-void goc_stats_submit_event_worker(int id, void* pool_id, int status, int pending_jobs);
+void goc_stats_submit_event_worker(int id, void* pool_id, int status, int pending_jobs,
+                                   uint64_t steal_attempts, uint64_t steal_successes);
 void goc_stats_submit_event_fiber(int id, int last_worker_id, int status);
-void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count);
+void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count,
+                                    uint64_t taker_scans, uint64_t putter_scans,
+                                    uint64_t compaction_runs, uint64_t entries_removed);
+/* Telemetry accessors — available when GOC_ENABLE_STATS is defined */
+void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
+size_t goc_cb_queue_get_hwm(void);
+void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes);
 #endif
 
 /* -------------------------------------------------------------------------
@@ -105,17 +134,17 @@ void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_c
 #ifdef GOC_ENABLE_STATS
 #  define GOC_STATS_POOL_STATUS(id, status, thread_count) \
     goc_stats_submit_event_pool((id), (status), (thread_count))
-#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs) \
-    goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs))
+#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, steal_suc) \
+    goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs), (steal_att), (steal_suc))
 #  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status) \
     goc_stats_submit_event_fiber((id), (last_worker_id), (status))
-#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count) \
-    goc_stats_submit_event_channel((id), (status), (buf_size), (item_count))
+#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) \
+    goc_stats_submit_event_channel((id), (status), (buf_size), (item_count), (ts), (ps), (cr), (er))
 #else
-#  define GOC_STATS_POOL_STATUS(id, status, thread_count)            ((void)0)
-#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs) ((void)0)
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)         ((void)0)
-#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count) ((void)0)
+#  define GOC_STATS_POOL_STATUS(id, status, thread_count)                            ((void)0)
+#  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, suc) ((void)0)
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)                         ((void)0)
+#  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) ((void)0)
 #endif
 
 #ifdef __cplusplus
