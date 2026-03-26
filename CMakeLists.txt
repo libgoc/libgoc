@@ -237,6 +237,11 @@ foreach(test_src IN LISTS TEST_SOURCES)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
+# The stats test suite is significantly heavier than the others and regularly
+# exceeds the default ctest --timeout on slow CI runners (e.g. Windows).
+# Override the per-test timeout to give it enough headroom.
+set_tests_properties(test_goc_stats PROPERTIES TIMEOUT 120)
+
 # ---------------------------------------------------------------------------
 # Coverage target (requires lcov + genhtml)
 # ---------------------------------------------------------------------------
