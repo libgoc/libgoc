@@ -593,7 +593,7 @@ static void test_s3_5(void) {
     // Wait for all fibers to park
     int wait_loops = 0;
     while (atomic_load_explicit(&s3_5_parked, memory_order_relaxed) < n_fibers && wait_loops++ < 1000) {
-        usleep(100); // 0.1ms
+        goc_nanosleep(100); // 0.1ms
     }
 
     // trigger compaction by doing a take in another fiber, 
@@ -759,7 +759,7 @@ static void test_s6_2(void) {
     do {
         goc_timeout_get_stats(&allocs1, &expires1);
         if ((int)(expires1 - expires0) == S6_2_N) break;
-        goc_nanosleep(1000000); /* 1ms */
+        goc_nanosleep(1000); /* 1ms */
         waited++;
     } while (waited < max_wait_ms);
     ASSERT(expires1 - expires0 == S6_2_N);
