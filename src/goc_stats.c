@@ -370,7 +370,7 @@ void goc_stats_shutdown(void) {}
 void goc_stats_flush(void)    {}
 bool goc_stats_is_enabled(void) { return false; }
 
-void   goc_timeout_get_stats(uint64_t *a, uint64_t *e) { *a = 0; *e = 0; }
+
 size_t goc_cb_queue_get_hwm(void)                       { return 0; }
 void   goc_pool_get_steal_stats(uint64_t *a, uint64_t *s) { *a = 0; *s = 0; }
 

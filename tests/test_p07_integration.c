@@ -547,9 +547,11 @@ static void fast_fiber_wrapper(void* arg) {
     if (ffa->args->ready_ch) {
         goc_put(ffa->args->ready_ch, NULL);
     }
-    // Signal after the fast fiber is about to block on result_ch
-    goc_put(ffa->blocked_ch, NULL);
     goc_take(goc_timeout(ffa->args->delay_ms));
+    /* Signal only after the delay has elapsed: main must not enter goc_alts_sync
+     * until the fast fiber is about to put on result_ch, otherwise there is a
+     * window where the timeout arm can fire before result_ch becomes ready. */
+    goc_put(ffa->blocked_ch, NULL);
     goc_put(ffa->args->result_ch, goc_box_uint(ffa->args->value));
 }
 
