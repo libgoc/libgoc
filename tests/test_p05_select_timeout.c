@@ -1082,10 +1082,15 @@ static void test_p5_16(void) {
     goc_chan* join = goc_go(test_p5_16_fiber_fn, &args);
     ASSERT(join != NULL);
 
-    /* Wait until the fiber has signalled it is about to park, then give it
-     * a brief moment to actually reach mco_yield inside goc_alts. */
+    /* Wait until the fiber has signalled it is about to park, then flush the
+     * stats pipeline.  The flush submits an async event to the libuv loop and
+     * blocks until the loop processes it.  Because the fiber is already
+     * running on the event loop thread when done_signal fires, the loop cannot
+     * process the flush sentinel until after the fiber parks inside goc_alts
+     * (i.e. after taker_scans has been incremented).  This is a deterministic
+     * barrier — no sleep required. */
     done_wait(&ready);
-    goc_nanosleep(5000000); /* 5 ms — mirrors P5.8 */
+    goc_stats_flush();
 
     /* Closing the channel unblocks the fiber and emits the close event. */
     goc_close(ch);
