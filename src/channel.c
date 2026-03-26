@@ -313,29 +313,24 @@ void goc_close(goc_chan* ch)
     goc_entry* to_post[512];
     size_t to_post_count = 0;
     int cancelled_found = 0;
-    void collect_to_post(goc_entry* head) {
-        goc_entry* e = head;
+    for (int _pass = 0; _pass < 2; _pass++) {
+        goc_entry* e = (_pass == 0) ? ch->takers : ch->putters;
         while (e != NULL) {
             goc_entry* next = e->next;
             if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
                 cancelled_found = 1;
-            }
-            if (!atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
-                if (try_claim_wake(e)) {
-                    e->ok = GOC_CLOSED;
-                    if (e->kind == GOC_FIBER && to_post_count < 512)
-                        to_post[to_post_count++] = (goc_entry*)mco_get_user_data(e->coro);
-                    else if (e->kind == GOC_CALLBACK)
-                        post_callback(e, NULL);
-                    else if (e->kind == GOC_SYNC)
-                        goc_sync_post(e->sync_sem_ptr);
-                }
+            } else if (try_claim_wake(e)) {
+                e->ok = GOC_CLOSED;
+                if (e->kind == GOC_FIBER && to_post_count < 512)
+                    to_post[to_post_count++] = (goc_entry*)mco_get_user_data(e->coro);
+                else if (e->kind == GOC_CALLBACK)
+                    post_callback(e, NULL);
+                else if (e->kind == GOC_SYNC)
+                    goc_sync_post(e->sync_sem_ptr);
             }
             e = next;
         }
     }
-    collect_to_post(ch->takers);
-    collect_to_post(ch->putters);
 
     /* If any cancelled entries remain, compact them before releasing the lock */
     if (cancelled_found)
