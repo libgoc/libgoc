@@ -1682,7 +1682,6 @@ static void test_p6_24(void) {
 
     ASSERT(stopped_found >= 2);
 
-    uv_mutex_destroy(&evbuf.mtx);
     TEST_PASS();
 done:
     uv_mutex_destroy(&evbuf.mtx);
@@ -1736,7 +1735,6 @@ static void test_p6_25(void) {
 
     ASSERT((att1 - att0) == ev_att_sum);
 
-    uv_mutex_destroy(&evbuf.mtx);
     TEST_PASS();
 done:
     uv_mutex_destroy(&evbuf.mtx);
