@@ -59,6 +59,7 @@
 
 #include "test_harness.h"
 #include "goc.h"
+#include "goc_stats.h"
 
 /* =========================================================================
  * done_t — lightweight fiber-to-main synchronisation via mutex + condvar
@@ -605,6 +606,7 @@ static void test_p7_5(void) {
     goc_take_sync(fast_blocked_ch);
     goc_close(fast_blocked_ch);
 
+    goc_stats_flush();
     goc_chan* tch = goc_timeout(P7_5_TIMEOUT_MS);
     ASSERT(tch != NULL);
 
@@ -652,6 +654,7 @@ done:;
 
 int main(void) {
     install_crash_handler();
+    goc_test_arm_watchdog(30);
 
     printf("libgoc test suite — Phase 7: Integration\n");
     printf("=========================================\n\n");
