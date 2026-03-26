@@ -1798,9 +1798,11 @@ static void test_p6_23(void) {
     goc_pool* pool = goc_pool_make(P6_23_WORKERS);
     ASSERT(pool != NULL);
 
+    _Atomic int completed = 0;
+    p6_23_arg_t args = { &done, &completed, P6_23_PER_WAVE };
+
     for (int w = 0; w < P6_23_WAVES; w++) {
-        _Atomic int completed = 0;
-        p6_23_arg_t args = { &done, &completed, P6_23_PER_WAVE };
+        atomic_store_explicit(&completed, 0, memory_order_relaxed);
 
         for (int i = 0; i < P6_23_PER_WAVE; i++)
             goc_go_on(pool, p6_23_fiber_fn, &args);
