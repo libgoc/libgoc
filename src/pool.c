@@ -451,16 +451,11 @@ void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
          * total order with the worker's seq_cst increment (ARM/POWER safety). */
         atomic_thread_fence(memory_order_seq_cst);
 
-        /* If any workers are idle, wake the next neighbor so it can steal the
-         * entry we just pushed.  Without this, a worker that went to sleep
-         * after the steal phase (but before our push) would never be notified:
-         * the idle double-check only re-checks the sleeping worker's own deque,
-         * not ours.  The seq_cst fence above pairs with the worker's seq_cst
-         * idle_count increment, closing the sleep-miss race window. */
-        if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0) {
-            size_t neighbor = (w->index + 1) % pool->thread_count;
-            uv_sem_post(&pool->workers[neighbor].idle_sem);
-        }
+        /* Internal enqueue stays local to the current worker and does not
+         * proactively wake peers. This avoids cross-worker steal/resume races
+         * in ping-pong style workloads where locality matters for progress.
+         * External posts (below) still wake an idle target worker. */
+        (void)pool;
     } else {
         /* External caller: push into target worker's injector (MPSC-safe).
          * Round-robin across workers for load distribution. */
