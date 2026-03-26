@@ -561,7 +561,9 @@ done:;
 #ifndef GOC_DEAD_COUNT_THRESHOLD
 #define GOC_DEAD_COUNT_THRESHOLD 8
 #endif
+static _Atomic int s3_5_parked = 0;
 static void s3_5_fiber(void* arg) {
+    atomic_fetch_add_explicit(&s3_5_parked, 1, memory_order_relaxed);
     goc_chan* ch = (goc_chan*)arg;
     goc_alt_op ops[] = {
         { .ch = ch, .op_kind = GOC_ALT_TAKE },
@@ -583,14 +585,21 @@ static void test_s3_5(void) {
     // Spawn enough fibers parked on the channel 
     // to create "dead" entries above the compaction threshold
     // when they are cancelled by the close.
-    for (int i = 0; i < GOC_DEAD_COUNT_THRESHOLD * 2; i++)
+    int n_fibers = GOC_DEAD_COUNT_THRESHOLD * 2;
+    atomic_store_explicit(&s3_5_parked, 0, memory_order_relaxed);
+    for (int i = 0; i < n_fibers; i++)
         goc_go(s3_5_fiber, ch);
-    
+
+    // Wait for all fibers to park
+    int wait_loops = 0;
+    while (atomic_load_explicit(&s3_5_parked, memory_order_relaxed) < n_fibers && wait_loops++ < 1000) {
+        usleep(100); // 0.1ms
+    }
+
     // trigger compaction by doing a take in another fiber, 
     // which will see the dead entries and cause them to be removed
     goc_go(s3_5_fiber_2, ch);
-    goc_nanosleep(1000000); // 1ms to ensure fibers park
-    
+
     goc_close(ch);
     
     const struct goc_stats_event* close_ev = NULL;
