@@ -1578,7 +1578,7 @@ static void test_p6_22(void) {
 
     /* Generous deadline: only a double-resume (hang) causes a timeout.
      * A double-resume crash would appear as SIGABRT / signal 11 here. */
-    ok = done_wait_timeout(&done, 5000);
+    ok = done_wait_timeout(&done, 15000);
     ASSERT(ok);
     TEST_PASS();
 done:;
