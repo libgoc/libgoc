@@ -1108,6 +1108,7 @@ done:;
 
 int main(void) {
     install_crash_handler();
+    goc_test_arm_watchdog(30);
 
     printf("libgoc test suite — Phase 5: Select and timeout\n");
     printf("=================================================\n\n");

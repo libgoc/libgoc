@@ -740,6 +740,7 @@ static void test_s6_2(void) {
     uint64_t allocs0, expires0;
     goc_timeout_get_stats(&allocs0, &expires0);
 
+    goc_stats_flush();
     goc_chan* chs[S6_2_N];
     for (int i = 0; i < S6_2_N; i++)
         chs[i] = goc_timeout(20); /* 20 ms */
@@ -803,6 +804,7 @@ done:;
 static void test_s4_1(void) {
     TEST_BEGIN("S4_1  goc_stats_shutdown disables stats");
     ASSERT(goc_stats_is_enabled());
+    goc_stats_flush();
     goc_stats_shutdown();
     ASSERT(!goc_stats_is_enabled());
     TEST_PASS();
