@@ -759,7 +759,7 @@ static void test_s6_2(void) {
     do {
         goc_timeout_get_stats(&allocs1, &expires1);
         if ((int)(expires1 - expires0) == S6_2_N) break;
-        goc_nanosleep(1000); /* 1ms */
+        goc_nanosleep(1000000); /* 1ms */
         waited++;
     } while (waited < max_wait_ms);
     ASSERT(expires1 - expires0 == S6_2_N);
