@@ -23,6 +23,7 @@
  *     - Restores bottom on empty/CAS-lose with relaxed (owner-only).
  */
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <stdatomic.h>
@@ -53,6 +54,15 @@ void wsdq_destroy(goc_wsdq* dq) {
     goc_entry** buf = atomic_load_explicit(&dq->buf, memory_order_relaxed);
     GC_free(buf);
     uv_mutex_destroy(&dq->steal_lock);
+}
+
+/* Returns an approximate size (number of entries) in the deque.
+ * Approximate deque depth: b - t (Chase-Lev)
+ */
+size_t wsdq_approx_size(goc_wsdq* dq) {
+    size_t t = atomic_load_explicit(&dq->top, memory_order_acquire);
+    size_t b = atomic_load_explicit(&dq->bottom, memory_order_relaxed);
+    return (b >= t) ? (b - t) : 0;
 }
 
 void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry) {

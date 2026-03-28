@@ -366,14 +366,13 @@ static void pool_worker_fn(void* arg) {
          *
          * Before parking, if there is still work in our own deque and any workers are idle,
          * wake one to encourage stealing. This preserves locality for ping-pong workloads,
-         * but avoids leaving work stranded if we're about to park. */
-        /* Chase–Lev: deque is non-empty if b > t (loads in this order reduce race window).
-         * Skip entirely at pool=1 — thread_count is immutable so this branch is free. */
+         * but avoids leaving work stranded if we're about to park.
+         * Skip entirely at pool=1 — thread_count is immutable so this branch is free. 
+         */
         if (pool->thread_count > 1) {
-            size_t t    = atomic_load_explicit(&tl_worker->deque.top,    memory_order_acquire);
-            size_t b    = atomic_load_explicit(&tl_worker->deque.bottom, memory_order_relaxed);
-            size_t idle = atomic_load_explicit(&pool->idle_count,        memory_order_seq_cst);
-            if (b > t && idle > 0) {
+            size_t depth = wsdq_approx_size(&tl_worker->deque);
+            size_t idle = atomic_load_explicit(&pool->idle_count, memory_order_seq_cst);
+            if (depth > 0 && idle > 0) {
                 size_t idx = (tl_worker->index + 1) % pool->thread_count;
                 uv_sem_post(&pool->workers[idx].idle_sem);
             }
@@ -424,8 +423,27 @@ run:
 
         /* Update cached fiber SP so the next GC cycle scans only the used
          * portion of the stack instead of the full vmem allocation. */
+
         if (st == MCO_SUSPENDED && fe != NULL)
             goc_fiber_root_update_sp(fe->fiber_root_handle, coro);
+
+        /* Post-yield wakeup:
+         * If we have more than GOC_YIELD_WAKE_THRESHOLD items in our deque,
+         * and any workers are idle, wake a neighbor.
+         * This causes livelocks!!!
+         */
+        // #define GOC_POST_YIELD_WAKE_THRESHOLD (pool->thread_count * 2)
+
+        // if (st == MCO_SUSPENDED && pool->thread_count > 1) {
+        //     size_t depth = wsdq_approx_size(&tl_worker->deque);
+        //     size_t idle = atomic_load_explicit(&pool->idle_count, memory_order_seq_cst);
+        //     if (depth > GOC_POST_YIELD_WAKE_THRESHOLD && idle > 0) {
+        //         size_t neighbor = (tl_worker->index + 1) % pool->thread_count;
+        //         if (neighbor != tl_worker->index) {
+        //             uv_sem_post(&pool->workers[neighbor].idle_sem);
+        //         }
+        //     }
+        // }
 
         /* If the fiber just parked, release the yield-gate so that any
          * wake() spinning on parked==0 can proceed. */

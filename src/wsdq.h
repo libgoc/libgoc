@@ -67,6 +67,9 @@ void wsdq_init(goc_wsdq* dq, size_t cap);
  * Must NOT be called while any thread is concurrently calling steal_top. */
 void wsdq_destroy(goc_wsdq* dq);
 
+/* Returns an approximate size (number of entries) in the deque. */
+size_t wsdq_approx_size(goc_wsdq* dq);
+
 /* Owner-only: push entry onto the bottom. Grows the deque if full.
  * Must only be called by the single owner thread. */
 void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry);
