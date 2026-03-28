@@ -124,6 +124,21 @@ void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_c
 /* Telemetry accessors — available when GOC_ENABLE_STATS is defined */
 void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
 size_t goc_cb_queue_get_hwm(void);
+/*
+ * goc_pool_get_steal_stats — read aggregate work-stealing and idle counters.
+ *
+ * All four outputs are cumulative, relaxed-order lifetime totals across all
+ * pools and workers.  They are not reset between benchmark runs.
+ *
+ * attempts     : total number of wsdq_steal_top calls made (both hint-path
+ *                and fallback randomised scan).
+ * successes    : subset of attempts that returned a non-NULL entry.
+ * misses       : subset of attempts that returned NULL (wsdq empty or lost
+ *                to a concurrent steal).  Equals attempts − successes.
+ * idle_wakeups : number of times a worker returned from uv_sem_wait, i.e.
+ *                one unit per sleep/wake cycle.  High values relative to
+ *                successes indicate steal thrashing or spurious wakeups.
+ */
 void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
                                 uint64_t *misses,   uint64_t *idle_wakeups);
 #endif

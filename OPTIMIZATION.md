@@ -122,7 +122,7 @@ All Phase 0 instrumentation gaps have been filled:
 - **Compaction telemetry**: `compaction_runs` and `entries_removed` counters on `goc_chan`, updated in `compact_dead_entries` and in `goc_close` for entries removed at close time. Reported in the channel close event.
 - **Callback queue high-water mark**: `g_cb_queue_depth` / `g_cb_queue_hwm` atomics in `loop.c`; accessible via `goc_cb_queue_get_hwm()`.
 - **Timeout counters**: `g_timeout_allocations` / `g_timeout_expirations` atomics in `timeout.c`; accessible via `goc_timeout_get_stats()`.
-- **Per-worker steal counters**: `steal_attempts` / `steal_successes` on `goc_worker` and global aggregates `g_steal_attempts` / `g_steal_successes` in `pool.c`; per-worker values reported on `STOPPED` events; global aggregate accessible via `goc_pool_get_steal_stats()`.
+- **Per-worker steal counters**: `steal_attempts` / `steal_successes` / `steal_misses` on `goc_worker` and global aggregates `g_steal_attempts` / `g_steal_successes` / `g_steal_misses` / `g_idle_wakeups` in `pool.c`; per-worker attempt/success values reported on `STOPPED` events; all four global aggregates accessible via `goc_pool_get_steal_stats(attempts, successes, misses, idle_wakeups)`.
 - **`goc_stats_flush()`**: new synchronous flush API that blocks until the async delivery loop has drained all in-flight events; used in tests to avoid races.
 - **Benchmark stats output**: `bench_print_stats()` helper in `bench/libgoc/bench.c` prints a one-line summary of all three accessor values at the end of each benchmark.
 

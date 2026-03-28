@@ -776,27 +776,54 @@ Each worker thread runs a 4-stage work-stealing loop:
 
 ```
 while not shutdown:
-    /* Stage 1: drain own injector (entries from external callers) */
-    entry = injector_pop(worker.injector)
-    if entry != NULL: goto run
-
-    /* Stage 2: pop from own deque (LIFO, cache-warm) */
+    /* Stage 1: pop from own deque (LIFO, cache-warm) */
     entry = wsdq_pop_bottom(worker.deque)
     if entry != NULL: goto run
 
-    /* Stage 3: steal from other workers (randomised start offset) */
-    for each other worker (random offset, excluding self):
-        entry = wsdq_steal_top(other.deque)
-        if entry != NULL: goto run
+    /* Stage 2: drain own injector (entries posted by external callers) */
+    entry = injector_pop(worker.injector)
+    if entry != NULL: goto run
+
+    /* Stage 3: steal phase — victim hinting, then randomised scan */
+    if thread_count > 1:
+        /* 3a. Victim hint: probe the last productive victim first */
+        if worker.last_steal_victim != UNSET and != self:
+            steal_attempts++
+            entry = wsdq_steal_top(workers[last_steal_victim].deque)
+            if entry != NULL:
+                steal_successes++
+                goto run
+            steal_misses++
+        /* 3b. Fallback: randomised scan over all other workers */
+        xorshift32(seed)
+        offset = 1 + (seed % (thread_count - 1))
+        for i in 0..thread_count:
+            victim = (self.index + offset + i) % thread_count
+            if victim == self: continue
+            steal_attempts++
+            entry = wsdq_steal_top(workers[victim].deque)
+            if entry != NULL:
+                steal_successes++
+                worker.last_steal_victim = victim
+                goto run
+            steal_misses++
+        worker.last_steal_victim = UNSET   /* all failed; clear hint */
 
     /* Stage 4: go idle — sleep-miss race closure */
+    /* 4a. Pre-park nudge: if our own deque still has work, wake a
+     *     neighbour before parking so work is not left stranded. */
+    if thread_count > 1:
+        if wsdq_approx_size(worker.deque) > 0 and idle_count > 0:
+            uv_sem_post(workers[(self+1) % thread_count].idle_sem)
+
     atomic_fetch_add(idle_count, 1, seq_cst)  /* must be seq_cst — pairs with post seq_cst fence */
-    entry = injector_pop(worker.injector)      /* double-check: close race with concurrent post */
-    if entry == NULL: entry = wsdq_pop_bottom(worker.deque)
+    entry = wsdq_pop_bottom(worker.deque)      /* double-check: close race with concurrent post */
+    if entry == NULL: entry = injector_pop(worker.injector)
     if entry != NULL:
         atomic_fetch_sub(idle_count, 1, relaxed)
         goto run
     uv_sem_wait(worker.idle_sem)               /* sleep until posted by post_to_run_queue */
+    idle_wakeups++
     atomic_fetch_sub(idle_count, 1, relaxed)
     continue
 
@@ -820,6 +847,12 @@ run:
     st = mco_status(coro)
     if st == MCO_SUSPENDED and fe != NULL:
         goc_fiber_root_update_sp(fe->fiber_root_handle, coro)  /* update cached SP for GC */
+    /* Post-yield wakeup nudge: if our deque is more than half-full and an
+     * idle worker exists, wake the next neighbour so it can steal. */
+    if st == MCO_SUSPENDED and thread_count > 1:
+        depth = wsdq_approx_size(worker.deque)
+        if depth > worker.deque.capacity/2 and idle_count > 0:
+            uv_sem_post(workers[(self+1) % thread_count].idle_sem)
     if fe != NULL: atomic_store(fe->parked, 1, release)  /* release yield-gate after resume bookkeeping */
 
     if st == MCO_DEAD:
@@ -840,6 +873,10 @@ run:
 ```
 
 > **Sleep-miss race closure.** A poster calling `post_to_run_queue` must not miss a sleeping worker. Protocol: (1) worker increments `idle_count` with `seq_cst` *before* its double-check; (2) poster completes its write (deque push or injector mutex-unlock, both full-barrier), then reads `idle_count` with `seq_cst`. The C11 total order on seq_cst operations guarantees that if the poster sees `idle_count == 0`, the worker's double-check will see the posted entry; if the poster sees `idle_count > 0`, it posts `idle_sem` to wake the worker.
+
+> **Victim hinting.** Each worker maintains `last_steal_victim` (initialised to `SIZE_MAX` = unset). When a steal succeeds, the victim's index is stored there. On the next steal phase, that index is tried first (before the randomised scan), because a recently productive victim is likely still busy. If the hint steal fails or the index is unset, the worker falls back to the randomised xorshift scan. The hint is cleared when all steal attempts in a round fail. This reduces the average number of probes needed to find work in sustained high-throughput workloads.
+
+> **Steal and idle counters.** `steal_attempts`, `steal_successes`, and `steal_misses` are per-worker relaxed atomics accumulated on every `wsdq_steal_top` call (both hint-path and randomised-scan). `idle_wakeups` is incremented once per `uv_sem_wait` return. All four are mirrored to global aggregates (`g_steal_*`, `g_idle_wakeups` in `pool.c`) and exposed via `goc_pool_get_steal_stats`. Per-worker totals are also reported in the `GOC_WORKER_STOPPED` telemetry event (attempts and successes only). A high `misses`-to-`attempts` ratio indicates contention on steal targets; a high `idle_wakeups`-to-`successes` ratio indicates steal thrashing or spurious wakeups.
 
 
 > **Why `coro` is snapshotted before `mco_resume`.** `post_to_run_queue` may receive either a fiber's initial entry (launch/resume token) or another scheduler-visible entry that refers to the same coroutine. Snapshotting `coro = entry->coro` before `mco_resume` ensures the worker keeps a stable handle even if other state associated with the scheduling token becomes irrelevant once the coroutine advances. The `mco_coro` object itself remains valid until `mco_destroy`.
@@ -1307,12 +1344,17 @@ void goc_stats_flush(void);   /* Block until all queued events have been deliver
 ```c
 void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
 size_t goc_cb_queue_get_hwm(void);
-void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes);
+void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
+                                uint64_t *misses,   uint64_t *idle_wakeups);
 ```
 
 - `goc_timeout_get_stats` — returns cumulative timeout allocation and expiration counts.
 - `goc_cb_queue_get_hwm` — returns the high-water mark of the callback queue depth.
-- `goc_pool_get_steal_stats` — returns pool-wide steal attempt and success counts (aggregates across all workers via the `g_steal_attempts` / `g_steal_successes` globals in `pool.c`).
+- `goc_pool_get_steal_stats` — returns pool-wide steal counters (aggregates across all workers via the `g_steal_attempts` / `g_steal_successes` / `g_steal_misses` / `g_idle_wakeups` globals in `pool.c`):
+  - `attempts` — total `wsdq_steal_top` calls (hint-path + randomised scan).
+  - `successes` — attempts that returned a non-NULL entry.
+  - `misses` — attempts that returned NULL; equals `attempts − successes`.
+  - `idle_wakeups` — number of times a worker returned from `uv_sem_wait` (one per sleep/wake cycle). High values relative to `successes` indicate steal thrashing or spurious wakeups.
 
 When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STATUS`, `GOC_STATS_WORKER_STATUS`, `GOC_STATS_FIBER_STATUS`, `GOC_STATS_CHANNEL_STATUS`) expand to `((void)0)` and have zero runtime cost.
 

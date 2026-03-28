@@ -178,11 +178,11 @@ Macros emit events if telemetry is enabled, or become no-ops otherwise:
 
 ### Telemetry Accessors
 
-When `GOC_ENABLE_STATS` is defined, three global accessor functions are available for reading aggregate runtime counters directly (without going through the callback mechanism):
+When `GOC_ENABLE_STATS` is defined, the following global accessor functions are available for reading aggregate runtime counters directly (without going through the callback mechanism):
 
 ```c
 /* Steal counters — aggregate across all pools and workers, lifetime totals */
-void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes);
+void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes, uint64_t *misses, uint64_t *idle_wakeups);
 
 /* Timeout channel counters */
 void goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
@@ -191,7 +191,7 @@ void goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
 size_t goc_cb_queue_get_hwm(void);
 ```
 
-When `GOC_ENABLE_STATS` is not defined these functions are still present but always write zeros / return zero, so callers do not need `#ifdef` guards.
+When `GOC_ENABLE_STATS` is not defined, these functions are still present but always write zeros / return zero, so callers do not need `#ifdef` guards.
 
 ---
 
