@@ -7,6 +7,7 @@
  * references to them.
  */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdint.h>
