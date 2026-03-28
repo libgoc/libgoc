@@ -27,7 +27,8 @@
  *   P10.12 Channel-based goc_io_fs_open integrates with goc_alts (select
  *          on open vs. a dummy channel that never fires)
  *   P10.13 goc_io_handle_register + goc_io_handle_close: GC-allocated
- *          uv_tcp_t handle registers, closes, and unregisters cleanly
+ *          uv_async_t handle registers, closes, and unregisters cleanly
+ *          (uv_async_init is the only uv_*_init safe to call from any thread)
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -548,12 +549,15 @@ static void fiber_p10_13(void* arg)
 {
     fiber_result_t* r = (fiber_result_t*)arg;
 
-    uv_tcp_t* tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
-    int rc = uv_tcp_init(goc_scheduler(), tcp);
+    /* uv_async_init is the only uv_*_init documented as safe from any thread.
+     * Other handle init functions (uv_tcp_init, uv_pipe_init, etc.) modify
+     * loop->handle_queue without a lock and must be called from the loop thread. */
+    uv_async_t* h = (uv_async_t*)goc_malloc(sizeof(uv_async_t));
+    int rc = uv_async_init(goc_scheduler(), h, NULL);
     if (rc != 0) goto done;
 
-    goc_io_handle_register((uv_handle_t*)tcp);
-    goc_io_handle_close((uv_handle_t*)tcp, NULL);
+    goc_io_handle_register((uv_handle_t*)h);
+    goc_io_handle_close((uv_handle_t*)h, NULL);
 
     r->ok = 1;
 done:;

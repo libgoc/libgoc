@@ -32,11 +32,13 @@
  * OS-thread context.
  *
  * Handle initialisation (uv_tcp_init, uv_pipe_init, uv_udp_init, etc.) is
- * the caller's responsibility.  All libuv handles used with libgoc must be
- * GC-allocated and registered via goc_io_handle_register:
+ * the caller's responsibility.  Most uv_*_init functions modify loop-internal
+ * state without a lock and must be called from the event loop thread.
+ * uv_async_init is the one exception (safe from any thread).  All handles
+ * used with libgoc must be GC-allocated and registered:
  *   uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
- *   uv_tcp_init(goc_scheduler(), tcp);
- *   goc_io_handle_register((uv_handle_t*)tcp);
+ *   uv_tcp_init(goc_scheduler(), tcp);   /* from loop thread only */
+ *   goc_io_handle_register((uv_handle_t*)tcp);  /* safe from any thread */
  *
  * Compile requirements: -std=c11
  *   Include this header explicitly: #include "goc_io.h"
@@ -452,9 +454,9 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags);
  * call uv_close() directly and then goc_io_handle_unregister() from within your
  * callback instead of using goc_io_handle_close().
  *
- * Note: goc_io_handle_close() stores a pointer in handle->data for the duration
- * of the uv_close call.  Do not use handle->data for other purposes between
- * calling goc_io_handle_close() and receiving the close callback.
+ * Note: goc_io_handle_close() overwrites handle->data from the loop thread
+ * before calling uv_close.  Do not use handle->data after calling
+ * goc_io_handle_close().
  * ====================================================================== */
 
 /**
@@ -483,12 +485,16 @@ void goc_io_handle_unregister(uv_handle_t* handle);
 /**
  * goc_io_handle_close() — Close a GC-allocated handle and unregister it.
  *
- * Calls uv_close(handle, ...) and automatically calls goc_io_handle_unregister()
- * once the close completes, then forwards to cb (if non-NULL).
+ * Dispatches uv_close(handle, ...) to the event loop thread and automatically
+ * calls goc_io_handle_unregister() once the close completes, then forwards to
+ * cb (if non-NULL).
  *
  * Prefer this over calling uv_close() + goc_io_handle_unregister() manually.
  *
- * Note: overwrites handle->data for the duration of the close.
+ * Safe to call from any context (fiber or OS thread).
+ *
+ * Note: overwrites handle->data from the loop thread before calling uv_close.
+ * Do not use handle->data after calling goc_io_handle_close().
  */
 void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb);
 

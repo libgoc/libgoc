@@ -56,8 +56,10 @@ Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) use a
 
 Handle initialisation (`uv_tcp_init`, `uv_pipe_init`, `uv_udp_init`, etc.)
 is synchronous and takes no callback, so it is outside the scope of `goc_io`.
-Use raw libuv functions with `goc_scheduler()` as the loop argument.  All
-handles used with libgoc must be GC-allocated and registered:
+These functions modify internal loop state and must be called from the
+**event loop thread**. Use `goc_io_handle_close` (which dispatches internally)
+to close from any thread. All handles used with libgoc must be GC-allocated
+and registered:
 
 ```c
 uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
@@ -318,7 +320,9 @@ handle in a GC-visible root array for the duration of its libuv lifetime.
 |---|---|---|
 | `goc_io_handle_register` | `void goc_io_handle_register(uv_handle_t* handle)` | Pin a GC-allocated handle as a GC root. Call immediately after `uv_*_init()`. Safe from any context. |
 | `goc_io_handle_unregister` | `void goc_io_handle_unregister(uv_handle_t* handle)` | Remove the handle from the root array. Call from inside your `uv_close` callback. Safe from any context. |
-| `goc_io_handle_close` | `void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb)` | Call `uv_close` and automatically unregister on completion, then forward to `cb` (may be NULL). Overwrites `handle->data` for the duration of the close. |
+| `goc_io_handle_close` | `void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb)` | Dispatch `uv_close` to the loop thread and automatically unregister on completion, then forward to `cb` (may be NULL). Safe from any context. Overwrites `handle->data` from the loop thread before calling `uv_close`. |
+
+> **Thread safety of `uv_*_init`:** Most libuv handle init functions (`uv_tcp_init`, `uv_pipe_init`, `uv_udp_init`, etc.) modify internal loop state without a lock and must be called from the event loop thread. `uv_async_init` is the one exception — it is explicitly documented as safe from any thread. If you need to initialise other handle types from fiber context, dispatch via `uv_async_t` first.
 
 **Example**
 
@@ -327,26 +331,29 @@ handle in a GC-visible root array for the duration of its libuv lifetime.
 #include "goc_io.h"
 
 static void tcp_fiber(void* _) {
+    /* uv_tcp_init must be called from the loop thread.
+     * Dispatch your server setup there, then use the handle from fibers. */
     uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
-    uv_tcp_init(goc_scheduler(), tcp);
+    uv_tcp_init(goc_scheduler(), tcp);  /* call from loop thread */
     goc_io_handle_register((uv_handle_t*)tcp);
 
     /* ... connect, read, write ... */
 
-    /* Tear down: unregisters from GC roots automatically. */
-    goc_io_handle_close((uv_handle_t*)tcp, NULL);
+    /* Tear down: dispatches to loop thread, unregisters automatically. */
+    goc_io_handle_close((uv_handle_t*)tcp, NULL);  /* safe from any thread */
 }
 ```
 
 If you need the close callback for your own cleanup and are calling `uv_close`
-directly, call `goc_io_handle_unregister` from within it instead:
+directly from the loop thread, call `goc_io_handle_unregister` from within it
+instead:
 
 ```c
 static void on_closed(uv_handle_t* h) {
     goc_io_handle_unregister(h);
     /* h is GC-managed; no free() needed */
 }
-uv_close((uv_handle_t*)tcp, on_closed);
+uv_close((uv_handle_t*)tcp, on_closed);  /* must be called from loop thread */
 ```
 
 ---

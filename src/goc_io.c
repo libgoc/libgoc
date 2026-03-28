@@ -1083,15 +1083,36 @@ static void on_goc_handle_close(uv_handle_t* handle)
     goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)handle->data;
     uv_close_cb user_cb = ctx ? ctx->user_cb : NULL;
     handle->data = NULL;
+    gc_handle_unregister(ctx);
     gc_handle_unregister(handle);
     if (user_cb)
         user_cb(handle);
 }
 
+typedef struct {
+    uv_async_t   async;    /* MUST be first member */
+    uv_handle_t* target;
+    uv_close_cb  user_cb;
+} goc_handle_close_dispatch_t;
+
+static void on_handle_close_dispatch(uv_async_t* h)
+{
+    goc_handle_close_dispatch_t* d = (goc_handle_close_dispatch_t*)h;
+    goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)goc_malloc(
+                                      sizeof(goc_handle_close_ctx_t));
+    ctx->user_cb    = d->user_cb;
+    gc_handle_register(ctx);
+    d->target->data = ctx;
+    uv_close(d->target, on_goc_handle_close);
+    uv_close((uv_handle_t*)h, unregister_io_handle);
+}
+
 void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb)
 {
-    goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)goc_malloc(sizeof(goc_handle_close_ctx_t));
-    ctx->user_cb  = cb;
-    handle->data  = ctx;
-    uv_close(handle, on_goc_handle_close);
+    goc_handle_close_dispatch_t* d = (goc_handle_close_dispatch_t*)goc_malloc(
+                                         sizeof(goc_handle_close_dispatch_t));
+    d->target  = handle;
+    d->user_cb = cb;
+    gc_handle_register(d);
+    dispatch_async_or_abort(&d->async, on_handle_close_dispatch, "goc_io_handle_close");
 }
