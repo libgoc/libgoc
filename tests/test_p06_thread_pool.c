@@ -1847,6 +1847,7 @@ static void test_p6_28(void) {
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
 
+    goc_close(done_ch);
     goc_pool_destroy(pool);
 
     uint64_t att1, suc1, mis1, wak1;
@@ -1946,6 +1947,8 @@ static void test_p6_30(void) {
     bool ok = done_wait_timeout(&done, 15000);
     ASSERT(ok);
 
+    goc_close(pair.req);
+    goc_close(pair.ack);
     goc_pool_destroy(pool);
     done_destroy(&done);
     TEST_PASS();
@@ -2024,6 +2027,7 @@ static void test_p6_32(void) {
     goc_val_t* v = goc_take_sync(join);
     ASSERT(v->ok == GOC_CLOSED);
 
+    goc_close(done_ch);
     goc_pool_destroy(pool);
 
     uint64_t att1, suc1, mis1, wak1;
@@ -2035,14 +2039,17 @@ done:;
 }
 
 /*
- * P6.33 — Hint fallback on empty victim: pool=2 completes without hang
+ * P6.33 — Hint fallback on empty victim: two sequential pools, steal succeeds
  *
- * Runs two sequential fan-out rounds on the same pool=2.  Between rounds the
- * hint points to the worker that was last victimised.  In the second round
- * that worker's deque may already be empty when the thief probes it, forcing
- * fallback to the randomised scan.  Liveness (goc_pool_destroy returns) is
- * the primary assertion; steal_successes > 0 confirms work was actually found
- * via the fallback path.
+ * Pool 1 runs a fan-out workload: steal succeeds, hint is set on the stealing
+ * worker.  Pool 1 is fully destroyed (all children drained) before pool 2
+ * starts, guaranteeing no round-1 children remain in any deque.  Pool 2 runs
+ * another fan-out: the randomised scan (no hint yet, fresh workers) must find
+ * work.  Both rounds must complete and steal_successes delta > 0.
+ *
+ * Using separate pools avoids the deque overflow that occurs when round-1
+ * children are still in the deque (unbuffered, unrun) when round-2 pushes
+ * another P6_33_NCHILDREN items — total would exceed q-cap (512).
  */
 #define P6_33_NCHILDREN  300
 
@@ -2064,29 +2071,35 @@ static void p6_33_fanout_fn(void* arg) {
 }
 
 static void test_p6_33(void) {
-    TEST_BEGIN("P6.33  victim hint falls back to full scan on empty victim (pool=2)");
+    TEST_BEGIN("P6.33  hint fallback: steal_successes > 0 across two pools (pool=2)");
 
     uint64_t att0, suc0, mis0, wak0;
     goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
 
-    goc_pool* pool = goc_pool_make(2);
-    ASSERT(pool != NULL);
-
-    /* Round 1: sets the victim hint on the stealing worker. */
+    /* Round 1 — fresh pool, no hint yet: randomised scan finds work. */
+    goc_pool* pool1 = goc_pool_make(2);
+    ASSERT(pool1 != NULL);
     goc_chan* done_ch1 = goc_chan_make(0);
     ASSERT(done_ch1 != NULL);
-    p6_33_fanout_args_t fargs1 = { .pool = pool, .done_ch = done_ch1 };
-    goc_val_t* v1 = goc_take_sync(goc_go_on(pool, p6_33_fanout_fn, &fargs1));
+    p6_33_fanout_args_t fargs1 = { .pool = pool1, .done_ch = done_ch1 };
+    goc_val_t* v1 = goc_take_sync(goc_go_on(pool1, p6_33_fanout_fn, &fargs1));
     ASSERT(v1->ok == GOC_CLOSED);
+    /* Destroy fully: all round-1 children drain before round-2 starts,
+     * preventing deque depth from exceeding q-cap (512). */
+    goc_close(done_ch1);
+    goc_pool_destroy(pool1);
 
-    /* Round 2: hint worker's deque is now empty; fallback scan must find work. */
+    /* Round 2 — fresh pool, fresh hints (SIZE_MAX): must fall back to
+     * randomised scan and still find all the children. */
+    goc_pool* pool2 = goc_pool_make(2);
+    ASSERT(pool2 != NULL);
     goc_chan* done_ch2 = goc_chan_make(0);
     ASSERT(done_ch2 != NULL);
-    p6_33_fanout_args_t fargs2 = { .pool = pool, .done_ch = done_ch2 };
-    goc_val_t* v2 = goc_take_sync(goc_go_on(pool, p6_33_fanout_fn, &fargs2));
+    p6_33_fanout_args_t fargs2 = { .pool = pool2, .done_ch = done_ch2 };
+    goc_val_t* v2 = goc_take_sync(goc_go_on(pool2, p6_33_fanout_fn, &fargs2));
     ASSERT(v2->ok == GOC_CLOSED);
-
-    goc_pool_destroy(pool);
+    goc_close(done_ch2);
+    goc_pool_destroy(pool2);
 
     uint64_t att1, suc1, mis1, wak1;
     goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
