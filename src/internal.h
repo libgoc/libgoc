@@ -215,7 +215,7 @@ struct goc_spawn_req {
 void chan_register(goc_chan* ch);
 void chan_unregister(goc_chan* ch);
 
-/* gc.c → used by timeout.c and goc_io.c */
+/* gc.c → called from goc_init (gc.c) */
 void live_uv_handles_init(void);
 
 /* gc.c → used by goc_io.c (goc_handle_register/unregister) */

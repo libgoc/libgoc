@@ -420,8 +420,7 @@ void chan_unregister(goc_chan* ch) {
 /* ---------------------------------------------------------------------------
  * live_uv_handles_init  (internal; declared in internal.h)
  *
- * Allocates the GC-managed live_uv_chans and live_uv_handles arrays and
- * initialises their mutexes.
+ * Allocates the GC-managed live_uv_handles array and initialises its mutex.
  * Must be called during goc_init, before any channel-backed libuv operation.
  * ---------------------------------------------------------------------------*/
 
