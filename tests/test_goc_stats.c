@@ -31,7 +31,7 @@
  *   S4.1  goc_stats_shutdown() disables stats delivery
  *   S5.1  Worker STOPPED event carries valid steal_attempts/steal_successes
  *   S6.1  goc_cb_queue_get_hwm() reflects peak callback-queue depth
- *   S6.4  steal_misses/idle_wakeups delta is zero when no work is done
+ *   S6.4  steal_misses delta is zero when no work is done (idle_wakeups not checked: shutdown wakes workers)
  *   S6.5  idle_wakeups increments after external injection (pool=2, 1 fiber)
  *   S6.6  goc_pool_get_steal_stats extended signature returns valid values
  *
@@ -802,13 +802,18 @@ done:;
 }
 
 /*
- * S6.4 — steal_misses and idle_wakeups delta is zero when no work is done
+ * S6.4 — steal_misses delta is zero when no work is done
  *
  * Create a pool and immediately destroy it without posting any fibers.
- * The deltas for both new counter fields must be 0.
+ * Workers find empty deques and go idle without entering the steal loop,
+ * so steal_misses must not increase.
+ *
+ * Note: idle_wakeups is NOT asserted to be zero here.  goc_pool_destroy
+ * posts to each worker's idle_sem to wake it for shutdown, so idle_wakeups
+ * increases by at least thread_count even with no work posted.
  */
 static void test_s6_4(void) {
-    TEST_BEGIN("S6.4  steal_misses/idle_wakeups delta is zero with no work");
+    TEST_BEGIN("S6.4  steal_misses delta is zero with no work");
 
     uint64_t att0, suc0, mis0, wak0;
     goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
@@ -820,7 +825,6 @@ static void test_s6_4(void) {
     goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
 
     ASSERT((mis1 - mis0) == 0);
-    ASSERT((wak1 - wak0) == 0);
 
     TEST_PASS();
 done:;
