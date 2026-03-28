@@ -241,6 +241,9 @@ void pool_submit_spawn(goc_pool* pool,
                        void (*fn)(void*),
                        void* arg,
                        goc_chan* join_ch);
+/* Test helper: spin until at least n workers are idle (parked on idle_sem).
+ * Not part of the public API; declared here for use by internal test files. */
+void pool_wait_all_idle(goc_pool* pool, size_t n);
 
 /* Inline helper used by wake() and goc_close to atomically claim a parked
  * entry for dispatch.  For goc_alts entries (fired != NULL), first CAS fired

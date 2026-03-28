@@ -49,6 +49,7 @@
 #include "test_harness.h"
 #include "goc.h"
 #include "goc_stats.h"
+#include "../src/internal.h"
 
 /* =========================================================================
  * Event collection buffer
@@ -846,6 +847,9 @@ static void test_s6_5(void) {
     goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
 
     goc_pool* pool = goc_pool_make(2);
+    /* Wait until both workers are parked before posting, so the external
+     * injection is guaranteed to wake at least one via uv_sem_post. */
+    pool_wait_all_idle(pool, 2);
     goc_go_on(pool, noop_fiber, NULL);
     goc_pool_destroy(pool);
 

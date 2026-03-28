@@ -726,3 +726,11 @@ void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
     *misses       = atomic_load_explicit(&g_steal_misses,    memory_order_relaxed);
     *idle_wakeups = atomic_load_explicit(&g_idle_wakeups,    memory_order_relaxed);
 }
+
+/* -------------------------------------------------------------------------
+ * pool_wait_all_idle — test helper
+ * ---------------------------------------------------------------------- */
+void pool_wait_all_idle(goc_pool* pool, size_t n) {
+    while (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) < n)
+        uv_sleep(0);
+}
