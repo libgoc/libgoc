@@ -1,0 +1,147 @@
+make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
+cmake -S /home/divyansh/repos/libgoc -B ../../build-bench-vmem -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON -DGOC_ENABLE_STATS=0
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/divyansh/repos/libgoc/build-bench-vmem
+cmake --build ../../build-bench-vmem --target goc
+gmake[1]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[3]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+[100%] Built target goc
+gmake[3]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -luv -lrt -L/usr/local/lib -lgc -lpthread -ldl  -o bench-libgoc
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 352ms (567312 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10384ms (48147 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1059ms (188701 msg/s)
+Spawn idle tasks: 200000 fibers in 3126ms (63970 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2603ms (869 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 348ms (573282 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14447ms (34608 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 900ms (222069 msg/s)
+Spawn idle tasks: 200000 fibers in 11585ms (17264 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2724ms (830 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 287ms (696689 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14829ms (33716 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1043ms (191685 msg/s)
+Spawn idle tasks: 200000 fibers in 3505ms (57051 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2733ms (828 primes/s)
+
+=== Pool Size: 8 ===
+GOC_POOL_THREADS=8
+Channel ping-pong: 200000 round trips in 234ms (851812 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10186ms (49086 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 824ms (242620 msg/s)
+Spawn idle tasks: 200000 fibers in 14364ms (13923 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2687ms (842 primes/s)
+
+make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'
+make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
+cmake -S /home/divyansh/repos/libgoc -B ../../build-bench-vmem -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON -DGOC_ENABLE_STATS=0
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/divyansh/repos/libgoc/build-bench-vmem
+cmake --build ../../build-bench-vmem --target goc
+gmake[1]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[3]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+[100%] Built target goc
+gmake[3]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -luv -lrt -L/usr/local/lib -lgc -lpthread -ldl  -o bench-libgoc
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 362ms (550976 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14219ms (35163 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 960ms (208239 msg/s)
+Spawn idle tasks: 200000 fibers in 3037ms (65844 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3234ms (699 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 356ms (561512 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 14388ms (34749 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1050ms (190459 msg/s)
+Spawn idle tasks: 200000 fibers in 3465ms (57712 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3204ms (706 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 290ms (687828 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 15224ms (32842 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 894ms (223638 msg/s)
+Spawn idle tasks: 200000 fibers in 3538ms (56514 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2915ms (776 primes/s)
+
+=== Pool Size: 8 ===
+GOC_POOL_THREADS=8
+Channel ping-pong: 200000 round trips in 223ms (894177 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10623ms (47063 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 876ms (228270 msg/s)
+Spawn idle tasks: 200000 fibers in 11382ms (17572 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2715ms (833 primes/s)
+
+make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'
+make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
+cmake -S /home/divyansh/repos/libgoc -B ../../build-bench-vmem -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=ON -DGOC_ENABLE_STATS=0
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/divyansh/repos/libgoc/build-bench-vmem
+cmake --build ../../build-bench-vmem --target goc
+gmake[1]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[3]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+[100%] Built target goc
+gmake[3]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[2]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
+cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -luv -lrt -L/usr/local/lib -lgc -lpthread -ldl  -o bench-libgoc
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 363ms (550701 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10204ms (48999 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 896ms (223037 msg/s)
+Spawn idle tasks: 200000 fibers in 3066ms (65221 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3184ms (710 primes/s)
+
+=== Pool Size: 2 ===
+GOC_POOL_THREADS=2
+Channel ping-pong: 200000 round trips in 372ms (536663 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 15037ms (33251 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 995ms (200825 msg/s)
+Spawn idle tasks: 200000 fibers in 11133ms (17963 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 2730ms (828 primes/s)
+
+=== Pool Size: 4 ===
+GOC_POOL_THREADS=4
+Channel ping-pong: 200000 round trips in 296ms (674062 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 15138ms (33028 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1131ms (176774 msg/s)
+Spawn idle tasks: 200000 fibers in 3679ms (54361 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3039ms (744 primes/s)
+
+=== Pool Size: 8 ===
+GOC_POOL_THREADS=8
+Channel ping-pong: 200000 round trips in 239ms (835663 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 10156ms (49230 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 950ms (210313 msg/s)
+Spawn idle tasks: 200000 fibers in 123067ms (1625 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 3288ms (688 primes/s)
+
+make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'
