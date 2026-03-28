@@ -104,6 +104,9 @@
  *   P6.29  spawn-idle liveness: 10k short fibers complete without hang (pool=2)
  *   P6.30  ping-pong liveness: unbuffered channel completes without hang (pool=2)
  *   P6.31  liveness: no semaphore imbalance after post-yield wakeup (pool=2)
+ *   P6.32  victim hint updated on successful steal: steal_successes > 0 (pool=2)
+ *   P6.33  victim hint falls back to full scan on empty victim (pool=2, 2 rounds)
+ *   P6.34  no steal attempts at pool=1 (steal phase skipped when thread_count==1)
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -1974,6 +1977,157 @@ static void test_p6_31(void) {
 done:;
 }
 
+/* ---- P6.32–P6.34: Victim hinting correctness ---- */
+
+/*
+ * P6.32 — Hint updated on successful steal: steal_successes > 0 (pool=2)
+ *
+ * Uses the same fan-out shape as P6.28 but on pool=2, so worker 1 is the
+ * only possible victim/thief.  After the first steal the hint is set to
+ * that worker; subsequent steals use the hint and bypass the random scan.
+ * We verify indirectly: steal_successes delta > 0 confirms the hint path
+ * executed successfully at least once.
+ */
+static void p6_32_child_fn(void* arg) {
+    goc_chan* done_ch = (goc_chan*)arg;
+    goc_put(done_ch, NULL);
+}
+
+typedef struct {
+    goc_pool* pool;
+    goc_chan* done_ch;
+} p6_32_fanout_args_t;
+
+static void p6_32_fanout_fn(void* arg) {
+    p6_32_fanout_args_t* a = (p6_32_fanout_args_t*)arg;
+    for (int i = 0; i < P6_28_NCHILDREN; i++)
+        goc_go_on(a->pool, p6_32_child_fn, a->done_ch);
+    for (int i = 0; i < P6_28_NCHILDREN; i++)
+        goc_take(a->done_ch);
+}
+
+static void test_p6_32(void) {
+    TEST_BEGIN("P6.32  victim hint updated on successful steal (pool=2)");
+
+    uint64_t att0, suc0, mis0, wak0;
+    goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    goc_chan* done_ch = goc_chan_make(0);
+    ASSERT(done_ch != NULL);
+
+    p6_32_fanout_args_t fargs = { .pool = pool, .done_ch = done_ch };
+    goc_chan* join = goc_go_on(pool, p6_32_fanout_fn, &fargs);
+
+    goc_val_t* v = goc_take_sync(join);
+    ASSERT(v->ok == GOC_CLOSED);
+
+    goc_pool_destroy(pool);
+
+    uint64_t att1, suc1, mis1, wak1;
+    goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
+    ASSERT((suc1 - suc0) > 0);
+
+    TEST_PASS();
+done:;
+}
+
+/*
+ * P6.33 — Hint fallback on empty victim: pool=2 completes without hang
+ *
+ * Runs two sequential fan-out rounds on the same pool=2.  Between rounds the
+ * hint points to the worker that was last victimised.  In the second round
+ * that worker's deque may already be empty when the thief probes it, forcing
+ * fallback to the randomised scan.  Liveness (goc_pool_destroy returns) is
+ * the primary assertion; steal_successes > 0 confirms work was actually found
+ * via the fallback path.
+ */
+#define P6_33_NCHILDREN  300
+
+typedef struct {
+    goc_pool* pool;
+    goc_chan* done_ch;
+} p6_33_fanout_args_t;
+
+static void p6_33_child_fn(void* arg) {
+    goc_put((goc_chan*)arg, NULL);
+}
+
+static void p6_33_fanout_fn(void* arg) {
+    p6_33_fanout_args_t* a = (p6_33_fanout_args_t*)arg;
+    for (int i = 0; i < P6_33_NCHILDREN; i++)
+        goc_go_on(a->pool, p6_33_child_fn, a->done_ch);
+    for (int i = 0; i < P6_33_NCHILDREN; i++)
+        goc_take(a->done_ch);
+}
+
+static void test_p6_33(void) {
+    TEST_BEGIN("P6.33  victim hint falls back to full scan on empty victim (pool=2)");
+
+    uint64_t att0, suc0, mis0, wak0;
+    goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    /* Round 1: sets the victim hint on the stealing worker. */
+    goc_chan* done_ch1 = goc_chan_make(0);
+    ASSERT(done_ch1 != NULL);
+    p6_33_fanout_args_t fargs1 = { .pool = pool, .done_ch = done_ch1 };
+    goc_val_t* v1 = goc_take_sync(goc_go_on(pool, p6_33_fanout_fn, &fargs1));
+    ASSERT(v1->ok == GOC_CLOSED);
+
+    /* Round 2: hint worker's deque is now empty; fallback scan must find work. */
+    goc_chan* done_ch2 = goc_chan_make(0);
+    ASSERT(done_ch2 != NULL);
+    p6_33_fanout_args_t fargs2 = { .pool = pool, .done_ch = done_ch2 };
+    goc_val_t* v2 = goc_take_sync(goc_go_on(pool, p6_33_fanout_fn, &fargs2));
+    ASSERT(v2->ok == GOC_CLOSED);
+
+    goc_pool_destroy(pool);
+
+    uint64_t att1, suc1, mis1, wak1;
+    goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
+    ASSERT((suc1 - suc0) > 0);
+
+    TEST_PASS();
+done:;
+}
+
+/*
+ * P6.34 — No steal attempts at pool=1 (regression guard)
+ *
+ * The steal phase is skipped entirely when thread_count == 1.
+ * Spawn many fibers and assert steal_attempts delta is 0.
+ */
+#define P6_34_FIBERS 1000
+
+static void p6_34_noop_fn(void* arg) { (void)arg; }
+
+static void test_p6_34(void) {
+    TEST_BEGIN("P6.34  no steal attempts at pool=1");
+
+    uint64_t att0, suc0, mis0, wak0;
+    goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
+
+    goc_pool* pool = goc_pool_make(1);
+    ASSERT(pool != NULL);
+
+    for (int i = 0; i < P6_34_FIBERS; i++)
+        goc_go_on(pool, p6_34_noop_fn, NULL);
+
+    goc_pool_destroy(pool);
+
+    uint64_t att1, suc1, mis1, wak1;
+    goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
+    ASSERT((att1 - att0) == 0);
+
+    TEST_PASS();
+done:;
+}
+
 /* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
 /*
  * Bug being tested (gc.c goc_fiber_root_register):
@@ -2100,6 +2254,9 @@ int main(void) {
     test_p6_29();
     test_p6_30();
     test_p6_31();
+    test_p6_32();
+    test_p6_33();
+    test_p6_34();
     printf("\n");
 
     if (!g_skip_shutdown) {
