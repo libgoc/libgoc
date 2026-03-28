@@ -199,20 +199,9 @@ libuv owns **one thing**: the event loop thread.
 | `uv_async_t` | wake the loop from other threads so it can drain callback/shutdown work |
 | `uv_timer_t` | `goc_timeout` implementation |
 
-**All libuv handles (`uv_timer_t`, `uv_async_t`, etc.) must be allocated outside the GC heap** (e.g. plain `malloc`). libuv holds internal references to handles until `uv_close` completes; GC-allocated handles risk collection before `uv_close` fires, causing use-after-free inside the event loop.
+**All libuv handles and internal context structs must be GC-allocated (`goc_malloc`) and pinned in the `live_uv_handles` root array** before being handed to libuv. libuv holds internal references to handles until `uv_close` completes; those references are not visible to the GC. Without pinning the GC would collect the object prematurely, causing use-after-free inside the event loop. Internal code uses `gc_handle_register`/`gc_handle_unregister` directly; user code uses the public wrappers `goc_io_handle_register` / `goc_io_handle_unregister` / `goc_io_handle_close`.
 
-This rule applies equally to **user-created handles** registered on the loop via `goc_scheduler()`. Any `uv_tcp_t`, `uv_udp_t`, `uv_pipe_t`, `uv_fs_event_t`, or other handle the caller initialises with `uv_*_init(goc_scheduler(), handle)` must be `malloc`-allocated. Free it only inside the `uv_close` completion callback:
-
-```c
-static void on_handle_closed(uv_handle_t* h) {
-    free(h);   /* safe: uv guarantees no further callbacks after this point */
-}
-
-/* to tear down: */
-uv_close((uv_handle_t*)my_handle, on_handle_closed);
-```
-
-Never pass a stack-allocated or GC-heap-allocated handle to any `uv_*_init` function.
+User-created handles registered on the loop via `goc_scheduler()` follow the same rule: allocate with `goc_malloc`, register with `goc_io_handle_register`, and close with `goc_io_handle_close`.
 
 ### User I/O Callbacks and the uv Loop Thread
 
@@ -268,7 +257,7 @@ Pool workers and the uv loop thread are created via `goc_thread_create` on all p
 
 `goc_malloc(n)` is the public allocator. It is a thin wrapper around `GC_malloc`. Memory is zero-initialised and collected automatically when no longer reachable — no `free` is required or permitted.
 
-**libuv handles must still be `malloc`-allocated** (not `goc_malloc`) — see [libuv Role](#libuv-role). The library's own internal structures also use plain `malloc` for any object whose lifetime is explicitly managed and does not need to participate in GC traversal.
+**libuv handles and internal context/dispatch structs are `goc_malloc`-allocated and pinned via `gc_handle_register`** — see [libuv Role](#libuv-role). The library uses plain `malloc` only for objects whose lifetime is explicitly managed and that do not need to participate in GC traversal (e.g. channel mutex internals, injector queue nodes).
 
 Most runtime objects that should participate in GC traversal (channels, fibers, parked entries, callback-queue nodes) are allocated via `goc_malloc`. Scheduler storage has a few intentional exceptions: work-stealing deque ring buffers use `GC_malloc_uncollectable` so queued `goc_entry*` values remain visible to the collector, and injector queue nodes use plain `malloc`/`free` so arbitrary producer threads do not need to perform GC allocations.
 
@@ -278,8 +267,8 @@ Most runtime objects that should participate in GC traversal (channels, fibers, 
 
 Most GC-managed structs are allocated via `goc_malloc` — on the GC heap, so pointers inside them are visible to the collector automatically.
 
-**Exceptions:**
-- libuv handles (`uv_timer_t`, `uv_mutex_t` internals, `uv_async_t`) are allocated with plain `malloc` and freed explicitly;
+**Exceptions (plain `malloc`):**
+- channel mutex internals (`uv_mutex_t*` inside `goc_chan`), destroyed by `goc_shutdown`;
 - work-stealing deque ring buffers use `GC_malloc_uncollectable`;
 - injector queue nodes use plain `malloc`/`free`.
 
@@ -1028,28 +1017,34 @@ void cb_queue_init(void) {
 
 ## `goc_timeout` — libuv Timer
 
-`uv_timer_t` is allocated with plain `malloc` (not `goc_malloc`) — see [libuv Role](#libuv-role). The handle is freed in the `uv_close` callback.
+`goc_timeout_req` and `goc_timeout_timer_ctx` are GC-allocated and registered via `gc_handle_register` — see [libuv Role](#libuv-role). They are unregistered in their respective `uv_close` callbacks via `gc_handle_unregister`, after which the GC may collect them.
 
-`uv_timer_init` and `uv_timer_start` are **not thread-safe**; they must be called from the loop thread. Because `goc_timeout` may be called from any thread (fiber, pool worker, main thread), the timer initialisation is marshalled onto the loop thread via a one-shot `uv_async_t` embedded in a heap-allocated `goc_timeout_req`:
+`uv_timer_init` and `uv_timer_start` are **not thread-safe**; they must be called from the loop thread. Because `goc_timeout` may be called from any thread (fiber, pool worker, main thread), the timer initialisation is marshalled onto the loop thread via a one-shot `uv_async_t` embedded in a GC-allocated `goc_timeout_req`:
 
 ```c
 typedef struct {
     uv_async_t  async;       /* MUST be first — cast between async* and req* */
-    goc_chan*    ch;
-    uv_timer_t* t;
+    struct goc_timeout_timer_ctx* timer_ctx;
     uint64_t    ms;
     uint64_t    deadline_ns; /* uv_hrtime() snapshot taken at goc_timeout() call time */
 } goc_timeout_req;
 
+typedef struct goc_timeout_timer_ctx {
+    uv_timer_t timer;        /* MUST be first */
+    goc_chan*  ch;
+} goc_timeout_timer_ctx;
+
 goc_chan* goc_timeout(uint64_t ms) {
     goc_chan* ch = goc_chan_make(0);
-    goc_timeout_req* req = malloc(sizeof(goc_timeout_req));
-    uv_timer_t* t = malloc(sizeof(uv_timer_t));
-    t->data = ch;
-    req->ch = ch; req->t = t; req->ms = ms;
-    req->deadline_ns = uv_hrtime();              /* record wall-clock call time */
-    uv_async_init(g_loop, &req->async, on_start_timer);  /* safe from any thread */
-    uv_async_send(&req->async);                           /* dispatch to loop thread */
+    goc_timeout_req*       req  = goc_malloc(sizeof(goc_timeout_req));
+    goc_timeout_timer_ctx* tctx = goc_malloc(sizeof(goc_timeout_timer_ctx));
+    tctx->ch = ch;
+    req->timer_ctx = tctx; req->ms = ms;
+    req->deadline_ns = uv_hrtime();
+    gc_handle_register(req);   /* pin while libuv holds &req->async */
+    gc_handle_register(tctx);  /* pin while libuv holds &tctx->timer */
+    uv_async_init(g_loop, &req->async, on_start_timer);
+    uv_async_send(&req->async);
     return ch;
 }
 
@@ -1063,31 +1058,23 @@ static void on_start_timer(uv_async_t* h) {
     uint64_t elapsed_ms = (now_ns > req->deadline_ns)
                         ? (now_ns - req->deadline_ns) / 1000000ULL : 0;
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
-    uv_timer_init(g_loop, req->t);
-    uv_timer_start(req->t, on_timeout, remaining, 0);
-    uv_close((uv_handle_t*)h, free_start_cb);  /* one-shot: close after use */
+    uv_timer_init(g_loop, &req->timer_ctx->timer);
+    uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);
+    uv_close((uv_handle_t*)h, unregister_handle_cb);  /* one-shot: close after use */
 }
 
 static void on_timeout(uv_timer_t* t) {
-    goc_chan* ch = (goc_chan*)t->data;
-    goc_close(ch);                     /* wake any parked takers with ok==GOC_CLOSED */
-    uv_close((uv_handle_t*)t, free_timer_cb);
+    goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
+    goc_close(tctx->ch);        /* wake any parked takers with ok==GOC_CLOSED */
+    uv_close((uv_handle_t*)t, unregister_handle_cb);
     /* goc_close is safe to call concurrently with goc_shutdown's Step 1 close
        loop because it is serialised by a close_guard CAS: exactly one caller
        flips close_guard from 0→1 and proceeds with teardown; the other sees 1
        and returns immediately — no double-free, no segfault. */
 }
 
-static void free_start_cb(uv_handle_t* h) {
-    free(h);   /* h == &req->async == req (first member); frees the whole req.
-                  Valid by C11 §6.7.2.1p15: a pointer to a struct may be converted
-                  to a pointer to its first member and vice versa. uv_async_t is
-                  itself a uv_handle_t via UV_HANDLE_FIELDS, making the full chain
-                  uv_handle_t* → uv_async_t* → goc_timeout_req* well-defined. */
-}
-
-static void free_timer_cb(uv_handle_t* h) {
-    free(h);   /* safe: uv_close guarantees no further callbacks */
+static void unregister_handle_cb(uv_handle_t* h) {
+    gc_handle_unregister(h);   /* remove from live_uv_handles; GC may now collect */
 }
 ```
 
