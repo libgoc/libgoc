@@ -106,7 +106,7 @@ static void cleanup_tmp_files(void)
 
 static void fiber_p10_1(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_chan*   ch = goc_io_fs_open(TMP_PATH,
                                     UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644);
@@ -136,7 +136,7 @@ done:;
 
 static void fiber_p10_2(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     /* Open for writing */
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH,
@@ -171,7 +171,7 @@ done:;
 
 static void fiber_p10_3(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH, UV_FS_O_RDONLY, 0));
     if (!vopen || vopen->ok != GOC_OK) goto done;
@@ -205,11 +205,11 @@ done:;
 
 static void fiber_p10_4(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vstat = goc_take(goc_io_fs_stat(TMP_PATH));
     if (!vstat || vstat->ok != GOC_OK) goto done;
-    goc_io_fs_stat_t* st = (goc_io_fs_stat_t*)vstat->val;
+    goc_io_fs_stat_t* st = vstat->val;
     if (!st || st->ok != GOC_IO_OK) goto done;
     if ((int64_t)st->statbuf.st_size != CONTENT_LEN) goto done;
     ok = 1;
@@ -233,7 +233,7 @@ done:;
 
 static void fiber_p10_5(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vren = goc_take(goc_io_fs_rename(TMP_PATH, TMP_PATH2));
     int ren = goc_unbox_int(vren->val);
@@ -241,12 +241,12 @@ static void fiber_p10_5(void* arg)
 
     /* Old path should no longer exist */
     goc_val_t* vold = goc_take(goc_io_fs_stat(TMP_PATH));
-    goc_io_fs_stat_t* old_st = (goc_io_fs_stat_t*)vold->val;
+    goc_io_fs_stat_t* old_st = vold->val;
     if (!old_st || old_st->ok == GOC_IO_OK) goto done;  /* still exists = fail */
 
     /* New path should exist with the same size */
     goc_val_t* vnew = goc_take(goc_io_fs_stat(TMP_PATH2));
-    goc_io_fs_stat_t* new_st = (goc_io_fs_stat_t*)vnew->val;
+    goc_io_fs_stat_t* new_st = vnew->val;
     if (!new_st || new_st->ok != GOC_IO_OK) goto done;
     if ((int64_t)new_st->statbuf.st_size != CONTENT_LEN) goto done;
 
@@ -271,7 +271,7 @@ done:;
 
 static void fiber_p10_6(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vul = goc_take(goc_io_fs_unlink(TMP_PATH2));
     int ul = goc_unbox_int(vul->val);
@@ -303,7 +303,7 @@ done:;
 
 static void fiber_p10_7(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_chan* ch = goc_io_fs_open("/nonexistent/path/that/does/not/exist",
                                    UV_FS_O_RDONLY, 0);
@@ -333,7 +333,7 @@ done:;
 
 static void fiber_p10_8(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_chan*           ch = goc_io_getaddrinfo("localhost", NULL, NULL);
     goc_val_t*          v  = goc_take(ch);
@@ -362,12 +362,12 @@ done:;
 
 static void fiber_p10_9(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
     goc_chan*          ch  = goc_io_getaddrinfo(NULL, NULL, NULL);
     goc_val_t*         v   = goc_take(ch);
     if (!v || v->ok != GOC_OK) goto done;
-    goc_io_getaddrinfo_t* res = (goc_io_getaddrinfo_t*)v->val;
+    goc_io_getaddrinfo_t* res = v->val;
     if (!res) goto done;
     /* libuv returns an error (EAI_NONAME or similar) when both are NULL */
     if (res->ok == GOC_IO_OK && res->res != NULL)
@@ -400,7 +400,7 @@ static void test_p10_10(void)
     /* Drain the channel to avoid leaking a live channel at shutdown. */
     goc_val_t* v = goc_take_sync(ch);
     if (v && v->ok == GOC_OK && v->val) {
-        goc_io_getaddrinfo_t* res = (goc_io_getaddrinfo_t*)v->val;
+        goc_io_getaddrinfo_t* res = v->val;
         if (res->ok == GOC_IO_OK && res->res)
             uv_freeaddrinfo(res->res);
     }
@@ -414,7 +414,7 @@ done:;
 
 static void fiber_p10_11(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
 
     /* Create source file with content */
@@ -490,7 +490,7 @@ done:;
 
 static void fiber_p10_12(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
 
     /* Select between two competing I/O channels: one opens a file, the other
@@ -541,13 +541,13 @@ done:;
 
 static void fiber_p10_13(void* arg)
 {
-    goc_chan* res_ch = (goc_chan*)arg;
+    goc_chan* res_ch = arg;
     int ok = 0;
 
     /* uv_async_init is the only uv_*_init documented as safe from any thread.
      * Other handle init functions (uv_tcp_init, uv_pipe_init, etc.) modify
      * loop->handle_queue without a lock and must be called from the loop thread. */
-    uv_async_t* h = (uv_async_t*)goc_malloc(sizeof(uv_async_t));
+    uv_async_t* h = goc_malloc(sizeof(uv_async_t));
     int rc = uv_async_init(goc_scheduler(), h, NULL);
     if (rc != 0) goto done;
 
