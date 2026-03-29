@@ -31,6 +31,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
