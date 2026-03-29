@@ -18,8 +18,8 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | | |
 |---|---|
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
-| `libuv` | event loop, timers, cross-thread wakeup |
-| Boehm GC | garbage collection; **must be built with POSIX thread support** (`--enable-threads=posix`); linked automatically, initialised by `goc_init` |
+| `libuv` | event loop, threads, timers, cross-thread wakeup |
+| Boehm GC | garbage collection |
 
 **Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases):
 - Linux (x86-64)
