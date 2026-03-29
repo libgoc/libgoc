@@ -13,22 +13,19 @@
  *
  * Test coverage:
  *
- *   P10.1  goc_io_fs_open: open a new file; file descriptor >= 0
- *   P10.2  goc_io_fs_write: write goc_array data to an open file; returns written bytes
- *   P10.3  goc_io_fs_read: read back the data; result buf is char*; matches written content
- *   P10.4  goc_io_fs_stat: stat the file; size and type fields correct
- *   P10.5  goc_io_fs_rename: rename the file; stat old path fails, new path ok
- *   P10.6  goc_io_fs_unlink: delete the file; subsequent stat fails
- *   P10.7  goc_io_fs_open with invalid path: fd < 0 (error code)
- *   P10.8  goc_io_getaddrinfo: resolve "localhost"; ok == GOC_IO_OK, res != NULL
- *   P10.9  goc_io_getaddrinfo with empty node and service: returns error
- *   P10.10 goc_io_getaddrinfo returns non-NULL channel
- *   P10.11 goc_io_fs_sendfile: copy bytes between two file descriptors
- *   P10.12 Channel-based goc_io_fs_open integrates with goc_alts (select
- *          on open vs. a dummy channel that never fires)
- *   P10.13 goc_io_handle_register + goc_io_handle_close: GC-allocated
- *          uv_async_t handle registers, closes, and unregisters cleanly
- *          (uv_async_init is the only uv_*_init safe to call from any thread)
+ *   P10.1  goc_io_fs_open: opens a new file with write permissions, creates if not exists, and truncates if exists; file descriptor >= 0
+ *   P10.2  goc_io_fs_write: writes static content to an open file; returns the number of bytes written
+ *   P10.3  goc_io_fs_read: reads back the written content; validates that the read buffer matches the written content
+ *   P10.4  goc_io_fs_stat: retrieves file metadata; validates that the file size matches the written content length
+ *   P10.5  goc_io_fs_rename: renames the file; validates that the old path no longer exists and the new path exists with the correct file size
+ *   P10.6  goc_io_fs_unlink: deletes the renamed file; validates that subsequent stat on the file fails
+ *   P10.7  goc_io_fs_open with invalid path: attempts to open a non-existent file; validates that the file descriptor is negative (error code)
+ *   P10.8  goc_io_getaddrinfo: resolves "localhost"; validates that the result structure is non-NULL and contains valid address information
+ *   P10.9  goc_io_getaddrinfo with empty node and service: attempts to resolve with empty node and service; validates that no crash occurs and libuv returns an error
+ *   P10.10 goc_io_getaddrinfo: validates that goc_io_getaddrinfo returns a non-NULL channel (compile-time API check)
+ *   P10.11 goc_io_fs_sendfile: copies bytes between two file descriptors; validates that the destination file content matches the source file content
+ *   P10.12 Channel-based goc_io_fs_open integrates with goc_alts: validates integration of goc_io_fs_open with goc_alts; ensures the correct channel result is selected
+ *   P10.13 goc_io_handle_register + goc_io_handle_close: validates that a GC-allocated uv_async_t handle registers, closes, and unregisters cleanly without crashes
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -48,7 +45,6 @@
 
 #include "test_harness.h"
 #include "goc.h"
-#include "goc_array.h"
 #include "goc_io.h"
 
 /* Temporary file paths used across tests — set by init_tmp_paths(). */
