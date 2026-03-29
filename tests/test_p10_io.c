@@ -15,7 +15,7 @@
  *
  *   P10.1  goc_io_fs_open: open a new file; file descriptor >= 0
  *   P10.2  goc_io_fs_write: write goc_array data to an open file; returns written bytes
- *   P10.3  goc_io_fs_read: read back the data into goc_array; matches written content
+ *   P10.3  goc_io_fs_read: read back the data; result buf is char*; matches written content
  *   P10.4  goc_io_fs_stat: stat the file; size and type fields correct
  *   P10.5  goc_io_fs_rename: rename the file; stat old path fails, new path ok
  *   P10.6  goc_io_fs_unlink: delete the file; subsequent stat fails
@@ -116,7 +116,7 @@ static void fiber_p10_1(void* arg)
                                     UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644);
     goc_val_t*  v  = goc_take(ch);
     if (!v || v->ok != GOC_OK) goto done;
-    uv_file fd = (uv_file)(intptr_t)v->val;
+    uv_file fd = goc_unbox_int(v->val);
     if (fd < 0) goto done;
     goc_take(goc_io_fs_close(fd));
     ok = 1;
@@ -146,14 +146,14 @@ static void fiber_p10_2(void* arg)
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH,
                                UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644));
     if (!vopen || vopen->ok != GOC_OK) goto done;
-    uv_file fd = (uv_file)(intptr_t)vopen->val;
+    uv_file fd = goc_unbox_int(vopen->val);
     if (fd < 0) goto done;
 
     goc_array* data = goc_array_make(CONTENT_LEN);
     for (int i = 0; i < CONTENT_LEN; i++)
         goc_array_push(data, goc_box_int((unsigned char)CONTENT[i]));
     goc_val_t* vwrite = goc_take(goc_io_fs_write(fd, data, 0));
-    ssize_t written = (ssize_t)goc_unbox_int(vwrite->val);
+    ssize_t written = goc_unbox_int(vwrite->val);
     goc_take(goc_io_fs_close(fd));
     if (written != CONTENT_LEN) goto done;
 
@@ -182,21 +182,15 @@ static void fiber_p10_3(void* arg)
     int ok = 0;
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH, UV_FS_O_RDONLY, 0));
     if (!vopen || vopen->ok != GOC_OK) goto done;
-    uv_file fd = (uv_file)(intptr_t)vopen->val;
+    uv_file fd = goc_unbox_int(vopen->val);
     if (fd < 0) goto done;
 
-    goc_array* buf = goc_array_make(64);
-    for (int i = 0; i < 63; i++)
-        goc_array_push(buf, goc_box_int(0));
-    goc_val_t* vrd = goc_take(goc_io_fs_read(fd, buf, 0));
+    goc_val_t* vrd = goc_take(goc_io_fs_read(fd, CONTENT_LEN, 0));
     goc_take(goc_io_fs_close(fd));
 
     goc_io_fs_read_t* rres = (goc_io_fs_read_t*)vrd->val;
     if (!rres || rres->nread != CONTENT_LEN) goto done;
-    for (int i = 0; i < CONTENT_LEN; i++) {
-        if ((unsigned char)goc_unbox_int(goc_array_get(rres->buf, i)) !=
-            (unsigned char)CONTENT[i]) goto done;
-    }
+    if (memcmp(rres->buf, CONTENT, CONTENT_LEN) != 0) goto done;
     ok = 1;
 done:
     goc_put(res_ch, goc_box_int(ok));
@@ -249,7 +243,7 @@ static void fiber_p10_5(void* arg)
     goc_chan* res_ch = (goc_chan*)arg;
     int ok = 0;
     goc_val_t* vren = goc_take(goc_io_fs_rename(TMP_PATH, TMP_PATH2));
-    int ren = (int)(intptr_t)vren->val;
+    int ren = goc_unbox_int(vren->val);
     if (ren != 0) goto done;
 
     /* Old path should no longer exist */
@@ -287,7 +281,7 @@ static void fiber_p10_6(void* arg)
     goc_chan* res_ch = (goc_chan*)arg;
     int ok = 0;
     goc_val_t* vul = goc_take(goc_io_fs_unlink(TMP_PATH2));
-    int ul = (int)(intptr_t)vul->val;
+    int ul = goc_unbox_int(vul->val);
     if (ul != 0) goto done;
 
     /* File should no longer exist */
@@ -322,7 +316,7 @@ static void fiber_p10_7(void* arg)
                                    UV_FS_O_RDONLY, 0);
     goc_val_t*     v  = goc_take(ch);
     if (!v || v->ok != GOC_OK) goto done;
-    uv_file fd = (uv_file)(intptr_t)v->val;
+    uv_file fd = goc_unbox_int(v->val);
     /* result should be a negative error code */
     if (fd >= 0) goto done;
     ok = 1;
@@ -434,21 +428,21 @@ static void fiber_p10_11(void* arg)
     goc_val_t* vsrc = goc_take(goc_io_fs_open(TMP_PATH,
                                UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644));
     if (!vsrc || vsrc->ok != GOC_OK) goto done;
-    uv_file src_fd = (uv_file)(intptr_t)vsrc->val;
+    uv_file src_fd = goc_unbox_int(vsrc->val);
     if (src_fd < 0) goto done;
 
     goc_array* wdata = goc_array_make(CONTENT_LEN);
     for (int i = 0; i < CONTENT_LEN; i++)
         goc_array_push(wdata, goc_box_int((unsigned char)CONTENT[i]));
     goc_val_t* vwrite = goc_take(goc_io_fs_write(src_fd, wdata, 0));
-    ssize_t written = (ssize_t)goc_unbox_int(vwrite->val);
+    ssize_t written = goc_unbox_int(vwrite->val);
     goc_take(goc_io_fs_close(src_fd));
     if (written != CONTENT_LEN) goto done;
 
     /* Reopen source for reading */
     goc_val_t* vsrc2 = goc_take(goc_io_fs_open(TMP_PATH, UV_FS_O_RDONLY, 0));
     if (!vsrc2 || vsrc2->ok != GOC_OK) goto done;
-    src_fd = (uv_file)(intptr_t)vsrc2->val;
+    src_fd = goc_unbox_int(vsrc2->val);
     if (src_fd < 0) goto done;
 
     /* Create destination file */
@@ -458,14 +452,14 @@ static void fiber_p10_11(void* arg)
         goc_take(goc_io_fs_close(src_fd));
         goto done;
     }
-    uv_file dst_fd = (uv_file)(intptr_t)vdst->val;
+    uv_file dst_fd = goc_unbox_int(vdst->val);
     if (dst_fd < 0) {
         goc_take(goc_io_fs_close(src_fd));
         goto done;
     }
 
     goc_val_t* vsf = goc_take(goc_io_fs_sendfile(dst_fd, src_fd, 0, (size_t)CONTENT_LEN));
-    ssize_t sf = (ssize_t)(intptr_t)vsf->val;
+    ssize_t sf = goc_unbox_int(vsf->val);
     goc_take(goc_io_fs_close(src_fd));
     goc_take(goc_io_fs_close(dst_fd));
     if (sf != CONTENT_LEN) goto done;
@@ -473,19 +467,13 @@ static void fiber_p10_11(void* arg)
     /* Verify destination content */
     goc_val_t* vvfd = goc_take(goc_io_fs_open(TMP_PATH3, UV_FS_O_RDONLY, 0));
     if (!vvfd || vvfd->ok != GOC_OK) goto done;
-    uv_file verify_fd = (uv_file)(intptr_t)vvfd->val;
+    uv_file verify_fd = goc_unbox_int(vvfd->val);
     if (verify_fd < 0) goto done;
-    goc_array* rbuf = goc_array_make(64);
-    for (int i = 0; i < 63; i++)
-        goc_array_push(rbuf, goc_box_int(0));
-    goc_val_t* vrd = goc_take(goc_io_fs_read(verify_fd, rbuf, 0));
+    goc_val_t* vrd = goc_take(goc_io_fs_read(verify_fd, CONTENT_LEN, 0));
     goc_take(goc_io_fs_close(verify_fd));
     goc_io_fs_read_t* rres = (goc_io_fs_read_t*)vrd->val;
     if (!rres || rres->nread != CONTENT_LEN) goto done;
-    for (int i = 0; i < CONTENT_LEN; i++) {
-        if ((unsigned char)goc_unbox_int(goc_array_get(rres->buf, i)) !=
-            (unsigned char)CONTENT[i]) goto done;
-    }
+    if (memcmp(rres->buf, CONTENT, CONTENT_LEN) != 0) goto done;
 
     ok = 1;
 done:
@@ -530,7 +518,7 @@ static void fiber_p10_12(void* arg)
     goc_alts_result* result = goc_alts(ops, 2);
 
     if (result->ch != open_ch) goto done;   /* unexpected winner */
-    uv_file fd = (uv_file)(intptr_t)result->value.val;
+    uv_file fd = goc_unbox_int(result->value.val);
     if (fd < 0) goto done;
 
     goc_take(goc_io_fs_close(fd));

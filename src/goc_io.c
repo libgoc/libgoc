@@ -169,11 +169,10 @@ goc_chan* goc_io_fs_close(uv_file file)
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    uv_fs_t    req;   /* MUST be first member */
+    uv_fs_t   req;   /* MUST be first member */
     goc_chan*  ch;
-    goc_array* buf;   /* caller-provided byte array */
     char*      raw;   /* goc_malloc'd buffer for the actual read */
-    size_t     rawlen;
+    size_t     len;
 } goc_fs_read_ctx_t;
 
 static void on_fs_read(uv_fs_t* req)
@@ -185,34 +184,26 @@ static void on_fs_read(uv_fs_t* req)
 
     goc_io_fs_read_t* res = (goc_io_fs_read_t*)goc_malloc(sizeof(goc_io_fs_read_t));
     res->nread = nread;
-    res->buf   = ctx->buf;
-
-    if (nread > 0) {
-        /* Populate the goc_array with the bytes that were read. */
-        size_t i;
-        for (i = 0; i < (size_t)nread; i++)
-            goc_array_set(ctx->buf, i, goc_box_int((unsigned char)ctx->raw[i]));
-    }
+    res->buf   = (nread > 0) ? ctx->raw : NULL;
 
     goc_put_cb(ctx->ch, res, close_on_put, ctx->ch);
 }
 
-goc_chan* goc_io_fs_read(uv_file file, goc_array* buf, int64_t offset)
+goc_chan* goc_io_fs_read(uv_file file, size_t len, int64_t offset)
 {
     goc_chan*          ch  = goc_chan_make(1);
-    size_t             n   = goc_array_len(buf);
     goc_fs_read_ctx_t* ctx = (goc_fs_read_ctx_t*)goc_malloc(sizeof(goc_fs_read_ctx_t));
-    ctx->ch     = ch;
-    ctx->buf    = buf;
-    ctx->rawlen = n;
-    ctx->raw    = (char*)goc_malloc(n + 1);
+    ctx->ch  = ch;
+    ctx->len = len;
+    ctx->raw = (char*)goc_malloc(len + 1);
+    ctx->raw[len] = '\0';
 
-    uv_buf_t uvbuf = uv_buf_init(ctx->raw, (unsigned int)n);
+    uv_buf_t uvbuf = uv_buf_init(ctx->raw, (unsigned int)len);
     int rc = uv_fs_read(g_loop, &ctx->req, file, &uvbuf, 1, offset, on_fs_read);
     if (rc < 0) {
         goc_io_fs_read_t* res = (goc_io_fs_read_t*)goc_malloc(sizeof(goc_io_fs_read_t));
         res->nread = rc;
-        res->buf   = buf;
+        res->buf   = NULL;
         goc_put_cb(ch, res, close_on_put, ch);
         return ch;
     }
@@ -2428,7 +2419,8 @@ typedef struct {
     goc_chan*            ch;
     goc_read_file_state_t state;
     uv_file              fd;
-    goc_array*           data;   /* accumulator */
+    char*                data;   /* accumulator (goc_malloc'd, null-terminated) */
+    size_t               data_len;
     char*                raw;    /* goc_malloc'd read buffer */
     int                  error;  /* saved error from read phase */
 } goc_read_file_ctx_t;
@@ -2472,12 +2464,14 @@ static void on_read_file_step(uv_fs_t* req)
                 ctx->state = RF_CLOSE;
                 uv_fs_close(g_loop, &ctx->req, ctx->fd, on_read_file_step);
             } else {
-                /* Got data: append bytes and read again. */
+                /* Got data: append to accumulator and read again. */
                 ssize_t n = (ssize_t)req->result;
-                ssize_t i;
-                for (i = 0; i < n; i++)
-                    goc_array_push(ctx->data,
-                                   goc_box_int((unsigned char)ctx->raw[i]));
+                char* newdata = (char*)goc_malloc(ctx->data_len + (size_t)n + 1);
+                memcpy(newdata, ctx->data, ctx->data_len);
+                memcpy(newdata + ctx->data_len, ctx->raw, (size_t)n);
+                ctx->data_len += (size_t)n;
+                newdata[ctx->data_len] = '\0';
+                ctx->data = newdata;
                 uv_buf_t uvbuf = uv_buf_init(ctx->raw, READ_FILE_CHUNK);
                 uv_fs_read(g_loop, &ctx->req, ctx->fd, &uvbuf, 1, -1,
                            on_read_file_step);
@@ -2506,11 +2500,13 @@ goc_chan* goc_io_fs_read_file(const char* path)
     goc_chan*             ch  = goc_chan_make(1);
     goc_read_file_ctx_t*  ctx = (goc_read_file_ctx_t*)goc_malloc(
                                     sizeof(goc_read_file_ctx_t));
-    ctx->ch    = ch;
-    ctx->state = RF_OPEN;
-    ctx->fd    = -1;
-    ctx->data  = goc_array_make(0);
-    ctx->raw   = (char*)goc_malloc(READ_FILE_CHUNK);
+    ctx->ch       = ch;
+    ctx->state    = RF_OPEN;
+    ctx->fd       = -1;
+    ctx->data     = (char*)goc_malloc(1);
+    ctx->data[0]  = '\0';
+    ctx->data_len = 0;
+    ctx->raw      = (char*)goc_malloc(READ_FILE_CHUNK);
     ctx->error = 0;
 
     int rc = uv_fs_open(g_loop, &ctx->req, path, UV_FS_O_RDONLY, 0,
@@ -2655,6 +2651,7 @@ static void on_read_stream_step(uv_fs_t* req)
                                                     sizeof(goc_io_fs_read_chunk_t));
                 chunk->status = (int)req->result;
                 chunk->data   = NULL;
+                chunk->len    = 0;
                 goc_put_cb(ctx->ch, chunk, close_on_put, ctx->ch);
                 return;
             }
@@ -2680,6 +2677,7 @@ static void on_read_stream_step(uv_fs_t* req)
                                                     sizeof(goc_io_fs_read_chunk_t));
                 chunk->status = err;
                 chunk->data   = NULL;
+                chunk->len    = 0;
                 goc_put_cb(ctx->ch, chunk, close_on_put, ctx->ch);
             } else if (req->result == 0) {
                 /* EOF: close file and close channel. */
@@ -2691,15 +2689,14 @@ static void on_read_stream_step(uv_fs_t* req)
             } else {
                 /* Deliver chunk and read again. */
                 ssize_t n = (ssize_t)req->result;
-                goc_array* arr = goc_array_make((size_t)n);
-                ssize_t i;
-                for (i = 0; i < n; i++)
-                    goc_array_push(arr, goc_box_int((unsigned char)ctx->raw[i]));
+                char* buf = (char*)goc_malloc((size_t)n);
+                memcpy(buf, ctx->raw, (size_t)n);
 
                 goc_io_fs_read_chunk_t* chunk = (goc_io_fs_read_chunk_t*)goc_malloc(
                                                     sizeof(goc_io_fs_read_chunk_t));
                 chunk->status = 0;
-                chunk->data   = arr;
+                chunk->data   = buf;
+                chunk->len    = (size_t)n;
                 goc_put_cb(ctx->ch, chunk, NULL, NULL);
 
                 uv_buf_t uvbuf = uv_buf_init(ctx->raw,

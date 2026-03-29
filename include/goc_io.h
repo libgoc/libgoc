@@ -136,11 +136,12 @@ typedef struct goc_io_fs_write_stream goc_io_fs_write_stream_t;
 
 /**
  * goc_io_fs_read_t — result of goc_io_fs_read.
- * nread < 0 signals a libuv error; buf is the caller-provided goc_array.
+ * nread < 0 signals a libuv error.
+ * buf is a GC-managed char* containing the bytes read; valid when nread > 0.
  */
 typedef struct {
-    ssize_t     nread;
-    goc_array*  buf;
+    ssize_t  nread;
+    char*    buf;
 } goc_io_fs_read_t;
 
 /**
@@ -205,20 +206,23 @@ typedef struct {
 
 /**
  * goc_io_fs_read_file_t — result of goc_io_fs_read_file.
- * data is a goc_array of bytes (each element is goc_box_int(byte)).
+ * data is a GC-managed null-terminated string containing the file contents.
+ * NULL when ok != GOC_IO_OK.
  */
 typedef struct {
     goc_io_status_t  ok;
-    goc_array*       data;
+    char*            data;
 } goc_io_fs_read_file_t;
 
 /**
  * goc_io_fs_read_chunk_t — one chunk delivered by goc_io_fs_read_stream_make.
  * status < 0 on error; data NULL on error/EOF.
+ * data is a GC-managed char* of len bytes (not null-terminated).
  */
 typedef struct {
-    int        status;
-    goc_array* data;
+    int     status;
+    char*   data;
+    size_t  len;
 } goc_io_fs_read_chunk_t;
 
 /**
@@ -454,14 +458,13 @@ goc_chan* goc_io_fs_close(uv_file file);
  * goc_io_fs_read() — Initiate an async file read; return result channel.
  *
  * file   : open file descriptor.
- * buf    : caller-allocated goc_array; elements are byte slots (each stores
- *          one byte as goc_box_int(byte)).  The array length determines how
- *          many bytes are read.
+ * len    : maximum number of bytes to read.
  * offset : file offset (-1 to use current position).
  *
  * Returns a channel delivering goc_io_fs_read_t*; nread < 0 on error.
+ * On success, res->buf is a GC-managed char* of res->nread bytes.
  */
-goc_chan* goc_io_fs_read(uv_file file, goc_array* buf, int64_t offset);
+goc_chan* goc_io_fs_read(uv_file file, size_t len, int64_t offset);
 
 /**
  * goc_io_fs_write() — Initiate an async file write; return result channel.
