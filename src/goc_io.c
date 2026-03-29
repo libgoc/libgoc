@@ -1337,7 +1337,7 @@ typedef struct {
     char        s1[256];
     char        s2[256];
     char        s3[256];
-    uv_membership_t membership;
+    uv_membership membership;
 } goc_simple_dispatch_t;
 
 static void on_simple_dispatch(uv_async_t* h)
@@ -1387,7 +1387,7 @@ static goc_chan* simple_dispatch(void* handle, int kind,
                                  int i1, unsigned u1,
                                  const char* s1, const char* s2,
                                  const char* s3,
-                                 uv_membership_t membership)
+                                 uv_membership membership)
 {
     goc_chan*               ch = goc_chan_make(1);
     goc_simple_dispatch_t*  d  = (goc_simple_dispatch_t*)goc_malloc(
@@ -1479,7 +1479,7 @@ goc_chan* goc_io_udp_set_multicast_interface(uv_udp_t* handle,
 goc_chan* goc_io_udp_set_membership(uv_udp_t* handle,
                                     const char* mcast_addr,
                                     const char* iface_addr,
-                                    uv_membership_t membership)
+                                    uv_membership membership)
 {
     return simple_dispatch(handle, 17, NULL, 0, 0, mcast_addr, iface_addr,
                            NULL, membership);
@@ -1489,7 +1489,7 @@ goc_chan* goc_io_udp_set_source_membership(uv_udp_t* handle,
                                            const char* mcast_addr,
                                            const char* iface_addr,
                                            const char* source_addr,
-                                           uv_membership_t membership)
+                                           uv_membership membership)
 {
     return simple_dispatch(handle, 18, NULL, 0, 0, mcast_addr, iface_addr,
                            source_addr, membership);

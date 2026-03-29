@@ -768,14 +768,14 @@ goc_chan* goc_io_udp_set_multicast_interface(uv_udp_t* handle,
 goc_chan* goc_io_udp_set_membership(uv_udp_t* handle,
                                     const char* mcast_addr,
                                     const char* iface_addr,
-                                    uv_membership_t membership);
+                                    uv_membership membership);
 
 /** Dispatch uv_udp_set_source_membership; delivers goc_box_int(status). */
 goc_chan* goc_io_udp_set_source_membership(uv_udp_t* handle,
                                            const char* mcast_addr,
                                            const char* iface_addr,
                                            const char* source_addr,
-                                           uv_membership_t membership);
+                                           uv_membership membership);
 
 /* =========================================================================
  * Extended File System Operations
