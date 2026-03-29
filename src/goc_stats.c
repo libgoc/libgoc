@@ -76,7 +76,9 @@ static uv_mutex_t                   g_cb_mutex;
 static _Atomic(goc_stats_callback)  g_cb            = NULL;
 static _Atomic(void *)              g_cb_ud         = NULL;
 
-static uv_async_t                  *g_stats_async   = NULL;
+static uv_loop_t                   *g_stats_loop     = NULL;
+static uv_thread_t                  g_stats_thread;
+static uv_async_t                  *g_stats_async    = NULL;
 static _Atomic int                  g_stats_closing  = 0;
 static uv_mutex_t                   g_close_mutex;
 static uv_cond_t                    g_close_cond;
@@ -194,6 +196,15 @@ static void goc_stats_default_callback(const struct goc_stats_event *ev, void *u
 }
 
 /* --------------------------------------------------------------------------
+ * Stats loop thread
+ * -------------------------------------------------------------------------- */
+
+static void stats_loop_thread_fn(void *arg) {
+    (void)arg;
+    while (uv_run(g_stats_loop, UV_RUN_ONCE)) {}
+}
+
+/* --------------------------------------------------------------------------
  * Public API
  * -------------------------------------------------------------------------- */
 
@@ -232,10 +243,15 @@ void goc_stats_init(void) {
 
     atomic_store_explicit(&g_stats_closing, 0, memory_order_release);
 
+    g_stats_loop = (uv_loop_t *)malloc(sizeof(uv_loop_t));
+    uv_loop_init(g_stats_loop);
+
     g_stats_async = (uv_async_t *)malloc(sizeof(uv_async_t));
-    uv_async_init(g_loop, g_stats_async, stats_on_async);
+    uv_async_init(g_stats_loop, g_stats_async, stats_on_async);
 
     atomic_store_explicit(&stats_enabled, 1, memory_order_release);
+
+    goc_thread_create(&g_stats_thread, stats_loop_thread_fn, NULL);
 }
 
 void goc_stats_shutdown(void) {
@@ -264,6 +280,14 @@ void goc_stats_shutdown(void) {
             uv_cond_wait(&g_close_cond, &g_close_mutex);
         uv_mutex_unlock(&g_close_mutex);
     }
+
+    /* stats_on_close has fired; the stats loop has no more handles and
+     * uv_run has returned, so the stats thread is done. */
+    goc_thread_join(&g_stats_thread);
+
+    uv_loop_close(g_stats_loop);
+    free(g_stats_loop);
+    g_stats_loop = NULL;
 
     uv_mutex_lock(&g_cb_mutex);
     atomic_store_explicit(&g_cb,    NULL, memory_order_release);
