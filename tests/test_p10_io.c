@@ -145,7 +145,7 @@ static void fiber_p10_2(void* arg)
     uv_file fd = goc_unbox_int(vopen->val);
     if (fd < 0) goto done;
 
-    goc_val_t* vwrite = goc_take(goc_io_fs_write(fd, CONTENT, CONTENT_LEN));
+    goc_val_t* vwrite = goc_take(goc_io_fs_write(fd, CONTENT, CONTENT_LEN, -1));
     ssize_t written = goc_unbox_int(vwrite->val);
     goc_take(goc_io_fs_close(fd));
     if (written != CONTENT_LEN) goto done;
@@ -424,7 +424,7 @@ static void fiber_p10_11(void* arg)
     uv_file src_fd = goc_unbox_int(vsrc->val);
     if (src_fd < 0) goto done;
 
-    goc_val_t* vwrite = goc_take(goc_io_fs_write(src_fd, CONTENT, CONTENT_LEN));
+    goc_val_t* vwrite = goc_take(goc_io_fs_write(src_fd, CONTENT, CONTENT_LEN, -1));
     ssize_t written = goc_unbox_int(vwrite->val);
     goc_take(goc_io_fs_close(src_fd));
     if (written != CONTENT_LEN) goto done;

@@ -474,7 +474,7 @@ goc_chan* goc_io_fs_read(uv_file file, size_t len, int64_t offset);
  *
  * Returns a channel delivering goc_box_int(nwritten); negative on error.
  */
-goc_chan* goc_io_fs_write(uv_file file, const char* data, size_t len);
+goc_chan* goc_io_fs_write(uv_file file, const char* data, size_t len, int64_t offset);
 
 /**
  * goc_io_fs_unlink() — Initiate an async file deletion; return result channel.
