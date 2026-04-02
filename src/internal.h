@@ -239,6 +239,7 @@ void* mco_get_suspended_sp(mco_coro* co);
 
 /* pool.c → used by fiber.c, channel.c */
 void post_to_run_queue(goc_pool* pool, goc_entry* entry);
+void post_list_to_run_queue(goc_pool* pool, goc_entry** entries, size_t count);
 void pool_submit_spawn(goc_pool* pool,
                        void (*fn)(void*),
                        void* arg,

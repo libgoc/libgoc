@@ -305,13 +305,16 @@ void goc_close(goc_chan* ch)
     /* Release lock before posting */
     uv_mutex_unlock(ch->lock);
 
-    /* Spin and post for all collected GOC_FIBER entries */
+    /* Spin until every fiber has truly parked (MCO_SUSPENDED), then batch-post
+     * all entries distributed across worker injectors in one pass.  Spinning
+     * first and posting second avoids taking an injector lock per entry. */
     for (size_t i = 0; i < to_post_count; i++) {
         goc_entry* fe = to_post[i];
         while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0)
             sched_yield();
-        post_to_run_queue(fe->pool, fe);
     }
+    if (to_post_count > 0)
+        post_list_to_run_queue(to_post[0]->pool, to_post, to_post_count);
 
     /* Telemetry: update counters for entries woken by close, then emit event */
 #ifdef GOC_ENABLE_STATS

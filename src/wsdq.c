@@ -215,6 +215,39 @@ void injector_push(goc_injector* inj, goc_entry* entry) {
     uv_mutex_unlock(&inj->lock);
 }
 
+void injector_push_list(goc_injector* inj, goc_entry* head, goc_entry* tail_entry, size_t count) {
+    if (head == NULL || count == 0)
+        return;
+
+    /* Build a chain of injector nodes outside the lock. */
+    goc_injector_node* node_head = NULL;
+    goc_injector_node* node_tail = NULL;
+    goc_entry* e = head;
+    for (size_t i = 0; i < count; i++) {
+        goc_entry* next_e = e->next;
+        goc_injector_node* node = malloc(sizeof(goc_injector_node));
+        node->entry = e;
+        node->next  = NULL;
+        if (node_tail != NULL)
+            node_tail->next = node;
+        else
+            node_head = node;
+        node_tail = node;
+        e = next_e;
+    }
+
+    /* Splice the entire node chain under a single lock acquisition. */
+    uv_mutex_lock(&inj->lock);
+    if (inj->tail != NULL)
+        inj->tail->next = node_head;
+    else
+        inj->head = node_head;
+    inj->tail = node_tail;
+    uv_mutex_unlock(&inj->lock);
+
+    (void)tail_entry;
+}
+
 goc_entry* injector_pop(goc_injector* inj) {
     uv_mutex_lock(&inj->lock);
     goc_injector_node* node = inj->head;

@@ -95,6 +95,10 @@ void injector_destroy(goc_injector* inj);
 /* Any thread: enqueue an entry for the owning worker. */
 void injector_push(goc_injector* inj, goc_entry* entry);
 
+/* Any thread: enqueue a pre-built singly-linked list of entries (linked via
+ * goc_entry->next, tail->next == NULL) under a single lock acquisition. */
+void injector_push_list(goc_injector* inj, goc_entry* head, goc_entry* tail, size_t count);
+
 /* Owner-only: dequeue an entry. Returns NULL if empty. */
 goc_entry* injector_pop(goc_injector* inj);
 

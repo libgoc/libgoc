@@ -313,16 +313,17 @@ static void pool_worker_fn(void* arg) {
     uint32_t seed = (uint32_t)(tl_worker->index ^ (uintptr_t)tl_worker);
 
     goc_entry* entry;
+    uint32_t steal_miss_streak = 0;  /* consecutive full-scan misses; drives backoff */
 
     while (!atomic_load_explicit(&pool->shutdown, memory_order_acquire)) {
 
         /* 1. Pop from own deque (LIFO, cache-warm). */
         entry = wsdq_pop_bottom(&tl_worker->deque);
-        if (entry != NULL) goto run;
+        if (entry != NULL) { steal_miss_streak = 0; goto run; }
 
         /* 2. Drain own injector (entries posted by external callers). */
         entry = injector_pop(&tl_worker->injector);
-        if (entry != NULL) goto run;
+        if (entry != NULL) { steal_miss_streak = 0; goto run; }
 
         /* 3. Steal phase: victim hinting, then randomized scan. */
         if (pool->thread_count > 1) {
@@ -338,6 +339,7 @@ static void pool_worker_fn(void* arg) {
                     atomic_fetch_add_explicit(&tl_worker->steal_successes, 1, memory_order_relaxed);
                     atomic_fetch_add_explicit(&g_steal_successes,           1, memory_order_relaxed);
 #endif
+                    steal_miss_streak = 0;
                     tl_worker->last_steal_victim = victim_hint;
                     goto run;
                 }
@@ -362,6 +364,7 @@ static void pool_worker_fn(void* arg) {
                     atomic_fetch_add_explicit(&tl_worker->steal_successes, 1, memory_order_relaxed);
                     atomic_fetch_add_explicit(&g_steal_successes,           1, memory_order_relaxed);
 #endif
+                    steal_miss_streak = 0;
                     tl_worker->last_steal_victim = victim;
                     goto run;
                 }
@@ -370,8 +373,17 @@ static void pool_worker_fn(void* arg) {
                 atomic_fetch_add_explicit(&g_steal_misses,           1, memory_order_relaxed);
 #endif
             }
-            /* If all fail, clear the hint for next round */
+            /* If all fail, clear the hint for next round and back off.
+             * Exponential backoff: spin 2^streak times (capped at 64) before
+             * the next steal attempt.  This reduces deque-top CAS contention
+             * at high pool sizes where multiple workers steal simultaneously. */
             tl_worker->last_steal_victim = SIZE_MAX;
+            uint32_t spins = 1u << (steal_miss_streak < 6 ? steal_miss_streak : 6);
+            for (uint32_t s = 0; s < spins; s++)
+                sched_yield();
+            steal_miss_streak++;
+        } else {
+            steal_miss_streak = 0;
         }
 
         /* 4. No work found anywhere — go idle.
@@ -476,7 +488,8 @@ run:
                 pool->resident_count--;
             pool->live_count--;
             goc_spawn_req* admitted = pool_collect_admitted_spawns_locked(pool);
-            uv_cond_broadcast(&pool->drain_cond);
+            if (pool->live_count == 0)
+                uv_cond_broadcast(&pool->drain_cond);
             uv_mutex_unlock(&pool->drain_mutex);
 
             GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
@@ -533,6 +546,62 @@ void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
         if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0) {
             uv_sem_post(&pool->workers[idx].idle_sem);
         }
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * post_list_to_run_queue — batch variant of post_to_run_queue
+ *
+ * Takes a singly-linked list of goc_entry* (linked via ->next, last->next==NULL,
+ * count entries total) and distributes them across worker injectors round-robin,
+ * using one injector_push_list call per worker — a single lock acquisition per
+ * worker instead of one per entry.
+ *
+ * Always uses the external (injector) path regardless of caller context, so
+ * that a large burst of entries is spread across all workers rather than
+ * piling onto the calling worker's deque.
+ * ---------------------------------------------------------------------- */
+
+void post_list_to_run_queue(goc_pool* pool, goc_entry** entries, size_t count) {
+    if (count == 0)
+        return;
+
+    size_t n = pool->thread_count;
+
+    /* Per-worker list heads and tails, stack-allocated for small thread counts.
+     * For large counts this is still just n pointers. */
+    goc_entry** w_head = alloca(n * sizeof(goc_entry*));
+    goc_entry** w_tail = alloca(n * sizeof(goc_entry*));
+    size_t*     w_cnt  = alloca(n * sizeof(size_t));
+    for (size_t i = 0; i < n; i++) {
+        w_head[i] = NULL;
+        w_tail[i] = NULL;
+        w_cnt[i]  = 0;
+    }
+
+    /* Assign each entry to a worker round-robin, building per-worker lists. */
+    size_t base = atomic_fetch_add_explicit(&pool->next_push_idx, count,
+                                            memory_order_relaxed);
+    for (size_t i = 0; i < count; i++) {
+        size_t idx = (base + i) % n;
+        goc_entry* e = entries[i];
+        e->next = NULL;
+        if (w_tail[idx] != NULL)
+            w_tail[idx]->next = e;
+        else
+            w_head[idx] = e;
+        w_tail[idx] = e;
+        w_cnt[idx]++;
+    }
+
+    /* Batch-push each worker's list and wake if idle. */
+    for (size_t i = 0; i < n; i++) {
+        if (w_cnt[i] == 0)
+            continue;
+        injector_push_list(&pool->workers[i].injector,
+                           w_head[i], w_tail[i], w_cnt[i]);
+        if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0)
+            uv_sem_post(&pool->workers[i].idle_sem);
     }
 }
 
