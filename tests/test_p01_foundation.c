@@ -41,6 +41,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -159,6 +160,48 @@ done:;
 }
 
 /* =========================================================================
+ * Phase 1 — String helpers
+ * ====================================================================== */
+
+/*
+ * P1.6 — goc_sprintf() returns a non-NULL GC-managed string
+ */
+static void test_p1_6(void) {
+    TEST_BEGIN("P1.6  goc_sprintf returns correct formatted string");
+    char* s = goc_sprintf("hello %s %d", "world", 42);
+    ASSERT(s != NULL);
+    ASSERT(strcmp(s, "hello world 42") == 0);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * P1.7 — goc_sprintf() with an empty format string returns ""
+ */
+static void test_p1_7(void) {
+    TEST_BEGIN("P1.7  goc_sprintf empty format produces empty string");
+    char* s = goc_sprintf("%s", "");
+    ASSERT(s != NULL);
+    ASSERT(s[0] == '\0');
+    TEST_PASS();
+done:;
+}
+
+/*
+ * P1.8 — goc_sprintf() handles a large output (> typical stack buffer)
+ */
+static void test_p1_8(void) {
+    TEST_BEGIN("P1.8  goc_sprintf handles large output");
+    /* Format 300 repetitions of 'x' via %0*d trick with spaces is fragile;
+     * use a fixed-length number to guarantee a known output length. */
+    char* s = goc_sprintf("%.*d", 300, 0);
+    ASSERT(s != NULL);
+    ASSERT(strlen(s) == 300);
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
  * main
  *
  * Initialises the runtime once, runs all Phase 1 tests in order, shuts down
@@ -180,6 +223,12 @@ int main(void) {
     test_p1_3();
     test_p1_4();
     test_p1_5();
+    printf("\n");
+
+    printf("Phase 1 — String helpers\n");
+    test_p1_6();
+    test_p1_7();
+    test_p1_8();
     printf("\n");
 
     goc_shutdown();

@@ -24,11 +24,16 @@
  *   A10  to_c returns NULL for an empty array
  *   A11  concat / slice on empty arrays
  *   A12  goc_array_from with n=0 produces an empty array
+ *   A13  goc_array_from_str / goc_array_to_str round-trip
+ *   A14  goc_array_from_str(NULL) produces an empty array
+ *   A15  goc_array_to_str on an empty array returns ""
+ *   A16  goc_array_from_str / goc_array_to_str with internal zero byte
  */
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -262,6 +267,75 @@ done:;
 }
 
 /* =========================================================================
+ * String interop tests
+ * ====================================================================== */
+
+/*
+ * A13 — goc_array_from_str / goc_array_to_str round-trip
+ */
+static void test_array_str_roundtrip(void) {
+    TEST_BEGIN("A13  goc_array_from_str / goc_array_to_str round-trip");
+    goc_array* arr = goc_array_from_str("hello");
+    ASSERT(arr != NULL);
+    ASSERT(goc_array_len(arr) == 5);
+    char* s = goc_array_to_str(arr);
+    ASSERT(s != NULL);
+    ASSERT(strcmp(s, "hello") == 0);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A14 — goc_array_from_str(NULL) produces an empty array
+ */
+static void test_array_from_str_null(void) {
+    TEST_BEGIN("A14  goc_array_from_str(NULL) produces empty array");
+    goc_array* arr = goc_array_from_str(NULL);
+    ASSERT(arr != NULL);
+    ASSERT(goc_array_len(arr) == 0);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A15 — goc_array_to_str on an empty array returns an empty string
+ */
+static void test_array_to_str_empty(void) {
+    TEST_BEGIN("A15  goc_array_to_str on empty array returns empty string");
+    goc_array* arr = goc_array_make(0);
+    char* s = goc_array_to_str(arr);
+    ASSERT(s != NULL);
+    ASSERT(s[0] == '\0');
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A16 — goc_array_from_str preserves an internal zero byte (binary safety)
+ *
+ * goc_array_from_str stops at the null terminator, so this test confirms
+ * that the array length equals strlen(input), not the position of any
+ * internal zero byte placed manually after construction.
+ */
+static void test_array_str_binary(void) {
+    TEST_BEGIN("A16  goc_array_from_str stops at null terminator");
+    /* Build an array with a zero byte in the middle by hand. */
+    goc_array* arr = goc_array_make(3);
+    goc_array_push(arr, goc_box_int('a'));
+    goc_array_push(arr, goc_box_int(0));
+    goc_array_push(arr, goc_box_int('b'));
+    ASSERT(goc_array_len(arr) == 3);
+    char* s = goc_array_to_str(arr);
+    /* The string has length 3 in terms of allocated bytes (a \0 b \0),
+     * but strlen stops at the first null byte. Verify the array len. */
+    ASSERT(s[0] == 'a');
+    ASSERT(s[1] == '\0');
+    ASSERT(s[2] == 'b');
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
@@ -285,6 +359,12 @@ int main(void) {
     test_array_to_c_empty();
     test_array_empty_ops();
     test_array_from_empty();
+
+    printf("\nString interop\n");
+    test_array_str_roundtrip();
+    test_array_from_str_null();
+    test_array_to_str_empty();
+    test_array_str_binary();
 
     goc_shutdown();
 

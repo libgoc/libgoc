@@ -20,6 +20,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, threads, timers, cross-thread wakeup |
 | Boehm GC | garbage collection |
+| libh2o | HTTP/1.1 + HTTP/2 server and client; disable with `-DLIBGOC_SERVER=OFF` |
 
 **Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases):
 - Linux (x86-64)
@@ -30,6 +31,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [Async I/O API](./IO.md)
 - [Dynamic Array](./ARRAY.md)
 - [Telemetry](./TELEMETRY.md)
+- [HTTP Server](./SERVER.md)
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
@@ -47,6 +49,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [Public API](#public-api)
   - [Initialisation and shutdown](#initialisation-and-shutdown)
   - [Memory allocation](#memory-allocation)
+  - [String helpers](#string-helpers)
   - [Value type](#value-type)
   - [Channels](#channels)
   - [Utilities](#utilities)
@@ -62,6 +65,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
   - [Async I/O →](./IO.md)
+  - [HTTP Server →](./SERVER.md)
 - [Best Practices](#best-practices)
 - [Benchmarks](#benchmarks)
 - [Building and Testing](#building-and-testing)
@@ -309,6 +313,22 @@ my_obj_t* obj = goc_malloc(sizeof(my_obj_t));
 ```
 
 > **Note:** libuv handles (`uv_timer_t`, `uv_async_t`, etc.) must be allocated with `goc_malloc` and registered via `goc_io_handle_register`. This pins them in a GC-visible root array so they are not collected while libuv holds an internal reference.
+
+---
+
+### String helpers
+
+libgoc provides a GC-managed string formatting helper. The result is allocated on the Boehm GC heap; the caller must not `free` it.
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_sprintf` | `char* goc_sprintf(const char* fmt, ...)` | Formats `fmt` and the given arguments into a null-terminated GC-heap string. Never returns `NULL`. Aborts on allocation failure. |
+
+```c
+// Format a message and send it on a channel
+char* msg = goc_sprintf("fiber %d ready", id);
+goc_put(ch, msg);
+```
 
 ---
 
@@ -635,6 +655,14 @@ See [IO.md](./IO.md) for the full `goc_io` API reference.
 
 ---
 
+### HTTP Server
+
+libgoc ships a high-performance HTTP/1.1 and HTTP/2 server built on libh2o and integrated with the fiber scheduler. Fiber-per-request handlers, WebSocket upgrades, and HTTPS (via OpenSSL) are all supported.
+
+See [SERVER.md](./SERVER.md) for the full `goc_server` API reference.
+
+---
+
 ## Best Practices
 
 Used the right way, **libgoc** provides a runtime environment very similar to Go's.
@@ -681,6 +709,7 @@ libgoc ships with a comprehensive, phased test suite covering the full public AP
 | CMake ≥ 3.20 | `brew install cmake` | `apt install cmake` | `dnf install cmake` | MSYS2 UCRT64 (bundled) |
 | libuv | `brew install libuv` | `apt install libuv1-dev` | `dnf install libuv-devel` | MSYS2 UCRT64 — see [Windows](#windows) |
 | Boehm GC | `brew install bdw-gc` | source build (see below) | `dnf install gc-devel` | MSYS2 UCRT64 — see [Windows](#windows) |
+| libh2o | `brew install h2o` | `apt install libh2o-dev` | `dnf install h2o-devel` | manual build or `-DLIBGOC_SERVER=OFF` |
 | pkg-config | `brew install pkg-config` | `apt install pkg-config` | `dnf install pkgconfig` | MSYS2 UCRT64 (bundled) |
 | minicoro | vendored (submodule); instantiated via `src/minicoro.c` |
 
@@ -692,7 +721,7 @@ A C11 compiler is required: GCC or Clang on Linux/macOS; MinGW-w64 GCC via MSYS2
 
 ```sh
 # 1. Install dependencies (Homebrew)
-brew install cmake libuv bdw-gc pkg-config
+brew install cmake libuv bdw-gc h2o pkg-config
 
 # Homebrew's bdw-gc does not ship a bdw-gc-threaded.pc pkg-config alias.
 # Create it once in the global Homebrew pkgconfig directory:
@@ -719,7 +748,7 @@ ctest --test-dir build --output-on-failure
 ```sh
 # 1. Install dependencies (Debian/Ubuntu shown; see table above for RPM)
 sudo apt update
-sudo apt install cmake libuv1-dev libatomic-ops-dev pkg-config build-essential
+sudo apt install cmake libuv1-dev libatomic-ops-dev libh2o-dev pkg-config build-essential
 
 # Ubuntu's libgc-dev is NOT compiled with --enable-threads, which libgoc requires.
 # GC_allow_register_threads is required for libgoc's goc_thread_create/
@@ -767,6 +796,11 @@ pacman -S mingw-w64-ucrt-x86_64-gcc \
           mingw-w64-ucrt-x86_64-libuv \
           mingw-w64-ucrt-x86_64-gc \
           mingw-w64-ucrt-x86_64-pkg-config
+
+# libh2o is not currently available as an MSYS2 package.
+# Either build it from source (https://github.com/h2o/h2o) or disable the
+# HTTP server to skip the libh2o dependency:
+#   cmake -B build -DLIBGOC_SERVER=OFF
 
 # 2. Create the bdw-gc-threaded pkg-config alias if it is missing
 PKGDIR="/ucrt64/lib/pkgconfig"
