@@ -358,6 +358,29 @@ void* goc_realloc(void* ptr, size_t n) {
 }
 
 /* ---------------------------------------------------------------------------
+ * goc_sprintf
+ * ---------------------------------------------------------------------------*/
+
+#include <stdarg.h>
+
+char* goc_sprintf(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (len < 0) abort();
+
+    char* buf = (char*)GC_malloc((size_t)len + 1);
+    /* GC_malloc aborts on failure, so buf is always non-NULL here. */
+
+    va_start(ap, fmt);
+    vsnprintf(buf, (size_t)len + 1, fmt, ap);
+    va_end(ap);
+
+    return buf;
+}
+
+/* ---------------------------------------------------------------------------
  * live_channels_init  (internal; declared in internal.h)
  *
  * Allocates the live_channels array with an initial capacity of 64 entries

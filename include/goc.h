@@ -14,6 +14,7 @@
 #ifndef GOC_H
 #define GOC_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -134,6 +135,15 @@ void* goc_malloc(size_t n);
  * Aborts on allocation failure. Never returns NULL (unless n == 0).
  */
 void* goc_realloc(void* ptr, size_t n);
+
+/**
+ * goc_sprintf() — printf into a GC-heap-allocated string.
+ *
+ * Formats fmt with the given arguments and returns a null-terminated string
+ * allocated on the Boehm GC heap. The caller need not free the result.
+ * Aborts on allocation failure. Never returns NULL.
+ */
+char* goc_sprintf(const char* fmt, ...);
 
 /* -------------------------------------------------------------------------
  * Scalar/pointer boxing helpers

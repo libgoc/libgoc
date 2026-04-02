@@ -16,6 +16,7 @@ option(LIBGOC_VMEM        "Use minicoro virtual memory allocator (off by default
 option(LIBGOC_ASAN        "Build an instrumented copy of goc with AddressSanitizer" OFF)
 option(LIBGOC_TSAN        "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE    "Instrument goc and tests for code coverage" OFF)
+option(LIBGOC_SERVER      "Build the goc_server HTTP/1.1+HTTP/2 library (requires libh2o)" ON)
 option(GOC_ENABLE_STATS   "Enable telemetry / statistics collection (goc_stats)" OFF)
 set(LIBGOC_STACK_SIZE "0" CACHE STRING "Default fiber stack size in bytes (0 = let minicoro decide)")
 
@@ -41,6 +42,11 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUV REQUIRED IMPORTED_TARGET libuv)
 pkg_check_modules(BDWGC REQUIRED IMPORTED_TARGET bdw-gc-threaded)
 
+# libh2o and its transitive deps (openssl, zlib) — only when LIBGOC_SERVER=ON
+if(LIBGOC_SERVER)
+    pkg_check_modules(H2O REQUIRED IMPORTED_TARGET libh2o)
+endif()
+
 # ---------------------------------------------------------------------------
 # Source lists
 # ---------------------------------------------------------------------------
@@ -61,6 +67,10 @@ set(GOC_SOURCES
 
 if(GOC_ENABLE_STATS)
     set(GOC_SOURCES ${GOC_SOURCES} src/goc_stats.c)
+endif()
+
+if(LIBGOC_SERVER)
+    set(GOC_SOURCES ${GOC_SOURCES} src/goc_server.c)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -89,6 +99,9 @@ function(goc_configure_target target_name)
             PkgConfig::LIBUV
             PkgConfig::BDWGC
     )
+    if(LIBGOC_SERVER)
+        target_link_libraries(${target_name} PUBLIC PkgConfig::H2O)
+    endif()
 endfunction()
 
 # minicoro.c must NOT be compiled with -DGC_THREADS (the TLS variable

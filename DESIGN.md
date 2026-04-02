@@ -31,9 +31,11 @@
 20. [Shutdown Sequence](#shutdown-sequence)
 21. [Testing](#testing)
 22. [CI/CD](#cicd)
+23. [HTTP Server (`goc_server`)](#http-server-goc_server)
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
 > **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
+> **HTTP Server:** For full `goc_server` design and API rationale see [SERVER.md](./SERVER.md).
 
 ---
 
@@ -44,6 +46,7 @@
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, timers, cross-thread signalling |
 | Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init`; thread pool workers and the uv loop thread are registered with the collector on creation and unregistered on exit |
+| libh2o | HTTP/1.1 + HTTP/2 engine used by `goc_server`; required by default; can be excluded with `-DLIBGOC_SERVER=OFF` |
 
 ---
 
@@ -57,7 +60,8 @@ libgoc/
 │   ├── goc.h              # Public API header
 │   ├── goc_io.h           # Async I/O wrappers public API (separate include)
 │   ├── goc_array.h        # Dynamic array public API
-│   └── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
+│   ├── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
+│   └── goc_server.h       # HTTP server public API (separate include)
 ├── src/
 │   ├── alts.c             # goc_alts, goc_alts_sync
 │   ├── timeout.c          # goc_timeout
@@ -70,6 +74,7 @@ libgoc/
 │   ├── goc_array.c        # Dynamic array (goc_array)
 │   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── goc_stats.c        # Telemetry implementation (compiled only when GOC_ENABLE_STATS is set)
+│   ├── goc_server.c       # HTTP server implementation (libh2o; see goc_server.h)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
@@ -104,6 +109,7 @@ libgoc/
 ├── DESIGN.md              # This document
 ├── ARRAY.md               # Dynamic array design and API reference
 ├── TELEMETRY.md           # goc_stats async telemetry system
+├── SERVER.md              # HTTP server API and design reference
 ├── OPTIMIZATION.md        # Prioritized optimization roadmap and benchmark signals
 ├── TODO.md                # Planned future work
 └── LICENSE
@@ -156,6 +162,7 @@ Optional opt-in flags, each requiring a **separate build directory**:
 | `-DLIBGOC_TSAN=ON` | `goc_tsan` | ThreadSanitizer; per-phase test executables link against `goc_tsan`; mutually exclusive with ASAN and COVERAGE |
 | `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` with `--coverage`; runs ctest then produces `coverage_html/index.html`; mutually exclusive with ASAN and TSAN |
 | `-DGOC_ENABLE_STATS=ON` | *(none)* | Compiles `src/goc_stats.c` into the library and defines `GOC_ENABLE_STATS` on all targets; without this flag the telemetry macros are no-ops and `goc_stats.c` is excluded from `libgoc.a`. `test_goc_stats` always compiles `goc_stats.c` directly regardless of this flag. |
+| `-DLIBGOC_SERVER=OFF` | *(none)* | Excludes `src/goc_server.c` from the library and drops the libh2o dependency. The HTTP server and client APIs are unavailable. Default is **ON**; this flag is an opt-out. |
 
 ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. When either sanitizer flag is active the per-phase test executables link against the instrumented variant instead of `goc`. Configuring ASAN and TSAN together, or either sanitizer with COVERAGE, in the same directory is a CMake fatal error.
 
@@ -1185,6 +1192,7 @@ void          goc_shutdown(void);
 /* Memory */
 void*         goc_malloc(size_t n);
 void*         goc_realloc(void* ptr, size_t n);
+char*         goc_sprintf(const char* fmt, ...);
 
 /* Scalar boxing helpers (macros) */
 /* goc_box_int(x)    — (void*)(intptr_t)(x)  */
@@ -1254,6 +1262,8 @@ void          goc_array_push_head(goc_array* arr, void* val);
 void*         goc_array_pop_head(goc_array* arr);
 goc_array*    goc_array_concat(const goc_array* a, const goc_array* b);
 goc_array*    goc_array_slice(const goc_array* arr, size_t start, size_t end);
+goc_array*    goc_array_from_str(const char* s);
+char*         goc_array_to_str(const goc_array* arr);
 void**        goc_array_to_c(const goc_array* arr);
 ```
 
@@ -1312,6 +1322,29 @@ libgoc provides channel-based wrappers for libuv I/O operations in a separate he
 **GC safety.** All `goc_chan*` pointers passed to async context structs (which are `malloc`-allocated) are registered in the `live_uv_handles` array (see `gc.c`) for the duration of the pending I/O, preventing premature collection.
 
 > **Full API reference:** [IO.md](./IO.md)
+
+---
+
+## HTTP Server (`goc_server`)
+
+libgoc includes a built-in HTTP/1.1 and HTTP/2 server built on top of [libh2o](https://github.com/h2o/h2o) and integrated with the libgoc fiber scheduler.
+
+**Include separately:** consumers must include `<goc_server.h>` in addition to `<goc.h>`.
+
+```c
+#include "goc.h"
+#include "goc_server.h"
+```
+
+**Fiber-per-request model:** each HTTP request is dispatched into a new fiber via `goc_go()`, giving handlers the full co-operative concurrency model — blocking channel reads, `goc_sleep`, `goc_io` operations, and GC allocation all work transparently.
+
+**WebSocket support:** `goc_server_upgrade_ws` upgrades an HTTP/1.1 connection to a WebSocket. The handler fiber reads and writes frames via the normal channel API.
+
+**HTTP client:** outbound requests return a `goc_chan*` that delivers a `goc_http_response_t*` when the response arrives. The event loop is never blocked; other fibers continue to run while the request is in flight. Multiple requests can be issued and awaited with `goc_alts`.
+
+**HTTPS:** pass a `goc_server_tls_config_t` to `goc_server_listen_tls` to enable TLS via OpenSSL. Plain-HTTP and TLS listeners can coexist in the same process.
+
+> **Full API reference:** [SERVER.md](./SERVER.md)
 
 ---
 
