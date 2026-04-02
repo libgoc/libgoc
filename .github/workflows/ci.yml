@@ -56,7 +56,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y libuv1-dev pkg-config build-essential \
-            libatomic-ops-dev
+            libatomic-ops-dev libh2o-dev
 
       - name: Cache Boehm GC (Linux)
         if: runner.os == 'Linux'
@@ -116,7 +116,7 @@ jobs:
 
       - name: Install Homebrew dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install cmake libuv bdw-gc pkg-config
+        run: brew install cmake libuv bdw-gc pkg-config h2o
 
       - name: Set up bdw-gc-threaded pkg-config alias (macOS)
         if: runner.os == 'macOS'
@@ -165,6 +165,7 @@ jobs:
             mingw-w64-ucrt-x86_64-libuv
             mingw-w64-ucrt-x86_64-gc
             mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-h2o
 
       - name: Set up bdw-gc-threaded pkg-config alias (Windows)
         if: runner.os == 'Windows'

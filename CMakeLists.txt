@@ -185,6 +185,11 @@ enable_testing()
 # Discover test source files (requires cmake_path — CMake >= 3.20)
 file(GLOB TEST_SOURCES "tests/test_p*.c" "tests/test_goc_*.c")
 
+# Exclude the server test when LIBGOC_SERVER is disabled (no libh2o).
+if(NOT LIBGOC_SERVER)
+    list(FILTER TEST_SOURCES EXCLUDE REGEX "test_p11_server\\.c$")
+endif()
+
 foreach(test_src IN LISTS TEST_SOURCES)
     cmake_path(GET test_src STEM test_name)
 
@@ -280,6 +285,11 @@ install(TARGETS goc
 install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_stats.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+if(LIBGOC_SERVER)
+    install(FILES include/goc_server.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+endif()
 if(LIBGOC_SHARED)
     install(TARGETS goc_shared
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
