@@ -87,9 +87,9 @@ typedef struct {
 static void close_on_put(goc_status_t ok, void* ud)
 {
     (void)ok;
-    fprintf(stderr, "[GOC_DBG] close_on_put: closing ch=%p ok=%d\n", ud, (int)ok); fflush(stderr);
+    GOC_DBG("close_on_put: closing ch=%p ok=%d\n", ud, (int)ok);
     goc_close((goc_chan*)ud);
-    fprintf(stderr, "[GOC_DBG] close_on_put: done ch=%p\n", ud); fflush(stderr);
+    GOC_DBG("close_on_put: done ch=%p\n", ud);
 }
 
 /* -------------------------------------------------------------------------
@@ -515,8 +515,8 @@ static void on_read_cb(uv_stream_t* stream, ssize_t nread,
                        const uv_buf_t* buf)
 {
     goc_stream_ctx_t* ctx = (goc_stream_ctx_t*)stream->data;
-    fprintf(stderr, "[GOC_DBG] on_read_cb: stream=%p nread=%zd stream->data=%p ch=%p\n",
-            (void*)stream, nread, stream->data, ctx ? (void*)ctx->ch : NULL); fflush(stderr);
+    GOC_DBG("on_read_cb: stream=%p nread=%zd stream->data=%p ch=%p\n",
+            (void*)stream, nread, stream->data, ctx ? (void*)ctx->ch : NULL);
 
     if (nread == 0) {
         /* EAGAIN / EWOULDBLOCK — no data right now; free the buffer. */
@@ -546,12 +546,12 @@ static void on_read_cb(uv_stream_t* stream, ssize_t nread,
      * pending goc_put_cb for the last data chunk (both queued in the same
      * libuv tick), causing loop_process_pending_put to see ch->closed==1
      * and drop the data before the reader ever sees it. */
-    fprintf(stderr, "[GOC_DBG] on_read_cb: nread<0 (EOF/error=%zd) stream=%p ch=%p, posting EOF result via close_on_put\n",
-            nread, (void*)stream, (void*)ctx->ch); fflush(stderr);
+    GOC_DBG("on_read_cb: nread<0 (EOF/error=%zd) stream=%p ch=%p, posting EOF result via close_on_put\n",
+            nread, (void*)stream, (void*)ctx->ch);
     free(buf->base);
     res->buf = NULL;
     goc_put_cb(ctx->ch, res, close_on_put, ctx->ch);
-    fprintf(stderr, "[GOC_DBG] on_read_cb: setting stream->data=NULL stream=%p (was=%p)\n", (void*)stream, stream->data); fflush(stderr);
+    GOC_DBG("on_read_cb: setting stream->data=NULL stream=%p (was=%p)\n", (void*)stream, stream->data);
     stream->data = NULL;
 }
 
@@ -563,17 +563,17 @@ typedef struct {
 static void on_read_start_dispatch(void* arg)
 {
     goc_read_start_dispatch_t* d = (goc_read_start_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_read_start_dispatch: ENTERED d=%p\n", (void*)d); fflush(stderr);
-    fprintf(stderr, "[GOC_DBG] on_read_start_dispatch: stream=%p ch=%p\n", (void*)d->stream, (void*)d->ch); fflush(stderr);
+    GOC_DBG("on_read_start_dispatch: ENTERED d=%p\n", (void*)d);
+    GOC_DBG("on_read_start_dispatch: stream=%p ch=%p\n", (void*)d->stream, (void*)d->ch);
 
     goc_stream_ctx_t* ctx = (goc_stream_ctx_t*)goc_malloc(sizeof(goc_stream_ctx_t));
     ctx->ch        = d->ch;
     d->stream->data = ctx;
-    fprintf(stderr, "[GOC_DBG] on_read_start_dispatch: set stream->data=%p ctx->ch=%p\n",
-            (void*)ctx, (void*)ctx->ch); fflush(stderr);
+    GOC_DBG("on_read_start_dispatch: set stream->data=%p ctx->ch=%p\n",
+            (void*)ctx, (void*)ctx->ch);
 
     int rc = uv_read_start(d->stream, goc_alloc_cb, on_read_cb);
-    fprintf(stderr, "[GOC_DBG] on_read_start_dispatch: uv_read_start rc=%d\n", rc); fflush(stderr);
+    GOC_DBG("on_read_start_dispatch: uv_read_start rc=%d\n", rc);
     if (rc < 0) {
         /* Failed to start: deliver error and close channel. */
         goc_io_read_t* res = (goc_io_read_t*)goc_malloc(sizeof(goc_io_read_t));
@@ -588,8 +588,8 @@ static void on_read_start_dispatch(void* arg)
 goc_chan* goc_io_read_start(uv_stream_t* stream)
 {
     goc_chan*                   ch = goc_chan_make(16);
-    fprintf(stderr, "[GOC_DBG] goc_io_read_start: stream=%p new ch=%p (buf=16) stream->data=%p\n",
-            (void*)stream, (void*)ch, stream->data); fflush(stderr);
+    GOC_DBG("goc_io_read_start: stream=%p new ch=%p (buf=16) stream->data=%p\n",
+            (void*)stream, (void*)ch, stream->data);
     goc_read_start_dispatch_t*  d  = (goc_read_start_dispatch_t*)goc_malloc(
                                          sizeof(goc_read_start_dispatch_t));
     d->stream = stream;
@@ -609,33 +609,33 @@ typedef struct {
 static void on_read_stop_dispatch(void* arg)
 {
     goc_read_stop_dispatch_t* d = (goc_read_stop_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_read_stop_dispatch: ENTERED d=%p\n", (void*)d); fflush(stderr);
-    fprintf(stderr, "[GOC_DBG] on_read_stop_dispatch: stream=%p stream->data=%p\n",
-            (void*)d->stream, d->stream->data); fflush(stderr);
+    GOC_DBG("on_read_stop_dispatch: ENTERED d=%p\n", (void*)d);
+    GOC_DBG("on_read_stop_dispatch: stream=%p stream->data=%p\n",
+            (void*)d->stream, d->stream->data);
 
     uv_read_stop(d->stream);
 
     if (d->stream->data) {
         goc_stream_ctx_t* ctx = (goc_stream_ctx_t*)d->stream->data;
-        fprintf(stderr, "[GOC_DBG] on_read_stop_dispatch: stream->data non-NULL, closing ch=%p\n", (void*)ctx->ch); fflush(stderr);
+        GOC_DBG("on_read_stop_dispatch: stream->data non-NULL, closing ch=%p\n", (void*)ctx->ch);
         goc_close(ctx->ch);
         d->stream->data = NULL;
     } else {
-        fprintf(stderr, "[GOC_DBG] on_read_stop_dispatch: stream->data is NULL — read never started or already torn down, NOT calling goc_close\n"); fflush(stderr);
+        GOC_DBG("on_read_stop_dispatch: stream->data is NULL — read never started or already torn down, NOT calling goc_close\n");
     }
 
 }
 
 int goc_io_read_stop(uv_stream_t* stream)
 {
-    fprintf(stderr, "[GOC_DBG] goc_io_read_stop: stream=%p stream->data=%p\n",
-            (void*)stream, stream->data); fflush(stderr);
+    GOC_DBG("goc_io_read_stop: stream=%p stream->data=%p\n",
+            (void*)stream, stream->data);
     goc_read_stop_dispatch_t* d = (goc_read_stop_dispatch_t*)goc_malloc(
                                       sizeof(goc_read_stop_dispatch_t));
     d->stream = stream;
-    fprintf(stderr, "[GOC_DBG] goc_io_read_stop: posting loop task d=%p\n", (void*)d); fflush(stderr);
+    GOC_DBG("goc_io_read_stop: posting loop task d=%p\n", (void*)d);
     post_on_loop(on_read_stop_dispatch, d);
-    fprintf(stderr, "[GOC_DBG] goc_io_read_stop: task posted\n"); fflush(stderr);
+    GOC_DBG("goc_io_read_stop: task posted\n");
     return 0;
 }
 
@@ -651,7 +651,7 @@ typedef struct {
 static void on_write_cb(uv_write_t* req, int status)
 {
     goc_write_ctx_t* ctx = (goc_write_ctx_t*)req;
-    fprintf(stderr, "[GOC_DBG] on_write_cb: status=%d ch=%p\n", status, (void*)ctx->ch); fflush(stderr);
+    GOC_DBG("on_write_cb: status=%d ch=%p\n", status, (void*)ctx->ch);
     gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
 }
@@ -666,11 +666,11 @@ typedef struct {
 static void on_write_dispatch(void* arg)
 {
     goc_write_dispatch_t* d   = (goc_write_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_write_dispatch: handle=%p nbufs=%u ch=%p\n", (void*)d->handle, d->nbufs, (void*)d->ch); fflush(stderr);
+    GOC_DBG("on_write_dispatch: handle=%p nbufs=%u ch=%p\n", (void*)d->handle, d->nbufs, (void*)d->ch);
     goc_write_ctx_t*      ctx = (goc_write_ctx_t*)goc_malloc(sizeof(goc_write_ctx_t));
     ctx->ch = d->ch;
     int rc = uv_write(&ctx->req, d->handle, d->bufs, d->nbufs, on_write_cb);
-    fprintf(stderr, "[GOC_DBG] on_write_dispatch: uv_write rc=%d\n", rc); fflush(stderr);
+    GOC_DBG("on_write_dispatch: uv_write rc=%d\n", rc);
     if (rc < 0) {
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
     } else {
@@ -819,7 +819,7 @@ typedef struct {
 static void on_connect_cb(uv_connect_t* req, int status)
 {
     goc_connect_ctx_t* ctx = (goc_connect_ctx_t*)req;
-    fprintf(stderr, "[GOC_DBG] on_connect_cb: status=%d ch=%p\n", status, (void*)ctx->ch); fflush(stderr);
+    GOC_DBG("on_connect_cb: status=%d ch=%p\n", status, (void*)ctx->ch);
     gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
 }
@@ -833,14 +833,14 @@ typedef struct {
 static void on_tcp_connect_dispatch(void* arg)
 {
     goc_tcp_connect_dispatch_t* d   = (goc_tcp_connect_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_tcp_connect_dispatch: handle=%p ch=%p\n", (void*)d->handle, (void*)d->ch); fflush(stderr);
+    GOC_DBG("on_tcp_connect_dispatch: handle=%p ch=%p\n", (void*)d->handle, (void*)d->ch);
     goc_connect_ctx_t*          ctx = (goc_connect_ctx_t*)goc_malloc(
                                           sizeof(goc_connect_ctx_t));
     ctx->ch = d->ch;
     int rc = uv_tcp_connect(&ctx->req, d->handle,
                             (const struct sockaddr*)&d->addr,
                             on_connect_cb);
-    fprintf(stderr, "[GOC_DBG] on_tcp_connect_dispatch: uv_tcp_connect rc=%d\n", rc); fflush(stderr);
+    GOC_DBG("on_tcp_connect_dispatch: uv_tcp_connect rc=%d\n", rc);
     if (rc < 0) {
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
     } else {
@@ -1263,7 +1263,7 @@ typedef struct {
 
 static void on_goc_handle_close(uv_handle_t* handle)
 {
-    fprintf(stderr, "[GOC_DBG] on_goc_handle_close: handle=%p\n", (void*)handle); fflush(stderr);
+    GOC_DBG("on_goc_handle_close: handle=%p\n", (void*)handle);
     goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)handle->data;
     uv_close_cb user_cb = ctx ? ctx->user_cb : NULL;
     handle->data = NULL;
@@ -1271,7 +1271,7 @@ static void on_goc_handle_close(uv_handle_t* handle)
     gc_handle_unregister(handle);
     if (user_cb)
         user_cb(handle);
-    fprintf(stderr, "[GOC_DBG] on_goc_handle_close: done handle=%p\n", (void*)handle); fflush(stderr);
+    GOC_DBG("on_goc_handle_close: done handle=%p\n", (void*)handle);
 }
 
 typedef struct {
@@ -1282,7 +1282,7 @@ typedef struct {
 static void on_handle_close_dispatch(void* arg)
 {
     goc_handle_close_dispatch_t* d = (goc_handle_close_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_handle_close_dispatch: target=%p\n", (void*)d->target); fflush(stderr);
+    GOC_DBG("on_handle_close_dispatch: target=%p\n", (void*)d->target);
     goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)goc_malloc(
                                       sizeof(goc_handle_close_ctx_t));
     ctx->user_cb    = d->user_cb;
@@ -1509,7 +1509,7 @@ typedef struct {
 
 static void on_server_connection(uv_stream_t* server, int status)
 {
-    fprintf(stderr, "[GOC_DBG] on_server_connection: server=%p status=%d\n", (void*)server, status); fflush(stderr);
+    GOC_DBG("on_server_connection: server=%p status=%d\n", (void*)server, status);
     goc_server_ctx_t* ctx = (goc_server_ctx_t*)server->data;
     if (status < 0) {
         /* Error: close channel. */
@@ -1564,7 +1564,7 @@ typedef struct {
 static void on_server_make_dispatch(void* arg)
 {
     goc_server_make_dispatch_t* d = (goc_server_make_dispatch_t*)arg;
-    fprintf(stderr, "[GOC_DBG] on_server_make_dispatch: server=%p ch=%p ready_ch=%p\n", (void*)d->server, (void*)d->ch, (void*)d->ready_ch); fflush(stderr);
+    GOC_DBG("on_server_make_dispatch: server=%p ch=%p ready_ch=%p\n", (void*)d->server, (void*)d->ch, (void*)d->ready_ch);
 
     goc_server_ctx_t* ctx = (goc_server_ctx_t*)goc_malloc(sizeof(goc_server_ctx_t));
     ctx->ch      = d->ch;
@@ -1572,7 +1572,7 @@ static void on_server_make_dispatch(void* arg)
     d->server->data = ctx;
 
     int rc = uv_listen(d->server, d->backlog, on_server_connection);
-    fprintf(stderr, "[GOC_DBG] on_server_make_dispatch: uv_listen rc=%d\n", rc); fflush(stderr);
+    GOC_DBG("on_server_make_dispatch: uv_listen rc=%d\n", rc);
     if (rc < 0) {
         /* Deliver error and close channel. */
         goc_close(d->ch);

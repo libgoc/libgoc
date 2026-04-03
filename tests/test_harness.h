@@ -99,7 +99,7 @@ extern int g_tests_failed;
     do {                                                        \
         g_tests_run++;                                          \
     GOC_TEST_WATCHDOG_REARM();                             \
-        fprintf(stderr, "[GOC_DBG] TEST_BEGIN: %s\n", (name)); fflush(stderr); \
+        GOC_DBG("TEST_BEGIN: %s\n", (name)); \
         printf("  %-50s ", (name));                             \
         fflush(stdout);                                         \
     } while (0)

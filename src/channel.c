@@ -79,12 +79,11 @@ bool wake(goc_chan* ch, goc_entry* e, void* value)
             while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0) {
                 sched_yield();
                 if (++_spin == 10000000L) {
-                    fprintf(stderr, "[GOC_DBG] wake(): SPIN STALL >10M iters coro=%p fe=%p ch=%p\n",
+                    GOC_DBG("wake(): SPIN STALL >10M iters coro=%p fe=%p ch=%p\n",
                             (void*)e->coro, (void*)fe, (void*)ch);
-                    fflush(stderr);
                 }
             }
-            if (_spin > 100) { fprintf(stderr, "[GOC_DBG] wake(): spin resolved after %ld iters coro=%p\n", _spin, (void*)e->coro); fflush(stderr); }
+            if (_spin > 100) { GOC_DBG("wake(): spin resolved after %ld iters coro=%p\n", _spin, (void*)e->coro); }
         }
         post_to_run_queue(fe->pool, fe);
         break;
@@ -259,22 +258,22 @@ void goc_close(goc_chan* ch)
     void (*on_close)(void*) = NULL;
     void* on_close_ud = NULL;
 
-    fprintf(stderr, "[GOC_DBG] goc_close: called on ch=%p\n", (void*)ch); fflush(stderr);
+    GOC_DBG("goc_close: called on ch=%p\n", (void*)ch);
 
     /* Serialise: only one caller wins the CAS 0→1 */
     int expected = 0;
     if (!atomic_compare_exchange_strong_explicit(
             &ch->close_guard, &expected, 1,
             memory_order_acq_rel, memory_order_acquire)) {
-        fprintf(stderr, "[GOC_DBG] goc_close: ch=%p CAS lost\n", (void*)ch); fflush(stderr);
+        GOC_DBG("goc_close: ch=%p CAS lost\n", (void*)ch);
         return;
     }
-    fprintf(stderr, "[GOC_DBG] goc_close: ch=%p CAS won\n", (void*)ch); fflush(stderr);
+    GOC_DBG("goc_close: ch=%p CAS won\n", (void*)ch);
 
     uv_mutex_lock(ch->lock);
     ch->closed = 1;
-    fprintf(stderr, "[GOC_DBG] goc_close: ch=%p locked, takers=%p putters=%p item_count=%zu\n",
-            (void*)ch, (void*)ch->takers, (void*)ch->putters, ch->item_count); fflush(stderr);
+    GOC_DBG("goc_close: ch=%p locked, takers=%p putters=%p item_count=%zu\n",
+            (void*)ch, (void*)ch->takers, (void*)ch->putters, ch->item_count);
 
     /* Count non-cancelled waiters: used for the to_post heap allocation and
      * (when GOC_ENABLE_STATS) for the close telemetry counter.  Entries may
@@ -329,12 +328,11 @@ void goc_close(goc_chan* ch)
         while (atomic_load_explicit(&fe->parked, memory_order_acquire) == 0) {
             sched_yield();
             if (++_spin == 10000000L) {
-                fprintf(stderr, "[GOC_DBG] goc_close(): SPIN STALL >10M iters ch=%p fe=%p\n",
+                GOC_DBG("goc_close(): SPIN STALL >10M iters ch=%p fe=%p\n",
                         (void*)ch, (void*)fe);
-                fflush(stderr);
             }
         }
-        if (_spin > 100) { fprintf(stderr, "[GOC_DBG] goc_close(): spin resolved after %ld iters ch=%p\n", _spin, (void*)ch); fflush(stderr); }
+        if (_spin > 100) { GOC_DBG("goc_close(): spin resolved after %ld iters ch=%p\n", _spin, (void*)ch); }
         post_to_run_queue(fe->pool, fe);
     }
 
@@ -383,7 +381,7 @@ goc_val_t* goc_take(goc_chan* ch)
     /* Fast path: buffered value */
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        fprintf(stderr, "[GOC_DBG] goc_take: fast-path BUFFERED ch=%p val=%p\n", (void*)ch, val); fflush(stderr);
+        GOC_DBG("goc_take: fast-path BUFFERED ch=%p val=%p\n", (void*)ch, val);
         goc_val_t* r = goc_malloc(sizeof(goc_val_t));
         r->val = val; r->ok = GOC_OK;
         return r;
@@ -397,11 +395,11 @@ goc_val_t* goc_take(goc_chan* ch)
             long _spin = 0;
             while (atomic_load_explicit(&fe_putter->parked, memory_order_acquire) == 0) {
                 sched_yield();
-                if (++_spin == 10000000L) { fprintf(stderr, "[GOC_DBG] goc_take fast-path: SPIN STALL >10M iters ch=%p fe_putter=%p\n", (void*)ch, (void*)fe_putter); fflush(stderr); }
+                if (++_spin == 10000000L) { GOC_DBG("goc_take fast-path: SPIN STALL >10M iters ch=%p fe_putter=%p\n", (void*)ch, (void*)fe_putter); }
             }
             post_to_run_queue(fe_putter->pool, fe_putter);
         }
-        fprintf(stderr, "[GOC_DBG] goc_take: fast-path PUTTER ch=%p val=%p\n", (void*)ch, val); fflush(stderr);
+        GOC_DBG("goc_take: fast-path PUTTER ch=%p val=%p\n", (void*)ch, val);
         goc_val_t* r = goc_malloc(sizeof(goc_val_t));
         r->val = val; r->ok = GOC_OK;
         return r;
@@ -409,8 +407,8 @@ goc_val_t* goc_take(goc_chan* ch)
 
     /* Fast path: closed and empty */
     if (ch->closed) {
-        fprintf(stderr, "[GOC_DBG] goc_take: fast-path CLOSED ch=%p item_count=%zu putters=%p\n",
-                (void*)ch, ch->item_count, (void*)ch->putters); fflush(stderr);
+        GOC_DBG("goc_take: fast-path CLOSED ch=%p item_count=%zu putters=%p\n",
+                (void*)ch, ch->item_count, (void*)ch->putters);
         uv_mutex_unlock(ch->lock);
         goc_val_t* r = goc_malloc(sizeof(goc_val_t));
         r->val = NULL; r->ok = GOC_CLOSED;
@@ -429,7 +427,7 @@ goc_val_t* goc_take(goc_chan* ch)
     e->ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
     goc_stack_canary_init(e);
 
-    fprintf(stderr, "[GOC_DBG] goc_take: parking coro=%p on ch=%p\n", (void*)mco_running(), (void*)ch); fflush(stderr);
+    GOC_DBG("goc_take: parking coro=%p on ch=%p\n", (void*)mco_running(), (void*)ch);
 
     /* Append to takers list */
     chan_list_append(&ch->takers, &ch->takers_tail, e);
@@ -445,7 +443,7 @@ goc_val_t* goc_take(goc_chan* ch)
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
-    fprintf(stderr, "[GOC_DBG] goc_take: resumed coro=%p ch=%p ok=%d val=%p\n", (void*)mco_running(), (void*)ch, (int)e->ok, local_result); fflush(stderr);
+    GOC_DBG("goc_take: resumed coro=%p ch=%p ok=%d val=%p\n", (void*)mco_running(), (void*)ch, (int)e->ok, local_result);
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
     r->val = local_result; r->ok = e->ok;
     return r;
@@ -490,7 +488,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
             long _spin = 0;
             while (atomic_load_explicit(&fe_taker->parked, memory_order_acquire) == 0) {
                 sched_yield();
-                if (++_spin == 10000000L) { fprintf(stderr, "[GOC_DBG] goc_put fast-path: SPIN STALL >10M iters ch=%p fe_taker=%p\n", (void*)ch, (void*)fe_taker); fflush(stderr); }
+                if (++_spin == 10000000L) { GOC_DBG("goc_put fast-path: SPIN STALL >10M iters ch=%p fe_taker=%p\n", (void*)ch, (void*)fe_taker); }
             }
             post_to_run_queue(fe_taker->pool, fe_taker);
         }
@@ -513,7 +511,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     e->ok               = GOC_CLOSED;   /* default; overwritten by wake on success */
     goc_stack_canary_init(e);
 
-    fprintf(stderr, "[GOC_DBG] goc_put: parking coro=%p on ch=%p\n", (void*)mco_running(), (void*)ch); fflush(stderr);
+    GOC_DBG("goc_put: parking coro=%p on ch=%p\n", (void*)mco_running(), (void*)ch);
 
     /* Append to putters list */
     chan_list_append(&ch->putters, &ch->putters_tail, e);
@@ -526,7 +524,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     mco_yield(mco_running());
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
-    fprintf(stderr, "[GOC_DBG] goc_put: resumed coro=%p ch=%p ok=%d\n", (void*)mco_running(), (void*)ch, (int)e->ok); fflush(stderr);
+    GOC_DBG("goc_put: resumed coro=%p ch=%p ok=%d\n", (void*)mco_running(), (void*)ch, (int)e->ok);
     return e->ok;
 }
 
@@ -733,7 +731,7 @@ void goc_put_cb(goc_chan* ch, void* val,
                 void (*cb)(goc_status_t ok, void* ud),
                 void* ud)
 {
-    fprintf(stderr, "[GOC_DBG] goc_put_cb: ch=%p val=%p put_cb=%p\n", (void*)ch, val, (void*)(uintptr_t)cb); fflush(stderr);
+    GOC_DBG("goc_put_cb: ch=%p val=%p put_cb=%p\n", (void*)ch, val, (void*)(uintptr_t)cb);
     goc_entry* e = goc_malloc(sizeof(goc_entry));
     e->kind    = GOC_CALLBACK;
     e->ch      = ch;

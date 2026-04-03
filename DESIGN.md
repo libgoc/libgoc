@@ -755,7 +755,7 @@ typedef struct goc_pool {
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
 
-**`GOC_DEBUG_LOGS`** — When set to `1`, enables verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O layer, and HTTP layer. These lines are suppressed by default (even though the `fprintf` callsites remain in the binary) via a filter installed in `src/internal.h`. Set this variable before launching the process; the value is read once and cached at first use.
+**`LIBGOC_DEBUG`** — When defined at compile time (pass `-DLIBGOC_DEBUG=ON` to CMake), enables verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O layer, and HTTP layer via the `GOC_DBG(fmt, ...)` macro defined in `include/goc.h`. When the flag is not set the macro expands to nothing, so the callsites produce zero code. Rebuild the library and tests with `-DLIBGOC_DEBUG=ON` to activate logging.
 
 Each pool also has a **live-fiber admission cap**. By default it is
 `floor(0.6 × (available_hardware_memory / fiber_stack_size))`

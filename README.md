@@ -612,7 +612,7 @@ goc_close(w);          /* release */
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
 
-Set `GOC_DEBUG_LOGS=1` before launching the process to enable verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O, and HTTP layers. Off by default.
+Pass `-DLIBGOC_DEBUG=ON` to CMake to enable verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O, and HTTP layers at compile time. Off by default.
 
 ```c
 typedef enum {

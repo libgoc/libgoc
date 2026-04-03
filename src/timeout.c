@@ -49,7 +49,7 @@ static void on_timeout(uv_timer_t* t)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
     goc_chan* ch = tctx->ch;
-    fprintf(stderr, "[GOC_DBG] on_timeout: timer=%p ch=%p\n", (void*)t, (void*)ch); fflush(stderr);
+    GOC_DBG("on_timeout: timer=%p ch=%p\n", (void*)t, (void*)ch);
     atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
     goc_close(ch);
     uv_close((uv_handle_t*)t, unregister_handle_cb);
@@ -58,8 +58,8 @@ static void on_timeout(uv_timer_t* t)
 static void on_start_timer(void* arg)
 {
     goc_timeout_req* req = (goc_timeout_req*)arg;
-    fprintf(stderr, "[GOC_DBG] on_start_timer: req=%p ms=%llu ch=%p\n",
-            (void*)req, (unsigned long long)req->ms, (void*)req->timer_ctx->ch); fflush(stderr);
+    GOC_DBG("on_start_timer: req=%p ms=%llu ch=%p\n",
+            (void*)req, (unsigned long long)req->ms, (void*)req->timer_ctx->ch);
 
     /* Subtract the time already spent waiting for the async dispatch so that
      * the timer fires at the wall-clock deadline recorded in goc_timeout(),
@@ -73,8 +73,8 @@ static void on_start_timer(void* arg)
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
 
     int rc = uv_timer_init(g_loop, &req->timer_ctx->timer);
-    fprintf(stderr, "[GOC_DBG] on_start_timer: uv_timer_init timer=%p rc=%d remaining=%llu\n",
-            (void*)&req->timer_ctx->timer, rc, (unsigned long long)remaining); fflush(stderr);
+    GOC_DBG("on_start_timer: uv_timer_init timer=%p rc=%d remaining=%llu\n",
+            (void*)&req->timer_ctx->timer, rc, (unsigned long long)remaining);
     if (rc < 0) {
         goc_close(req->timer_ctx->ch);
         gc_handle_unregister(req->timer_ctx);
@@ -82,7 +82,7 @@ static void on_start_timer(void* arg)
     }
 
     rc = uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);  /* one-shot */
-    fprintf(stderr, "[GOC_DBG] on_start_timer: uv_timer_start rc=%d\n", rc); fflush(stderr);
+    GOC_DBG("on_start_timer: uv_timer_start rc=%d\n", rc);
     if (rc < 0) {
         goc_close(req->timer_ctx->ch);
         uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
@@ -98,8 +98,8 @@ goc_chan* goc_timeout(uint64_t ms)
     goc_chan*               ch   = goc_chan_make(0);   /* rendezvous channel */
     goc_timeout_req*        req  = (goc_timeout_req*)goc_malloc(sizeof(goc_timeout_req));
     goc_timeout_timer_ctx*  tctx = (goc_timeout_timer_ctx*)goc_malloc(sizeof(goc_timeout_timer_ctx));
-    fprintf(stderr, "[GOC_DBG] goc_timeout: ms=%llu ch=%p req=%p tctx=%p\n",
-            (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx); fflush(stderr);
+    GOC_DBG("goc_timeout: ms=%llu ch=%p req=%p tctx=%p\n",
+            (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx);
 
     tctx->ch = ch;
 
