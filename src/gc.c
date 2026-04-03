@@ -358,17 +358,41 @@ void* goc_realloc(void* ptr, size_t n) {
 }
 
 /* ---------------------------------------------------------------------------
+ * goc_sprintf
+ * ---------------------------------------------------------------------------*/
+
+#include <stdarg.h>
+
+char* goc_sprintf(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (len < 0) abort();
+
+    char* buf = (char*)GC_malloc((size_t)len + 1);
+    /* GC_malloc aborts on failure, so buf is always non-NULL here. */
+
+    va_start(ap, fmt);
+    vsnprintf(buf, (size_t)len + 1, fmt, ap);
+    va_end(ap);
+
+    return buf;
+}
+
+/* ---------------------------------------------------------------------------
  * live_channels_init  (internal; declared in internal.h)
  *
  * Allocates the live_channels array with an initial capacity of 64 entries
- * via plain malloc. Initialises g_live_mutex.
+ * via GC_malloc (so Boehm GC scans it for interior channel pointers and
+ * does not prematurely collect live channels). Initialises g_live_mutex.
  * Must be called before the loop thread is spawned and before any channel
  * is created.
  * ---------------------------------------------------------------------------*/
 
 void live_channels_init(void) {
     live_channels_cap = 64;
-    live_channels     = malloc(live_channels_cap * sizeof(goc_chan*));
+    live_channels     = GC_malloc(live_channels_cap * sizeof(goc_chan*));
     assert(live_channels != NULL);
     live_channels_len = 0;
     uv_mutex_init(&g_live_mutex);
@@ -386,7 +410,7 @@ void chan_register(goc_chan* ch) {
 
     if (live_channels_len == live_channels_cap) {
         size_t new_cap  = live_channels_cap * 2;
-        goc_chan** grown = realloc(live_channels, new_cap * sizeof(goc_chan*));
+        goc_chan** grown = GC_realloc(live_channels, new_cap * sizeof(goc_chan*));
         assert(grown != NULL);
         live_channels     = grown;
         live_channels_cap = new_cap;
@@ -580,7 +604,7 @@ void goc_shutdown(void) {
         uv_mutex_destroy(ch->lock);
         free(ch->lock);
     }
-    free(live_channels);
+    GC_free(live_channels); /* was GC_malloc'd; must not use free() */
     live_channels     = NULL;
     live_channels_len = 0;
     live_channels_cap = 0;

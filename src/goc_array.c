@@ -273,3 +273,31 @@ void** goc_array_to_c(const goc_array* arr)
     }
     return arr->data + arr->head;
 }
+
+/* ---------------------------------------------------------------------------
+ * String interop
+ * ---------------------------------------------------------------------------*/
+
+goc_array* goc_array_from_str(const char* s)
+{
+    if (!s) {
+        return goc_array_make(0);
+    }
+    size_t n = strlen(s);
+    goc_array* arr = goc_array_make(n);
+    for (size_t i = 0; i < n; i++) {
+        goc_array_push(arr, goc_box_int((unsigned char)s[i]));
+    }
+    return arr;
+}
+
+char* goc_array_to_str(const goc_array* arr)
+{
+    size_t n = goc_array_len(arr);
+    char* buf = (char*)goc_malloc(n + 1);
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = (char)(unsigned char)goc_unbox_int(goc_array_get(arr, i));
+    }
+    buf[n] = '\0';
+    return buf;
+}

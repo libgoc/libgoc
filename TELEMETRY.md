@@ -44,10 +44,10 @@
 | Field          | Type    | Description                   |
 |----------------|---------|-------------------------------|
 | `id`           | `void*` | Pool pointer                  |
-| `status`       | `int`   | See `goc_stats_pool_status`   |
+| `status`       | `int`   | See `goc_stats_pool_status_t`   |
 | `thread_count` | `int`   | Number of worker threads      |
 
-| `goc_stats_pool_status` | Value | Meaning          |
+| `goc_stats_pool_status_t` | Value | Meaning          |
 |-------------------------|-------|------------------|
 | `GOC_POOL_CREATED`      | `0`   | Pool initialised |
 | `GOC_POOL_DESTROYED`    | `1`   | Pool torn down   |
@@ -57,12 +57,12 @@
 |--------------------|------------|--------------------------------------------------------------------|
 | `id`               | `int`      | Worker index                                                       |
 | `pool_id`          | `void*`    | Pool pointer                                                       |
-| `status`           | `int`      | See `goc_stats_worker_status`                                      |
+| `status`           | `int`      | See `goc_stats_worker_status_t`                                      |
 | `pending_jobs`     | `int`      | Live fiber count in the pool                                       |
 | `steal_attempts`   | `uint64_t` | Lifetime steal attempts for this worker (only meaningful at `STOPPED`) |
 | `steal_successes`  | `uint64_t` | Lifetime steal successes for this worker (only meaningful at `STOPPED`) |
 
-| `goc_stats_worker_status` | Value | Meaning                       |
+| `goc_stats_worker_status_t` | Value | Meaning                       |
 |---------------------------|-------|-------------------------------|
 | `GOC_WORKER_CREATED`      | `0`   | Thread started                |
 | `GOC_WORKER_RUNNING`      | `1`   | Picked up a fiber to execute  |
@@ -74,9 +74,9 @@
 |------------------|-------|-------------------------------------|
 | `id`             | `int` | Monotonically increasing fiber ID   |
 | `last_worker_id` | `int` | Worker that last ran this fiber (`-1` if not yet scheduled) |
-| `status`         | `int` | See `goc_stats_fiber_status`        |
+| `status`         | `int` | See `goc_stats_fiber_status_t`        |
 
-| `goc_stats_fiber_status` | Value | Meaning                      |
+| `goc_stats_fiber_status_t` | Value | Meaning                      |
 |--------------------------|-------|------------------------------|
 | `GOC_FIBER_CREATED`      | `0`   | Fiber allocated and enqueued |
 | `GOC_FIBER_COMPLETED`    | `1`   | Fiber function returned      |
@@ -115,7 +115,7 @@ void goc_stats_flush(void);
 ### Callback Registration
 
 ```c
-typedef void (*goc_stats_callback)(const struct goc_stats_event* ev, void* ud);
+typedef void (*goc_stats_callback)(const goc_stats_event_t* ev, void* ud);
 void goc_stats_set_callback(goc_stats_callback cb, void* ud);
 ```
 
@@ -126,8 +126,8 @@ The callback is always invoked on the libuv loop thread, with no internal locks 
 ### Event Structure
 
 ```c
-struct goc_stats_event {
-	enum goc_stats_event_type type;
+typedef struct goc_stats_event {
+	goc_stats_event_type_t type;
 	uint64_t timestamp;
 	union {
 		struct { void* id; int status; int thread_count; } pool;
@@ -151,7 +151,7 @@ struct goc_stats_event {
 			uint64_t entries_removed; /* only at close */
 		} channel;
 	} data;
-};
+} goc_stats_event_t;
 ```
 
 ### Emission Macros
@@ -232,7 +232,7 @@ To suppress the default output or handle events differently, call `goc_stats_set
 ```c
 #include "goc_stats.h"
 
-static void my_stats_cb(const struct goc_stats_event* ev, void* ud) {
+static void my_stats_cb(const goc_stats_event_t* ev, void* ud) {
     // ... handle event ...
 }
 

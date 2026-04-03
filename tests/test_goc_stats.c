@@ -61,14 +61,14 @@
 
 #define EVENT_BUF_CAP 2048
 
-static struct goc_stats_event g_events[EVENT_BUF_CAP];
+static goc_stats_event_t g_events[EVENT_BUF_CAP];
 static size_t                 g_event_count = 0;   /* total events received */
 static size_t                 g_read_pos    = 0;   /* next event to consume */
 static uv_mutex_t             g_event_mutex;
 static uv_cond_t              g_event_cond;
 
 /* Callback installed by main(); runs on whichever thread emits the event. */
-static void collect_event(const struct goc_stats_event* ev, void* ud) {
+static void collect_event(const goc_stats_event_t* ev, void* ud) {
     (void)ud;
     uv_mutex_lock(&g_event_mutex);
     if (g_event_count < EVENT_BUF_CAP) {
@@ -92,7 +92,7 @@ static void collect_event(const struct goc_stats_event* ev, void* ud) {
 #define EVENT_TIMEOUT_MS 5000
 #define MAX_DRAIN        64
 
-static const struct goc_stats_event* next_event(void) {
+static const goc_stats_event_t* next_event(void) {
     uv_mutex_lock(&g_event_mutex);
     uint64_t deadline = uv_hrtime() + (uint64_t)EVENT_TIMEOUT_MS * 1000000ULL;
     while (g_read_pos >= g_event_count) {
@@ -103,7 +103,7 @@ static const struct goc_stats_event* next_event(void) {
         }
         uv_cond_timedwait(&g_event_cond, &g_event_mutex, deadline - now);
     }
-    const struct goc_stats_event* ev = &g_events[g_read_pos++];
+    const goc_stats_event_t* ev = &g_events[g_read_pos++];
     uv_mutex_unlock(&g_event_mutex);
     return ev;
 }
@@ -123,18 +123,18 @@ static int drain_pending_events(void) {
 
 /* Non-blocking peek: returns the next unread event if one is already in the
  * buffer, or NULL if the buffer is empty.  Does not block or wait. */
-static const struct goc_stats_event* peek_event(void) {
+static const goc_stats_event_t* peek_event(void) {
     uv_mutex_lock(&g_event_mutex);
-    const struct goc_stats_event* ev = NULL;
+    const goc_stats_event_t* ev = NULL;
     if (g_read_pos < g_event_count)
         ev = &g_events[g_read_pos++];
     uv_mutex_unlock(&g_event_mutex);
     return ev;
 }
 
-static const struct goc_stats_event* find_worker_event(int id) {
+static const goc_stats_event_t* find_worker_event(int id) {
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) return NULL;
         if (ev->type == GOC_STATS_EVENT_WORKER_STATUS && ev->data.worker.id == id)
             return ev;
@@ -142,10 +142,10 @@ static const struct goc_stats_event* find_worker_event(int id) {
     return NULL;
 }
 
-static const struct goc_stats_event* find_fiber_event(
-        int id, enum goc_stats_fiber_status status) {
+static const goc_stats_event_t* find_fiber_event(
+        int id, goc_stats_fiber_status_t status) {
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) return NULL;
         if (ev->type == GOC_STATS_EVENT_FIBER_STATUS &&
             ev->data.fiber.id == id &&
@@ -155,9 +155,9 @@ static const struct goc_stats_event* find_fiber_event(
     return NULL;
 }
 
-static const struct goc_stats_event* find_channel_event(int id) {
+static const goc_stats_event_t* find_channel_event(int id) {
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) return NULL;
         if (ev->type == GOC_STATS_EVENT_CHANNEL_STATUS && ev->data.channel.id == id)
             return ev;
@@ -165,9 +165,9 @@ static const struct goc_stats_event* find_channel_event(int id) {
     return NULL;
 }
 
-static const struct goc_stats_event* find_any_fiber_created(void) {
+static const goc_stats_event_t* find_any_fiber_created(void) {
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) return NULL;
         if (ev->type == GOC_STATS_EVENT_FIBER_STATUS &&
             ev->data.fiber.status == GOC_FIBER_CREATED)
@@ -176,10 +176,10 @@ static const struct goc_stats_event* find_any_fiber_created(void) {
     return NULL;
 }
 
-static const struct goc_stats_event* find_any_worker_status(
-        enum goc_stats_worker_status status) {
+static const goc_stats_event_t* find_any_worker_status(
+        goc_stats_worker_status_t status) {
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) return NULL;
         if (ev->type == GOC_STATS_EVENT_WORKER_STATUS &&
             ev->data.worker.status == (int)status)
@@ -236,7 +236,7 @@ done:;
 static void test_s1_3(void) {
     TEST_BEGIN("S1.3  worker event round-trips with correct fields");
     goc_go(emit_worker_event, NULL);
-    const struct goc_stats_event* ev = find_worker_event(42);
+    const goc_stats_event_t* ev = find_worker_event(42);
     ASSERT(ev != NULL);
     ASSERT(ev->type == GOC_STATS_EVENT_WORKER_STATUS);
     ASSERT(ev->timestamp > 0);
@@ -257,7 +257,7 @@ done:;
 static void test_s1_4(void) {
     TEST_BEGIN("S1.4  fiber event round-trips with correct fields");
     goc_go(emit_fiber_event, NULL);
-    const struct goc_stats_event* ev = find_fiber_event(7, GOC_FIBER_COMPLETED);
+    const goc_stats_event_t* ev = find_fiber_event(7, GOC_FIBER_COMPLETED);
     ASSERT(ev != NULL);
     ASSERT(ev->type == GOC_STATS_EVENT_FIBER_STATUS);
     ASSERT(ev->timestamp > 0);
@@ -274,7 +274,7 @@ done:;
 static void test_s1_5(void) {
     TEST_BEGIN("S1.5  channel event round-trips with correct fields");
     goc_go(emit_channel_event, NULL);
-    const struct goc_stats_event* ev = find_channel_event(99);
+    const goc_stats_event_t* ev = find_channel_event(99);
     ASSERT(ev != NULL);
     ASSERT(ev->type == GOC_STATS_EVENT_CHANNEL_STATUS);
     ASSERT(ev->timestamp > 0);
@@ -316,13 +316,13 @@ static void test_s2_1(void) {
     drain_pending_events();
     goc_go(noop_fiber, NULL);
 
-    const struct goc_stats_event* created = find_any_fiber_created();
+    const goc_stats_event_t* created = find_any_fiber_created();
     ASSERT(created != NULL);
     ASSERT(created->data.fiber.last_worker_id == -1);
     ASSERT(created->timestamp > 0);
     int fiber_id = created->data.fiber.id;
 
-    const struct goc_stats_event* completed = find_fiber_event(fiber_id, GOC_FIBER_COMPLETED);
+    const goc_stats_event_t* completed = find_fiber_event(fiber_id, GOC_FIBER_COMPLETED);
     ASSERT(completed != NULL);
     ASSERT(completed->data.fiber.last_worker_id >= 0);
     ASSERT(completed->timestamp >= created->timestamp);
@@ -339,14 +339,14 @@ static void test_s2_2(void) {
     drain_pending_events();
     goc_go(noop_fiber, NULL);
 
-    const struct goc_stats_event* created = find_any_fiber_created();
+    const goc_stats_event_t* created = find_any_fiber_created();
     ASSERT(created != NULL);
     int fiber_id = created->data.fiber.id;
 
-    const struct goc_stats_event* completed = find_fiber_event(fiber_id, GOC_FIBER_COMPLETED);
+    const goc_stats_event_t* completed = find_fiber_event(fiber_id, GOC_FIBER_COMPLETED);
     ASSERT(completed != NULL);
 
-    const struct goc_stats_event* idle = find_any_worker_status(GOC_WORKER_IDLE);
+    const goc_stats_event_t* idle = find_any_worker_status(GOC_WORKER_IDLE);
     ASSERT(idle != NULL);
     ASSERT(idle->data.worker.id >= 0);
 
@@ -366,7 +366,7 @@ static void test_s2_3(void) {
     bool saw[2] = {false, false};
     int n_found = 0;
     for (int i = 0; i < MAX_DRAIN && n_found < 2; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         ASSERT(ev != NULL);
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_CREATED) continue;
@@ -394,11 +394,11 @@ static void test_s2_4(void) {
     drain_pending_events();
     goc_pool* pool = goc_pool_make(3);
     void* pool_id = pool;
-    const struct goc_stats_event* create_ev = NULL;
-    const struct goc_stats_event* destroy_ev = NULL;
+    const goc_stats_event_t* create_ev = NULL;
+    const goc_stats_event_t* destroy_ev = NULL;
     // Find pool created event
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (ev && ev->type == GOC_STATS_EVENT_POOL_STATUS &&
             ev->data.pool.id == pool_id && ev->data.pool.status == GOC_POOL_CREATED) {
             create_ev = ev;
@@ -410,7 +410,7 @@ static void test_s2_4(void) {
     goc_pool_destroy(pool);
     // Find pool destroyed event
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (ev && ev->type == GOC_STATS_EVENT_POOL_STATUS &&
             ev->data.pool.id == pool_id && ev->data.pool.status == GOC_POOL_DESTROYED) {
             destroy_ev = ev;
@@ -430,13 +430,13 @@ static void test_s3_1(void) {
     TEST_BEGIN("S3.1  channel open/close events via API");
     goc_chan* ch = goc_chan_make(0);
     int ch_id = (int)(intptr_t)ch;
-    const struct goc_stats_event* open_ev = find_channel_event(ch_id);
+    const goc_stats_event_t* open_ev = find_channel_event(ch_id);
     ASSERT(open_ev != NULL);
     ASSERT(open_ev->data.channel.status == 1); // open
     ASSERT(open_ev->data.channel.buf_size == 0);
     ASSERT(open_ev->data.channel.item_count == 0);
     goc_close(ch);
-    const struct goc_stats_event* close_ev = find_channel_event(ch_id);
+    const goc_stats_event_t* close_ev = find_channel_event(ch_id);
     ASSERT(close_ev != NULL);
     ASSERT(close_ev->data.channel.status == 0); // closed
     ASSERT(close_ev->data.channel.buf_size == 0);
@@ -466,7 +466,7 @@ static void test_s3_2(void) {
     goc_chan* ch = goc_chan_make(2);
     int ch_id = (int)(intptr_t)ch;
     // Open event
-    const struct goc_stats_event* open_ev = find_channel_event(ch_id);
+    const goc_stats_event_t* open_ev = find_channel_event(ch_id);
     ASSERT(open_ev != NULL);
     ASSERT(open_ev->data.channel.status == 1);
     ASSERT(open_ev->data.channel.buf_size == 2);
@@ -480,7 +480,7 @@ static void test_s3_2(void) {
     ASSERT(s3_2_fiber_args.taken->val == (void*)1);
     goc_close(ch);
 
-    const struct goc_stats_event* close_ev = find_channel_event(ch_id);
+    const goc_stats_event_t* close_ev = find_channel_event(ch_id);
     ASSERT(close_ev != NULL);
     ASSERT(close_ev->data.channel.status == 0);
     ASSERT(close_ev->data.channel.buf_size == 2);
@@ -501,13 +501,13 @@ static void test_s3_3(void) {
     goc_go(noop_fiber, NULL);
     goc_go(noop_fiber, NULL);
     // Find both channel open events
-    const struct goc_stats_event* open1 = find_channel_event(ch1_id);
-    const struct goc_stats_event* open2 = find_channel_event(ch2_id);
+    const goc_stats_event_t* open1 = find_channel_event(ch1_id);
+    const goc_stats_event_t* open2 = find_channel_event(ch2_id);
     ASSERT(open1 != NULL && open2 != NULL);
     // Find two fiber created events
     int found = 0;
     for (int i = 0; i < MAX_DRAIN && found < 2; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (ev && ev->type == GOC_STATS_EVENT_FIBER_STATUS && ev->data.fiber.status == GOC_FIBER_CREATED)
             found++;
     }
@@ -515,8 +515,8 @@ static void test_s3_3(void) {
     goc_close(ch1);
     goc_close(ch2);
     // Find both channel close events
-    const struct goc_stats_event* close1 = find_channel_event(ch1_id);
-    const struct goc_stats_event* close2 = find_channel_event(ch2_id);
+    const goc_stats_event_t* close1 = find_channel_event(ch1_id);
+    const goc_stats_event_t* close2 = find_channel_event(ch2_id);
     ASSERT(close1 != NULL && close2 != NULL);
     TEST_PASS();
 done:;
@@ -527,7 +527,7 @@ done:;
  */
 static void s3_4_fiber(void* arg) {
     goc_chan* ch = (goc_chan*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = ch, .op_kind = GOC_ALT_TAKE },
     };
     goc_alts(ops, 1); // parks, increments taker_scans
@@ -544,9 +544,9 @@ static void test_s3_4(void) {
     goc_close(ch); // triggers close event
     goc_take_sync(join); // cleanup
     
-    const struct goc_stats_event* close_ev = NULL;
+    const goc_stats_event_t* close_ev = NULL;
     for (int i = 0; i < MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = find_channel_event(ch_id);
+        const goc_stats_event_t* ev = find_channel_event(ch_id);
         if (!ev) break;
         if (ev->data.channel.status == 0) {
             close_ev = ev;
@@ -569,7 +569,7 @@ static _Atomic int s3_5_parked = 0;
 static void s3_5_fiber(void* arg) {
     atomic_fetch_add_explicit(&s3_5_parked, 1, memory_order_relaxed);
     goc_chan* ch = (goc_chan*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = ch, .op_kind = GOC_ALT_TAKE },
     };
     goc_alts(ops, 1); // parks, will be cancelled
@@ -606,9 +606,9 @@ static void test_s3_5(void) {
 
     goc_close(ch);
     
-    const struct goc_stats_event* close_ev = NULL;
+    const goc_stats_event_t* close_ev = NULL;
     for (int i = 0; i < MAX_DRAIN * MAX_DRAIN; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) break;
         if (ev->type == GOC_STATS_EVENT_CHANNEL_STATUS &&
             ev->data.channel.id == ch_id &&
@@ -653,7 +653,7 @@ static void test_s5_1(void) {
      * can easily exceed MAX_DRAIN before the two STOPPED events appear. */
     int stopped_found = 0;
     for (int i = 0; i < 1024; i++) {
-        const struct goc_stats_event* ev = next_event();
+        const goc_stats_event_t* ev = next_event();
         if (!ev) break;
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;

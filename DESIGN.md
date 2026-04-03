@@ -31,9 +31,11 @@
 20. [Shutdown Sequence](#shutdown-sequence)
 21. [Testing](#testing)
 22. [CI/CD](#cicd)
+23. [HTTP Server (`goc_http`)](#http-server-goc_http)
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
 > **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
+> **HTTP Server:** For full `goc_http` design and API rationale see [HTTP.md](./HTTP.md).
 
 ---
 
@@ -44,6 +46,7 @@
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, timers, cross-thread signalling |
 | Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init`; thread pool workers and the uv loop thread are registered with the collector on creation and unregistered on exit |
+| `picohttpparser` | HTTP/1.1 request parser (vendored MIT, `vendor/picohttpparser/`); used by `goc_http`; compiled in by default; excluded with `-DLIBGOC_SERVER=OFF` |
 
 ---
 
@@ -57,7 +60,8 @@ libgoc/
 │   ├── goc.h              # Public API header
 │   ├── goc_io.h           # Async I/O wrappers public API (separate include)
 │   ├── goc_array.h        # Dynamic array public API
-│   └── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
+│   ├── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
+│   └── goc_http.h       # HTTP server public API (separate include)
 ├── src/
 │   ├── alts.c             # goc_alts, goc_alts_sync
 │   ├── timeout.c          # goc_timeout
@@ -70,6 +74,7 @@ libgoc/
 │   ├── goc_array.c        # Dynamic array (goc_array)
 │   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── goc_stats.c        # Telemetry implementation (compiled only when GOC_ENABLE_STATS is set)
+│   ├── goc_http.c       # HTTP/1.1 server and client (picohttpparser + goc_io; see goc_http.h)
 │   ├── minicoro.c         # Instantiates minicoro (defines MINICORO_IMPL)
 │   ├── internal.h         # Internal types, helpers, and cross-module declarations
 │   ├── chan_type.h         # Authoritative struct goc_chan definition (included where concrete channel fields are accessed)
@@ -81,6 +86,7 @@ libgoc/
 │   ├── test_p01_foundation.c        # Phase 1  — Foundation
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
+│   ├── test_goc_http.c              # Component — goc_http HTTP server/client
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
 │   ├── test_p04_callbacks.c         # Phase 4  — Callbacks
@@ -96,14 +102,18 @@ libgoc/
 │   ├── go.mod
 │   └── README.md
 ├── vendor/
-│   └── minicoro/
-│       └── minicoro.h     # Vendored header — fiber suspend/resume (header-only)
+│   ├── minicoro/
+│   │   └── minicoro.h             # Vendored header — fiber suspend/resume (header-only)
+│   └── picohttpparser/
+│       ├── picohttpparser.h       # Vendored header — fast HTTP/1.1 request parser (MIT)
+│       └── picohttpparser.c       # Vendored implementation
 ├── CMakeLists.txt         # Build system: libgoc static lib + test binary
 ├── libgoc.pc.in           # pkg-config template; expanded by CMake at configure time
 ├── README.md
 ├── DESIGN.md              # This document
 ├── ARRAY.md               # Dynamic array design and API reference
 ├── TELEMETRY.md           # goc_stats async telemetry system
+├── HTTP.md                # HTTP server API and design reference
 ├── OPTIMIZATION.md        # Prioritized optimization roadmap and benchmark signals
 ├── TODO.md                # Planned future work
 └── LICENSE
@@ -133,8 +143,9 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 | `test_p01_foundation` … `test_p10_io` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_stats` | executable | Component test for `goc_stats`; always compiled with `GOC_ENABLE_STATS` and `src/goc_stats.c` added directly, regardless of the `GOC_ENABLE_STATS` CMake option |
+| `test_goc_http` | executable | Component test for `goc_http`; compiled only when `LIBGOC_SERVER=ON` (default) |
 
-A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/` and `vendor/minicoro/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
+A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, and (when `LIBGOC_SERVER` is ON) `vendor/picohttpparser/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
 When `-DLIBGOC_VMEM=ON` is passed, `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE` compile definition on the `goc` library target **and** on every per-phase test executable. This ensures that `src/internal.h`'s canary macros are disabled and that `test_p08_safety.c` detects the vmem build at compile time (P8.1 uses `#ifdef LIBGOC_VMEM_ENABLED` to skip the canary-abort test in vmem builds, where the canary is a no-op). By default (canary mode), `LIBGOC_VMEM_ENABLED` is **not** defined and canary protection is active.
 
@@ -156,6 +167,7 @@ Optional opt-in flags, each requiring a **separate build directory**:
 | `-DLIBGOC_TSAN=ON` | `goc_tsan` | ThreadSanitizer; per-phase test executables link against `goc_tsan`; mutually exclusive with ASAN and COVERAGE |
 | `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` with `--coverage`; runs ctest then produces `coverage_html/index.html`; mutually exclusive with ASAN and TSAN |
 | `-DGOC_ENABLE_STATS=ON` | *(none)* | Compiles `src/goc_stats.c` into the library and defines `GOC_ENABLE_STATS` on all targets; without this flag the telemetry macros are no-ops and `goc_stats.c` is excluded from `libgoc.a`. `test_goc_stats` always compiles `goc_stats.c` directly regardless of this flag. |
+| `-DLIBGOC_SERVER=OFF` | *(none)* | Excludes `src/goc_http.c` and `vendor/picohttpparser/picohttpparser.c` from the library. The HTTP server and client APIs are unavailable. Default is **ON**; this flag is an opt-out. |
 
 ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. When either sanitizer flag is active the per-phase test executables link against the instrumented variant instead of `goc`. Configuring ASAN and TSAN together, or either sanitizer with COVERAGE, in the same directory is a CMake fatal error.
 
@@ -258,6 +270,8 @@ Pool workers and the uv loop thread are created via `goc_thread_create` on all p
 
 `goc_malloc(n)` is the public allocator. It is a thin wrapper around `GC_malloc`. Memory is zero-initialised and collected automatically when no longer reachable — no `free` is required or permitted.
 
+`goc_sprintf(fmt, ...)` is a GC-heap-aware `sprintf`. It calls `vsnprintf` twice (once to measure, once to fill) and returns a null-terminated string allocated via `goc_malloc`. The caller must not `free` the result.
+
 **libuv handles and internal context/dispatch structs are `goc_malloc`-allocated and pinned via `gc_handle_register`** — see [libuv Role](#libuv-role). The library uses plain `malloc` only for objects whose lifetime is explicitly managed and that do not need to participate in GC traversal (e.g. channel mutex internals, injector queue nodes).
 
 Most runtime objects that should participate in GC traversal (channels, fibers, parked entries, callback-queue nodes) are allocated via `goc_malloc`. Scheduler storage has a few intentional exceptions: work-stealing deque ring buffers use `GC_malloc_uncollectable` so queued `goc_entry*` values remain visible to the collector, and injector queue nodes use plain `malloc`/`free` so arbitrary producer threads do not need to perform GC allocations.
@@ -302,7 +316,7 @@ typedef struct {
 } goc_val_t;
 ```
 
-Returned by `goc_take`, `goc_take_sync`, `goc_take_try`, and the `value` field of `goc_alts_result`. `ok==GOC_CLOSED` always means the channel was closed, regardless of `val`. `ok==GOC_EMPTY` is returned only by `goc_take_try` when the channel is open but has no value immediately available.
+Returned by `goc_take`, `goc_take_sync`, `goc_take_try`, and the `value` field of `goc_alts_result_t`. `ok==GOC_CLOSED` always means the channel was closed, regardless of `val`. `ok==GOC_EMPTY` is returned only by `goc_take_try` when the channel is open but has no value immediately available.
 
 ### Channel (`goc_chan`)
 
@@ -499,11 +513,11 @@ goc_chan* done = goc_go(my_fn, arg);
 goc_take(done);        /* suspends this fiber until the spawned fiber returns */
 
 /* as one arm of a select, racing against a timeout */
-goc_alt_op ops[] = {
+goc_alt_op_t ops[] = {
     { .ch = done,              .op_kind = GOC_ALT_TAKE },
     { .ch = goc_timeout(5000), .op_kind = GOC_ALT_TAKE },
 };
-goc_alts_result* r = goc_alts(ops, 2);
+goc_alts_result_t* r = goc_alts(ops, 2);
 ```
 
 The join channel may be ignored if no join is needed — the channel is GC-allocated and will be collected once it becomes unreachable after the fiber closes it.
@@ -1084,11 +1098,11 @@ static void unregister_handle_cb(uv_handle_t* h) {
 Runs entirely on the uv loop thread (after the async dispatch). Composes with `goc_alts` for deadline semantics:
 
 ```c
-goc_alt_op ops[] = {
+goc_alt_op_t ops[] = {
     { .ch = data_ch,          .op_kind = GOC_ALT_TAKE },
     { .ch = goc_timeout(500), .op_kind = GOC_ALT_TAKE },
 };
-goc_alts_result* r = goc_alts(ops, 2);
+goc_alts_result_t* r = goc_alts(ops, 2);
 ```
 
 ---
@@ -1100,18 +1114,18 @@ typedef enum {
     GOC_ALT_TAKE,    /* receive from ch */
     GOC_ALT_PUT,     /* send put_val into ch */
     GOC_ALT_DEFAULT, /* fires immediately if no other arm is ready; ch must be NULL */
-} goc_alt_kind;
+} goc_alt_kind_t;
 
-typedef struct { goc_chan* ch; goc_alt_kind op_kind; void* put_val; } goc_alt_op;
-typedef struct { goc_chan* ch; goc_val_t value; } goc_alts_result;
+typedef struct { goc_chan* ch; goc_alt_kind_t op_kind; void* put_val; } goc_alt_op_t;
+typedef struct { goc_chan* ch; goc_val_t value; } goc_alts_result_t;
 
-goc_alts_result* goc_alts     (goc_alt_op* ops, size_t n); /* fiber context */
-goc_alts_result* goc_alts_sync(goc_alt_op* ops, size_t n); /* blocking OS thread */
+goc_alts_result_t* goc_alts     (goc_alt_op_t* ops, size_t n); /* fiber context */
+goc_alts_result_t* goc_alts_sync(goc_alt_op_t* ops, size_t n); /* blocking OS thread */
 ```
 
 `goc_alts` may suspend the calling fiber and must only be called from within a fiber. `goc_alts_sync` blocks the calling OS thread; calling it from within a fiber is a runtime invariant violation and aborts with a diagnostic message.
 
-The returned `goc_alts_result->ch` is the channel pointer of the winning arm; it is `NULL` when the `GOC_ALT_DEFAULT` arm fires. `goc_alts_result->value` is a `goc_val_t`. For take arms, `value.ok == GOC_CLOSED` means the channel was closed rather than that a `NULL` was sent. For put arms, the winning result is always `{NULL, GOC_OK}` — `result_slot` is NULL for put entries and `wake()` skips the `result_slot` write. For a `GOC_ALT_DEFAULT` arm, the winning result is `{NULL, GOC_OK}`.
+The returned `goc_alts_result_t->ch` is the channel pointer of the winning arm; it is `NULL` when the `GOC_ALT_DEFAULT` arm fires. `goc_alts_result_t->value` is a `goc_val_t`. For take arms, `value.ok == GOC_CLOSED` means the channel was closed rather than that a `NULL` was sent. For put arms, the winning result is always `{NULL, GOC_OK}` — `result_slot` is NULL for put entries and `wake()` skips the `result_slot` write. For a `GOC_ALT_DEFAULT` arm, the winning result is `{NULL, GOC_OK}`.
 
 **Invariants:**
 
@@ -1166,10 +1180,10 @@ typedef enum {
 } goc_status_t;
 typedef struct { void* val; goc_status_t ok;          } goc_val_t;
 typedef enum   { GOC_ALT_TAKE, GOC_ALT_PUT,
-                 GOC_ALT_DEFAULT                       } goc_alt_kind;
-typedef struct { goc_chan* ch; goc_alt_kind op_kind;
-                 void* put_val;                        } goc_alt_op;
-typedef struct { goc_chan* ch; goc_val_t value;        } goc_alts_result;
+                 GOC_ALT_DEFAULT                       } goc_alt_kind_t;
+typedef struct { goc_chan* ch; goc_alt_kind_t op_kind;
+                 void* put_val;                        } goc_alt_op_t;
+typedef struct { goc_chan* ch; goc_val_t value;        } goc_alts_result_t;
 typedef enum {
     GOC_DRAIN_OK      = 0,  /* all fibers finished within the deadline */
     GOC_DRAIN_TIMEOUT = 1,  /* deadline expired; pool remains valid and running */
@@ -1185,6 +1199,7 @@ void          goc_shutdown(void);
 /* Memory */
 void*         goc_malloc(size_t n);
 void*         goc_realloc(void* ptr, size_t n);
+char*         goc_sprintf(const char* fmt, ...);
 
 /* Scalar boxing helpers (macros) */
 /* goc_box_int(x)    — (void*)(intptr_t)(x)  */
@@ -1226,8 +1241,8 @@ goc_chan*     goc_read_lock(goc_mutex* mx);
 goc_chan*     goc_write_lock(goc_mutex* mx);
 
 /* Select */
-goc_alts_result* goc_alts     (goc_alt_op* ops, size_t n);
-goc_alts_result* goc_alts_sync(goc_alt_op* ops, size_t n);
+goc_alts_result_t* goc_alts     (goc_alt_op_t* ops, size_t n);
+goc_alts_result_t* goc_alts_sync(goc_alt_op_t* ops, size_t n);
 
 /* Timeout */
 goc_chan*     goc_timeout(uint64_t ms);
@@ -1254,6 +1269,8 @@ void          goc_array_push_head(goc_array* arr, void* val);
 void*         goc_array_pop_head(goc_array* arr);
 goc_array*    goc_array_concat(const goc_array* a, const goc_array* b);
 goc_array*    goc_array_slice(const goc_array* arr, size_t start, size_t end);
+goc_array*    goc_array_from_str(const char* s);
+char*         goc_array_to_str(const goc_array* arr);
 void**        goc_array_to_c(const goc_array* arr);
 ```
 
@@ -1312,6 +1329,27 @@ libgoc provides channel-based wrappers for libuv I/O operations in a separate he
 **GC safety.** All `goc_chan*` pointers passed to async context structs (which are `malloc`-allocated) are registered in the `live_uv_handles` array (see `gc.c`) for the duration of the pending I/O, preventing premature collection.
 
 > **Full API reference:** [IO.md](./IO.md)
+
+---
+
+## HTTP Server (`goc_http`)
+
+libgoc includes a built-in HTTP/1.1 server and client built on top of `goc_io` TCP and the vendored [picohttpparser](https://github.com/h2o/picohttpparser) (MIT), integrated with the libgoc fiber scheduler.
+
+**Include separately:** consumers must include `<goc_http.h>` in addition to `<goc.h>`.
+
+```c
+#include "goc.h"
+#include "goc_http.h"
+```
+
+**Fiber-per-request model:** each HTTP request is dispatched into a new fiber via `goc_go()`, giving handlers the full co-operative concurrency model — blocking channel reads, `goc_sleep`, `goc_io` operations, and GC allocation all work transparently.
+
+**HTTP client:** outbound requests return a `goc_chan*` that delivers a `goc_http_response_t*` when the response arrives. The event loop is never blocked; other fibers continue to run while the request is in flight. Multiple requests can be issued and awaited with `goc_alts`.
+
+> **Planned:** WebSocket upgrades, HTTP/2, and TLS support are planned for a future release.
+
+> **Full API reference:** [HTTP.md](./HTTP.md)
 
 ---
 
@@ -1656,10 +1694,10 @@ Runs a build matrix across four configurations:
 
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `macos-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `windows-latest` | *(none — canary build)* | P1–P7, P9–P10, `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P10), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9–P10, `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 
@@ -1677,9 +1715,9 @@ Triggered on every push to `main` that touches `src/`, `include/`, `CMakeLists.t
 
 1. **`tag`** — Creates a UTC timestamp tag in the format `yyyy.MM.dd.HH.mm` (e.g. `2026.03.18.12.05`) and pushes it to the repository.
 
-2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside the full public header set: `include/goc.h`, `include/goc_io.h`, `include/goc_array.h`, and `include/goc_stats.h`:
-    - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
-    - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
-    - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
+2. **`build-linux`**, **`build-macos`**, **`build-windows`** — Run in parallel after `tag`. Each job builds the `goc` static library in `Release` mode (canary stacks, the default — no `-DLIBGOC_VMEM` flag) and packages it alongside the full public header set: `include/goc.h`, `include/goc_io.h`, `include/goc_array.h`, `include/goc_stats.h`, and `include/goc_http.h`:
+    - Linux: `libgoc-<tag>-canary-linux-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h` + `goc_http.h`); Boehm GC is built from source with `--enable-threads=posix` and cached; a `bdw-gc-threaded.pc` alias is baked into the cache.
+    - macOS: `libgoc-<tag>-canary-macos-arm64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h` + `goc_http.h`); Homebrew dependencies are installed and a `bdw-gc-threaded.pc` alias is created in `$(brew --prefix)/lib/pkgconfig` if absent.
+    - Windows: `libgoc-<tag>-canary-windows-x86_64.tar.gz` (`libgoc.a` + `goc.h` + `goc_io.h` + `goc_array.h` + `goc_stats.h` + `goc_http.h`, built via MSYS2/MinGW-w64 UCRT64); a `bdw-gc-threaded.pc` alias is created in `/ucrt64/lib/pkgconfig` if absent before CMake runs.
 
 3. **`release`** — Downloads all three artifacts and publishes a GitHub Release tagged with the timestamp tag created in step 1.

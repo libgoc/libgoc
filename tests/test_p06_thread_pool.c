@@ -560,14 +560,14 @@ done:;
  *
  * channels  — array of P6_5_ARM_COUNT channels; one will be pre-loaded
  * winner_idx — index of the channel pre-loaded with a value
- * result    — populated by the fiber with the goc_alts_result
+ * result    — populated by the fiber with the goc_alts_result_t
  * done      — signalled when the fiber has recorded its result
  */
 typedef struct {
-    goc_chan*       channels[P6_5_ARM_COUNT];
-    int             winner_idx;
-    goc_alts_result* result;
-    done_t*         done;
+    goc_chan*         channels[P6_5_ARM_COUNT];
+    int               winner_idx;
+    goc_alts_result_t* result;
+    done_t*           done;
 } p6_5_args_t;
 
 /*
@@ -579,7 +579,7 @@ typedef struct {
 static void test_p6_5_fiber_fn(void* arg) {
     p6_5_args_t* a = (p6_5_args_t*)arg;
 
-    goc_alt_op ops[P6_5_ARM_COUNT];
+    goc_alt_op_t ops[P6_5_ARM_COUNT];
     for (int i = 0; i < P6_5_ARM_COUNT; i++) {
         ops[i].ch       = a->channels[i];
         ops[i].op_kind  = GOC_ALT_TAKE;
@@ -1516,6 +1516,13 @@ done:;
 #define P6_22_WORKERS 8
 #define P6_22_PAIRS   20
 #define P6_22_ROUNDS  300
+/* vmem stacks are allocated via mmap — each context switch is much costlier.
+ * Give the test 4× as long to avoid spurious timeouts on slow CI runners. */
+#ifdef LIBGOC_VMEM_ENABLED
+#  define P6_22_TIMEOUT_MS  60000
+#else
+#  define P6_22_TIMEOUT_MS  15000
+#endif
 
 typedef struct {
     goc_chan*    req;
@@ -1585,8 +1592,9 @@ static void test_p6_22(void) {
     }
 
     /* Generous deadline: only a double-resume (hang) causes a timeout.
-     * A double-resume crash would appear as SIGABRT / signal 11 here. */
-    ok = done_wait_timeout(&done, 15000);
+     * A double-resume crash would appear as SIGABRT / signal 11 here.
+     * Under vmem builds the budget is 4× larger (P6_22_TIMEOUT_MS). */
+    ok = done_wait_timeout(&done, P6_22_TIMEOUT_MS);
     ASSERT(ok);
     TEST_PASS();
 done:;
@@ -1631,12 +1639,12 @@ done:;
 #define P6_STEAL_EV_CAP 1024
 
 typedef struct {
-    struct goc_stats_event buf[P6_STEAL_EV_CAP];
-    size_t                 count;
-    uv_mutex_t             mtx;
+    goc_stats_event_t buf[P6_STEAL_EV_CAP];
+    size_t            count;
+    uv_mutex_t        mtx;
 } p6_steal_evbuf_t;
 
-static void p6_steal_collect(const struct goc_stats_event* ev, void* ud) {
+static void p6_steal_collect(const goc_stats_event_t* ev, void* ud) {
     p6_steal_evbuf_t* b = (p6_steal_evbuf_t*)ud;
     uv_mutex_lock(&b->mtx);
     if (b->count < P6_STEAL_EV_CAP)
@@ -1677,7 +1685,7 @@ static void test_p6_24(void) {
     int stopped_found = 0;
     uv_mutex_lock(&evbuf.mtx);
     for (size_t i = 0; i < evbuf.count; i++) {
-        const struct goc_stats_event* ev = &evbuf.buf[i];
+        const goc_stats_event_t* ev = &evbuf.buf[i];
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
         if (ev->data.worker.pool_id != pool_id) continue;
@@ -1731,7 +1739,7 @@ static void test_p6_25(void) {
     uint64_t ev_att_sum = 0;
     uv_mutex_lock(&evbuf.mtx);
     for (size_t i = 0; i < evbuf.count; i++) {
-        const struct goc_stats_event* ev = &evbuf.buf[i];
+        const goc_stats_event_t* ev = &evbuf.buf[i];
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
         if (ev->data.worker.pool_id != pool_id) continue;

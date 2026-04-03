@@ -20,6 +20,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | `minicoro` | fiber suspend/resume (cross-platform; POSIX and Windows) |
 | `libuv` | event loop, threads, timers, cross-thread wakeup |
 | Boehm GC | garbage collection |
+| `picohttpparser` | HTTP/1.1 request parser (vendored MIT); used by `goc_http`; compiled in by default; disable with `-DLIBGOC_SERVER=OFF` |
 
 **Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases):
 - Linux (x86-64)
@@ -30,6 +31,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [Async I/O API](./IO.md)
 - [Dynamic Array](./ARRAY.md)
 - [Telemetry](./TELEMETRY.md)
+- [HTTP Server](./HTTP.md)
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
@@ -47,6 +49,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [Public API](#public-api)
   - [Initialisation and shutdown](#initialisation-and-shutdown)
   - [Memory allocation](#memory-allocation)
+  - [String helpers](#string-helpers)
   - [Value type](#value-type)
   - [Channels](#channels)
   - [Utilities](#utilities)
@@ -62,6 +65,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
   - [Async I/O →](./IO.md)
+  - [HTTP Server →](./HTTP.md)
 - [Best Practices](#best-practices)
 - [Benchmarks](#benchmarks)
 - [Building and Testing](#building-and-testing)
@@ -312,6 +316,22 @@ my_obj_t* obj = goc_malloc(sizeof(my_obj_t));
 
 ---
 
+### String helpers
+
+libgoc provides a GC-managed string formatting helper. The result is allocated on the Boehm GC heap; the caller must not `free` it.
+
+| Function | Signature | Description |
+|---|---|---|
+| `goc_sprintf` | `char* goc_sprintf(const char* fmt, ...)` | Formats `fmt` and the given arguments into a null-terminated GC-heap string. Never returns `NULL`. Aborts on allocation failure. |
+
+```c
+// Format a message and send it on a channel
+char* msg = goc_sprintf("fiber %d ready", id);
+goc_put(ch, msg);
+```
+
+---
+
 ### Scalar boxing helpers
 
 libgoc channels and arrays carry `void*` values. These macros eliminate the repetitive double-cast needed to pass integers through a `void*` slot and to recover them.
@@ -483,35 +503,35 @@ Non-deterministic choice across multiple channel operations.
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_alts` | `goc_alts_result* goc_alts(goc_alt_op* ops, size_t n)` | **Fiber context only.** Wait until one of the `n` ops fires and return a GC-managed pointer to its result. If a `GOC_ALT_DEFAULT` arm is present and no other arm is immediately ready, the default arm fires without suspending the fiber. |
-| `goc_alts_sync` | `goc_alts_result* goc_alts_sync(goc_alt_op* ops, size_t n)` | **Blocking OS-thread context only.** Same semantics as `goc_alts` but blocks the calling OS thread instead of suspending a fiber. Calling from fiber context is a runtime error and aborts with a diagnostic message. |
+| `goc_alts` | `goc_alts_result_t* goc_alts(goc_alt_op_t* ops, size_t n)` | **Fiber context only.** Wait until one of the `n` ops fires and return a GC-managed pointer to its result. If a `GOC_ALT_DEFAULT` arm is present and no other arm is immediately ready, the default arm fires without suspending the fiber. |
+| `goc_alts_sync` | `goc_alts_result_t* goc_alts_sync(goc_alt_op_t* ops, size_t n)` | **Blocking OS-thread context only.** Same semantics as `goc_alts` but blocks the calling OS thread instead of suspending a fiber. Calling from fiber context is a runtime error and aborts with a diagnostic message. |
 
 ```c
 typedef enum {
     GOC_ALT_TAKE,    /* receive from ch */
     GOC_ALT_PUT,     /* send put_val into ch */
     GOC_ALT_DEFAULT, /* fires immediately if no other arm is ready; ch must be NULL */
-} goc_alt_kind;
+} goc_alt_kind_t;
 
 typedef struct {
     goc_chan*    ch;        /* channel this arm operates on; NULL for GOC_ALT_DEFAULT */
-    goc_alt_kind op_kind;  /* GOC_ALT_TAKE, GOC_ALT_PUT, or GOC_ALT_DEFAULT */
+    goc_alt_kind_t op_kind;  /* GOC_ALT_TAKE, GOC_ALT_PUT, or GOC_ALT_DEFAULT */
     void*        put_val;  /* value to send; used only when op_kind == GOC_ALT_PUT */
-} goc_alt_op;
+} goc_alt_op_t;
 
 typedef struct {
     goc_chan* ch;     /* channel of the winning arm; NULL when GOC_ALT_DEFAULT fires */
     goc_val_t value;  /* received value and ok flag; value.ok==GOC_CLOSED means the channel was closed */
-} goc_alts_result;
+} goc_alts_result_t;
 ```
 
 ```c
 // Blocking select: wait for whichever channel becomes ready first
-goc_alt_op ops[] = {
+goc_alt_op_t ops[] = {
     { .ch = data_ch,   .op_kind = GOC_ALT_TAKE },   // take from data_ch
     { .ch = cancel_ch, .op_kind = GOC_ALT_TAKE },   // take from cancel_ch
 };
-goc_alts_result* r = goc_alts(ops, 2);
+goc_alts_result_t* r = goc_alts(ops, 2);
 
 if (r->ch == data_ch && r->value.ok == GOC_OK)
     process(r->value.val);
@@ -521,11 +541,11 @@ else
 
 ```c
 // Non-blocking select with a default arm: never suspends the fiber
-goc_alt_op ops[] = {
+goc_alt_op_t ops[] = {
     { .ch = data_ch, .op_kind = GOC_ALT_TAKE },
     { .ch = NULL,    .op_kind = GOC_ALT_DEFAULT },  // fires if data_ch is empty
 };
-goc_alts_result* r = goc_alts(ops, 2);
+goc_alts_result_t* r = goc_alts(ops, 2);
 
 if (r->ch == NULL)
     /* no value was ready — do something else */;
@@ -541,11 +561,11 @@ if (r->ch == NULL)
 
 ```c
 goc_chan* tch = goc_timeout(500);
-goc_alt_op ops[] = {
+goc_alt_op_t ops[] = {
     { .ch = data_ch, .op_kind = GOC_ALT_TAKE },
     { .ch = tch,     .op_kind = GOC_ALT_TAKE },
 };
-goc_alts_result* r = goc_alts(ops, 2);
+goc_alts_result_t* r = goc_alts(ops, 2);
 
 if (r->ch == tch)
     printf("timed out after 500 ms\n");
@@ -635,6 +655,14 @@ See [IO.md](./IO.md) for the full `goc_io` API reference.
 
 ---
 
+### HTTP Server
+
+libgoc ships an HTTP/1.1 server and client built on `goc_io` TCP and the vendored [picohttpparser](https://github.com/h2o/picohttpparser) (MIT). It integrates with the fiber scheduler and has no additional runtime dependencies beyond libuv.
+
+See [HTTP.md](./HTTP.md) for the full `goc_http` API reference.
+
+---
+
 ## Best Practices
 
 Used the right way, **libgoc** provides a runtime environment very similar to Go's.
@@ -682,7 +710,7 @@ libgoc ships with a comprehensive, phased test suite covering the full public AP
 | libuv | `brew install libuv` | `apt install libuv1-dev` | `dnf install libuv-devel` | MSYS2 UCRT64 — see [Windows](#windows) |
 | Boehm GC | `brew install bdw-gc` | source build (see below) | `dnf install gc-devel` | MSYS2 UCRT64 — see [Windows](#windows) |
 | pkg-config | `brew install pkg-config` | `apt install pkg-config` | `dnf install pkgconfig` | MSYS2 UCRT64 (bundled) |
-| minicoro | vendored (submodule); instantiated via `src/minicoro.c` |
+| minicoro | vendored (`vendor/minicoro/`); instantiated via `src/minicoro.c` |
 
 A C11 compiler is required: GCC or Clang on Linux/macOS; MinGW-w64 GCC via MSYS2 UCRT64 on Windows.
 

@@ -501,11 +501,11 @@ static void fiber_p10_12(void* arg)
                                          UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644);
     goc_chan* dummy_ch = goc_chan_make(0);   /* rendezvous; nobody writes */
 
-    goc_alt_op ops[2] = {
+    goc_alt_op_t ops[2] = {
         { .ch = open_ch,  .op_kind = GOC_ALT_TAKE, .put_val = NULL },
         { .ch = dummy_ch, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
     };
-    goc_alts_result* result = goc_alts(ops, 2);
+    goc_alts_result_t* result = goc_alts(ops, 2);
 
     if (result->ch != open_ch) goto done;   /* unexpected winner */
     uv_file fd = goc_unbox_int(result->value.val);

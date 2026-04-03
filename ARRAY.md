@@ -17,6 +17,7 @@ Elements are stored as `void*` pointers (type-erased, consistent with channels a
    - [Head Push / Pop](#head-push--pop)
    - [Concat](#concat)
    - [Slicing](#slicing)
+   - [String Interop](#string-interop)
    - [C-Array Interop](#c-array-interop)
 3. [Complexity Summary](#complexity-summary)
 4. [Thread Safety](#thread-safety)
@@ -130,6 +131,25 @@ goc_array* goc_array_slice(const goc_array* arr, size_t start, size_t end);
 
 Returns a shallow-copy subarray covering `[start, end)`.  Both `start` and `end` must satisfy `start <= end <= goc_array_len(arr)`; aborts on invalid bounds.  **O(1)**.
 
+### String Interop
+
+```c
+goc_array* goc_array_from_str(const char* s);
+char*      goc_array_to_str(const goc_array* arr);
+```
+
+| Function | Description |
+|---|---|
+| `goc_array_from_str(s)` | Create a byte array from a null-terminated C string. Each byte is stored as `goc_box_int(byte)`; the null terminator is not included. `NULL` input returns an empty array. **O(n)**. |
+| `goc_array_to_str(arr)` | Convert a byte array back to a GC-heap null-terminated C string. Each element is unboxed as a byte. An empty array returns `""`. **O(n)**. |
+
+```c
+goc_array* arr = goc_array_from_str("hello");  /* len == 5 */
+char*      s   = goc_array_to_str(arr);         /* "hello"  */
+```
+
+> This is raw byte interop; no Unicode-specific semantics are implied.
+
 ### C-Array Interop
 
 ```c
@@ -154,6 +174,8 @@ goc_array* goc_array_from(void** items, size_t n);   /* see Construction */
 | `goc_array_slice` | O(1) |
 | `goc_array_from` | O(n) |
 | `goc_array_to_c` | O(1) |
+| `goc_array_from_str` | O(n) |
+| `goc_array_to_str` | O(n) |
 
 ---
 
