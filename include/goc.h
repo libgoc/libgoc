@@ -18,7 +18,22 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <uv.h>
+
+/* -------------------------------------------------------------------------
+ * Debug logging macro
+ *
+ * GOC_DBG(fmt, ...) emits a [GOC_DBG]-prefixed line to stderr and flushes
+ * immediately. Compiled out entirely unless LIBGOC_DEBUG is defined at build
+ * time (CMake: -DLIBGOC_DEBUG=ON; compiler: -DLIBGOC_DEBUG).
+ * ---------------------------------------------------------------------- */
+#ifdef LIBGOC_DEBUG
+#  define GOC_DBG(fmt, ...) \
+     do { fprintf(stderr, "[GOC_DBG] " fmt, ##__VA_ARGS__); fflush(stderr); } while (0)
+#else
+#  define GOC_DBG(fmt, ...) do {} while (0)
+#endif
 
 #ifdef __cplusplus
 extern "C" {

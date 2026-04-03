@@ -80,3 +80,4 @@ bench/libgoc/bench-vmem-old
 .clj-kondo/
 fix.md
 meta/*
+test.log

@@ -13,6 +13,10 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <uv.h>
 #include <gc.h>
 #include "minicoro.h"
@@ -273,6 +277,7 @@ static inline bool try_claim_wake(goc_entry* e) {
 void loop_init(void);
 void loop_shutdown(void);
 void post_callback(goc_entry* entry, void* value);
+void post_on_loop(void (*fn)(void*), void* arg);
 
 /* gc.c → used by pool.c, loop.c */
 void live_channels_init(void);

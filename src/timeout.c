@@ -5,6 +5,10 @@
  * All timer context structs are GC-allocated and registered via
  * gc_handle_register so the collector keeps them alive while libuv holds
  * references to them.
+ *
+ * Thread safety: goc_timeout may be called from any thread.  Timer
+ * initialisation (uv_timer_init / uv_timer_start) is dispatched to the loop
+ * thread via post_on_loop().
  */
 
 #include <stdlib.h>
@@ -25,7 +29,6 @@ static _Atomic uint64_t g_timeout_expirations  = 0;
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    uv_async_t  async;        /* MUST be first member — cast from uv_handle_t* is safe */
     struct goc_timeout_timer_ctx* timer_ctx;
     uint64_t    ms;
     uint64_t    deadline_ns;  /* uv_hrtime() snapshot taken at goc_timeout() call time */
@@ -46,14 +49,17 @@ static void on_timeout(uv_timer_t* t)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
     goc_chan* ch = tctx->ch;
+    GOC_DBG("on_timeout: timer=%p ch=%p\n", (void*)t, (void*)ch);
     atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
     goc_close(ch);
     uv_close((uv_handle_t*)t, unregister_handle_cb);
 }
 
-static void on_start_timer(uv_async_t* h)
+static void on_start_timer(void* arg)
 {
-    goc_timeout_req* req = (goc_timeout_req*)h;
+    goc_timeout_req* req = (goc_timeout_req*)arg;
+    GOC_DBG("on_start_timer: req=%p ms=%llu ch=%p\n",
+            (void*)req, (unsigned long long)req->ms, (void*)req->timer_ctx->ch);
 
     /* Subtract the time already spent waiting for the async dispatch so that
      * the timer fires at the wall-clock deadline recorded in goc_timeout(),
@@ -67,23 +73,20 @@ static void on_start_timer(uv_async_t* h)
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
 
     int rc = uv_timer_init(g_loop, &req->timer_ctx->timer);
+    GOC_DBG("on_start_timer: uv_timer_init timer=%p rc=%d remaining=%llu\n",
+            (void*)&req->timer_ctx->timer, rc, (unsigned long long)remaining);
     if (rc < 0) {
         goc_close(req->timer_ctx->ch);
         gc_handle_unregister(req->timer_ctx);
-        uv_close((uv_handle_t*)h, unregister_handle_cb);
         return;
     }
 
     rc = uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);  /* one-shot */
+    GOC_DBG("on_start_timer: uv_timer_start rc=%d\n", rc);
     if (rc < 0) {
         goc_close(req->timer_ctx->ch);
         uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
-        uv_close((uv_handle_t*)h, unregister_handle_cb);
-        return;
     }
-
-    /* Close the async handle; it is one-shot and no longer needed. */
-    uv_close((uv_handle_t*)h, unregister_handle_cb);
 }
 
 /* -------------------------------------------------------------------------
@@ -95,6 +98,8 @@ goc_chan* goc_timeout(uint64_t ms)
     goc_chan*               ch   = goc_chan_make(0);   /* rendezvous channel */
     goc_timeout_req*        req  = (goc_timeout_req*)goc_malloc(sizeof(goc_timeout_req));
     goc_timeout_timer_ctx*  tctx = (goc_timeout_timer_ctx*)goc_malloc(sizeof(goc_timeout_timer_ctx));
+    GOC_DBG("goc_timeout: ms=%llu ch=%p req=%p tctx=%p\n",
+            (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx);
 
     tctx->ch = ch;
 
@@ -102,33 +107,13 @@ goc_chan* goc_timeout(uint64_t ms)
     req->ms          = ms;
     req->deadline_ns = uv_hrtime();  /* snapshot call time for dispatch-latency correction */
 
-    /* Register both structs: req holds the async handle libuv will reference,
-     * tctx holds the timer handle and the channel pointer. */
-    gc_handle_register(req);
+    /* Register tctx: it holds the timer handle and the channel pointer. */
     gc_handle_register(tctx);
-
-    /* uv_async_init is safe to call from any thread. */
-    int rc = uv_async_init(g_loop, &req->async, on_start_timer);
-    if (rc < 0) {
-        goc_close(ch);
-        gc_handle_unregister(req);
-        gc_handle_unregister(tctx);
-        return ch;
-    }
 
     atomic_fetch_add_explicit(&g_timeout_allocations, 1, memory_order_relaxed);
 
-    /* Signal the event loop thread to start the timer. */
-    rc = uv_async_send(&req->async);
-    if (rc < 0) {
-        /* At this point req owns an initialized uv_async_t handle that must
-         * be closed on the loop thread. If uv_async_send fails, we have no
-         * thread-safe way to schedule that close reliably from here, so fail
-         * fast instead of silently leaking a live handle and leaving timeout
-         * semantics inconsistent. */
-        fprintf(stderr, "libgoc: uv_async_send failed in goc_timeout: %s\n", uv_strerror(rc));
-        abort();
-    }
+    /* Dispatch timer start to the loop thread. */
+    post_on_loop(on_start_timer, req);
 
     return ch;
 }

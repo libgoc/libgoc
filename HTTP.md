@@ -45,9 +45,12 @@ through a `uv_async` bridge). No extra threads or mutexes are required beyond
 what `goc_io` already uses.
 
 **Client**: outbound requests return a channel that delivers a
-`goc_http_response_t*` when the response arrives. DNS uses `uv_getaddrinfo`;
-the request is marshalled to the loop thread via `uv_async_t`. The event loop
-is never blocked; other fibers continue to run while the request is in flight.
+`goc_http_response_t*` when the response arrives. A single `http_client_fiber`
+on the default pool drives the entire request: DNS lookup via
+`goc_io_getaddrinfo`, TCP connect via `goc_io_tcp_connect`, write via
+`goc_io_write`, and read/parse via `goc_io_read_start`. All I/O completes
+through `goc_take` in the fiber. The event loop is never blocked; other fibers
+continue to run while the request is in flight.
 
 ```
  incoming TCP connection
@@ -66,7 +69,7 @@ handler fiber
     │ CSP operations (channels, I/O, timeouts, …)
     │ goc_take(goc_http_server_respond(ctx, …))
     ▼
-goc_io_write (→ uv_async → loop thread → uv_write) → TCP → client
+goc_io_write (→ post_on_loop → callback queue → loop thread → uv_write) → TCP → client
 ```
 
 The raw connection handle is never exposed to user code. All access goes
@@ -79,9 +82,9 @@ through `goc_http_ctx_t` helpers; the context is valid only until
 
 Server-side functions (`goc_http_server_respond`, `goc_http_server_header`, etc.) operate
 within the per-connection fiber and do not need any cross-thread dispatch.
-Client-side functions (`goc_http_get`, `goc_http_post`, etc.) marshal the
-request to the event loop thread via `uv_async_t` and are safe to call from
-any fiber.
+Client-side functions (`goc_http_get`, `goc_http_post`, etc.) launch a fiber
+on the default pool that drives the entire request through `goc_io` channel
+operations and are safe to call from any fiber.
 
 `goc_http_ctx_t` must not be passed across independent requests or stored
 beyond the lifetime of the handler fiber.

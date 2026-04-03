@@ -269,6 +269,8 @@ void pool_submit_spawn(goc_pool* pool,
         (pool->pending_spawn_head == NULL && !pool_spawn_cap_reached_locked(pool))) {
         pool->resident_count++;
         size_t live = pool->live_count;
+        GOC_DBG("pool_submit_spawn: fn=%p bypass=%d resident=%zu live=%zu (fast path)\n",
+                (void*)(uintptr_t)fn, (int)bypass_throttle, pool->resident_count, live);
         uv_mutex_unlock(&pool->drain_mutex);
 
         goc_entry* entry = goc_fiber_entry_create(pool, fn, arg, join_ch);
@@ -280,6 +282,8 @@ void pool_submit_spawn(goc_pool* pool,
         return;
     }
 
+    GOC_DBG("pool_submit_spawn: fn=%p bypass=%d DEFERRED (cap reached or queue non-empty)\n",
+            (void*)(uintptr_t)fn, (int)bypass_throttle);
     goc_spawn_req* req = (goc_spawn_req*)GC_malloc_uncollectable(sizeof(goc_spawn_req));
     if (req == NULL) {
         uv_mutex_unlock(&pool->drain_mutex);
@@ -412,6 +416,8 @@ static void pool_worker_fn(void* arg) {
 
 run:
         /* --- from here, identical to old pool_worker_fn --- */
+        GOC_DBG("pool_worker_fn: worker=%zu RUNNING fn=%p entry=%p\n",
+                tl_worker->index, (void*)(uintptr_t)entry->fn, (void*)entry);
 
         /* Canary check — abort on stack overflow before corrupting anything. */
         goc_stack_canary_check(entry->stack_canary_ptr);
@@ -466,6 +472,9 @@ run:
             atomic_store_explicit(&fe->parked, 1, memory_order_release);
 
         if (st == MCO_DEAD) {
+            GOC_DBG("pool_worker_fn: worker=%zu FIBER DEAD fn=%p live_count BEFORE=%zu\n",
+                    tl_worker->index, (void*)(uintptr_t)entry->fn,
+                    pool->live_count);
             if (fe != NULL) {
                 goc_fiber_root_unregister(fe->fiber_root_handle);
             }
@@ -504,6 +513,9 @@ run:
 
 void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
     goc_worker* w = tl_worker;
+    GOC_DBG("post_to_run_queue: fn=%p entry=%p path=%s\n",
+            (void*)(uintptr_t)entry->fn, (void*)entry,
+            (w != NULL && w->pool == pool) ? "internal" : "external");
     if (w != NULL && w->pool == pool) {
         /* Internal caller: push to executing worker's own deque.
          * Safe: the owner is inside mco_resume, not touching the deque. */
@@ -618,12 +630,15 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 1. Wait for all live fibers to exit (live_count reaches zero). */
     uv_mutex_lock(&pool->drain_mutex);
+    GOC_DBG("goc_pool_destroy: waiting for live_count=%zu\n", pool->live_count);
     while (pool->live_count > 0) {
         uv_cond_wait(&pool->drain_cond, &pool->drain_mutex);
+        GOC_DBG("goc_pool_destroy: cond_wait returned live_count=%zu\n", pool->live_count);
     }
     uv_mutex_unlock(&pool->drain_mutex);
 
     /* 2. Signal workers to exit. */
+    GOC_DBG("goc_pool_destroy: signaling workers shutdown\n");
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
 
     /* 3. Unblock all waiting workers (one post per worker). */
@@ -633,7 +648,9 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 4. Reap worker threads. */
     for (size_t i = 0; i < pool->thread_count; i++) {
+        GOC_DBG("goc_pool_destroy: joining worker=%zu\n", i);
         goc_thread_join(&pool->workers[i].thread);
+        GOC_DBG("goc_pool_destroy: joined worker=%zu\n", i);
     }
 
     /* 5. Destroy per-worker resources. */

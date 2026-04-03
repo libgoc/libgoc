@@ -582,8 +582,8 @@ void goc_init(void) {
  * Sequence:
  *   B.1  pool_registry_destroy_all()  — drains (blocks) and destroys every pool
  *   B.2  Destroy all channel mutexes; free live_channels; destroy g_live_mutex
- *   B.2a Tear down live_uv_handles registry (live_uv_handles + g_live_uv_mutex)
  *   B.3  loop_shutdown()              — signals loop thread, joins, frees g_loop
+ *   B.3a Tear down live_uv_handles registry (live_uv_handles + g_live_uv_mutex)
  * ---------------------------------------------------------------------------*/
 
 void goc_shutdown(void) {
@@ -611,17 +611,20 @@ void goc_shutdown(void) {
 
     uv_mutex_destroy(&g_live_mutex);
 
-    /* B.2a — Tear down the live UV handle roots registry. */
+    /* B.2.1 — Destroy all RW mutex internal locks. */
+    mutex_registry_destroy_all();
+
+    /* B.3 — Shut down the event loop and join the loop thread.
+     *
+     * Keep g_live_uv_mutex alive until loop shutdown completes: close
+     * callbacks that run on the loop thread call gc_handle_unregister(). */
+    loop_shutdown();
+
+    /* B.3a — Tear down the live UV handle roots registry. */
     live_uv_handles     = NULL;
     live_uv_handles_len = 0;
     live_uv_handles_cap = 0;
     uv_mutex_destroy(&g_live_uv_mutex);
-
-    /* B.2.1 — Destroy all RW mutex internal locks. */
-    mutex_registry_destroy_all();
-
-    /* B.3 — Shut down the event loop and join the loop thread. */
-    loop_shutdown();
 
     /* B.4 — Free all fiber root chunks accumulated during this lifecycle.
      *

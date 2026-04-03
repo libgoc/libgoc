@@ -83,6 +83,12 @@ extern int g_tests_run;
 extern int g_tests_passed;
 extern int g_tests_failed;
 
+#if !defined(_WIN32)
+#  define GOC_TEST_WATCHDOG_REARM() alarm(30)
+#else
+#  define GOC_TEST_WATCHDOG_REARM() ((void)0)
+#endif
+
 /* =========================================================================
  * Harness macros
  * ====================================================================== */
@@ -92,6 +98,8 @@ extern int g_tests_failed;
 #define TEST_BEGIN(name)                                        \
     do {                                                        \
         g_tests_run++;                                          \
+    GOC_TEST_WATCHDOG_REARM();                             \
+        GOC_DBG("TEST_BEGIN: %s\n", (name)); \
         printf("  %-50s ", (name));                             \
         fflush(stdout);                                         \
     } while (0)

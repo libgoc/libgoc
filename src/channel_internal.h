@@ -89,6 +89,8 @@ static inline int chan_put_to_taker(goc_chan* ch, void* val) {
             *pp = next;
             /* Invalidate tail when we remove the last entry. */
             if (next == NULL) ch->takers_tail = NULL;
+            GOC_DBG("chan_put_to_taker: woke entry=%p kind=%d coro=%p\n",
+                    (void*)e, (int)e->kind, (e->kind == GOC_FIBER ? (void*)e->coro : NULL));
             return 1;
         }
         *pp = next;

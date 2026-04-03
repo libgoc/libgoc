@@ -8,15 +8,16 @@
  *   per-connection fiber.  The connection fiber reads a complete HTTP/1.1
  *   request via goc_io_read_start, parses it with phr_parse_request, matches
  *   a route, runs middleware, calls the handler, and writes the response via
- *   goc_io_write (which marshals uv_write to the event loop thread via a
- *   one-shot uv_async_t bridge).  No extra threads or mutexes are required
+ *   goc_io_write (which dispatches uv_write to the event loop thread via the
+ *   loop-thread callback queue).  No extra threads or mutexes are required
  *   beyond what goc_io already uses.
  *
- * HTTP client: libuv TCP + hand-written HTTP/1.1 (unchanged).
+ * HTTP client: pure goc_io fiber-based HTTP/1.1.
  *   URL parsing uses a small self-contained parser.
- *   DNS uses uv_getaddrinfo.
- *   The request is marshalled to the loop thread via uv_async_t.
- *   Timeout is honoured via goc_timeout + goc_alts (fiber context only).
+ *   A single http_client_fiber drives DNS (goc_io_getaddrinfo), TCP connect
+ *   (goc_io_tcp_connect), write (goc_io_write), and read (goc_io_read_start)
+ *   via goc_take.  Timeout is honoured via goc_timeout + goc_alts (fiber
+ *   context only).
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -47,17 +48,12 @@
 static void close_on_put(goc_status_t ok, void* ud)
 {
     (void)ok;
+    GOC_DBG("close_on_put(http): closing ch=%p ok=%d\n", ud, (int)ok);
     goc_close((goc_chan*)ud);
+    GOC_DBG("close_on_put(http): done ch=%p\n", ud);
 }
 
-/* Used by the HTTP client dispatch to close one-shot uv_async_t handles. */
-static void srv_handle_unregister(uv_handle_t* h)
-{
-    gc_handle_unregister(h);
-}
-
-/* GC-managed strdup helper. */
-static char* gc_strdup(const char* s)
+static char* goc_strdup(const char* s)
 {
     size_t n = strlen(s);
     char*  d = (char*)goc_malloc(n + 1);
@@ -297,18 +293,23 @@ static void accept_loop_fiber(void* arg)
 {
     goc_http_server_t* srv      = (goc_http_server_t*)arg;
     goc_chan*     accept_ch = srv->accept_ch; /* cache before any yield point */
-    if (!accept_ch) return; /* server closed before fiber started */
+    GOC_DBG("accept_loop_fiber: started, accept_ch=%p\n", (void*)accept_ch);
+    if (!accept_ch) { GOC_DBG("accept_loop_fiber: accept_ch is NULL, returning\n"); return; } /* server closed before fiber started */
     for (;;) {
+        GOC_DBG("accept_loop_fiber: waiting for connection on accept_ch=%p\n", (void*)accept_ch);
         goc_val_t* v = goc_take(accept_ch);
+        GOC_DBG("accept_loop_fiber: goc_take returned v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
         if (!v || v->ok != GOC_OK)
             break;  /* channel closed — server is shutting down */
         uv_tcp_t* conn = (uv_tcp_t*)v->val;
         conn_arg_t* a  = (conn_arg_t*)goc_malloc(sizeof(conn_arg_t));
         a->srv  = srv;
         a->conn = conn;
+        GOC_DBG("accept_loop_fiber: spawning handle_conn_fiber for conn=%p\n", (void*)conn);
         goc_pool* pool = srv->pool ? srv->pool : goc_default_pool();
         goc_go_on(pool, handle_conn_fiber, a);
     }
+    GOC_DBG("accept_loop_fiber: exiting (accept_ch closed)\n");
 }
 
 /* Maximum raw request size before we abort the connection. */
@@ -323,17 +324,21 @@ static void handle_conn_fiber(void* arg)
     conn_arg_t*   a    = (conn_arg_t*)arg;
     goc_http_server_t* srv  = a->srv;
     uv_tcp_t*     conn = a->conn;
+    GOC_DBG("handle_conn_fiber: started conn=%p\n", (void*)conn);
 
     /* Accumulation buffer (plain-malloc; we control its entire lifetime). */
     size_t buf_cap = 4096;
     size_t buf_len = 0;
     char*  buf     = (char*)malloc(buf_cap);
     if (!buf) {
+        GOC_DBG("handle_conn_fiber: malloc failed, closing conn\n");
         goc_io_handle_close((uv_handle_t*)conn, NULL);
         return;
     }
 
+    GOC_DBG("handle_conn_fiber: calling goc_io_read_start on conn=%p\n", (void*)conn);
     goc_chan* read_ch = goc_io_read_start((uv_stream_t*)conn);
+    GOC_DBG("handle_conn_fiber: goc_io_read_start returned read_ch=%p\n", (void*)read_ch);
 
     /* ---- Read until we have a complete HTTP request head ---- */
     const char*       method        = NULL;
@@ -346,10 +351,13 @@ static void handle_conn_fiber(void* arg)
     int               pret          = -2;
 
     while (pret == -2) {
+        GOC_DBG("handle_conn_fiber: waiting for head data on read_ch=%p buf_len=%zu\n", (void*)read_ch, buf_len);
         goc_val_t* v = goc_take(read_ch);
+        GOC_DBG("handle_conn_fiber: head goc_take returned v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
         if (!v || v->ok != GOC_OK)
             goto cleanup;
         goc_io_read_t* r = (goc_io_read_t*)v->val;
+        GOC_DBG("handle_conn_fiber: head chunk nread=%zd\n", r->nread);
         if (r->nread < 0)
             goto cleanup;  /* EOF or read error before full head */
 
@@ -406,9 +414,12 @@ static void handle_conn_fiber(void* arg)
                           (content_length > 0 ? (size_t)content_length : 0);
 
         while (buf_len < body_end) {
+            GOC_DBG("handle_conn_fiber: waiting for body data buf_len=%zu body_end=%zu\n", buf_len, body_end);
             goc_val_t* v = goc_take(read_ch);
+            GOC_DBG("handle_conn_fiber: body goc_take returned v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
             if (!v || v->ok != GOC_OK) break;
             goc_io_read_t* r = (goc_io_read_t*)v->val;
+            GOC_DBG("handle_conn_fiber: body chunk nread=%zd\n", r->nread);
             if (r->nread < 0) break;
 
             size_t chunk = (size_t)r->nread;
@@ -429,11 +440,15 @@ static void handle_conn_fiber(void* arg)
          * Stop reading and drain the channel.  This ensures stream->data is
          * NULL before goc_io_handle_close overwrites it with the close context.
          */
+        GOC_DBG("handle_conn_fiber: calling goc_io_read_stop on conn=%p\n", (void*)conn);
         goc_io_read_stop((uv_stream_t*)conn);
+        GOC_DBG("handle_conn_fiber: draining read_ch=%p\n", (void*)read_ch);
         for (;;) {
             goc_val_t* dv = goc_take(read_ch);
+            GOC_DBG("handle_conn_fiber: drain read_ch goc_take v=%p ok=%d\n", (void*)dv, dv ? (int)dv->ok : -1);
             if (!dv || dv->ok != GOC_OK) break;
         }
+        GOC_DBG("handle_conn_fiber: drain complete\n");
 
         /* ---- Build GC-managed method/path/query strings ---- */
         char* method_str = (char*)goc_malloc(method_len + 1);
@@ -473,6 +488,7 @@ static void handle_conn_fiber(void* arg)
         }
 
         if (!handler) {
+            GOC_DBG("handle_conn_fiber: no route for method=%s path=%s → 404\n", method_str, path_str);
             static const char resp404[] =
                 "HTTP/1.1 404 Not Found\r\n"
                 "Content-Type: text/plain\r\nContent-Length: 10\r\n"
@@ -483,6 +499,7 @@ static void handle_conn_fiber(void* arg)
             goc_io_handle_close((uv_handle_t*)conn, NULL);
             return;
         }
+        GOC_DBG("handle_conn_fiber: matched route for method=%s path=%s handler=%p\n", method_str, path_str, (void*)(uintptr_t)handler);
 
         /* ---- Build GC-managed headers array ---- */
         goc_array* req_headers = goc_array_make(num_headers);
@@ -543,7 +560,9 @@ static void handle_conn_fiber(void* arg)
                 }
             }
         }
+        GOC_DBG("handle_conn_fiber: calling handler\n");
         w->handler(ctx);
+        GOC_DBG("handle_conn_fiber: handler returned, closing conn=%p\n", (void*)conn);
 
         /* ---- Close connection after handler returns ---- */
         goc_io_handle_close((uv_handle_t*)conn, NULL);
@@ -552,9 +571,11 @@ static void handle_conn_fiber(void* arg)
 
 stop_and_close:
     /* Stop reading, drain the channel, close the connection. */
+    GOC_DBG("handle_conn_fiber: stop_and_close, calling read_stop on conn=%p\n", (void*)conn);
     goc_io_read_stop((uv_stream_t*)conn);
     for (;;) {
         goc_val_t* v = goc_take(read_ch);
+        GOC_DBG("handle_conn_fiber: stop_and_close drain v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
         if (!v || v->ok != GOC_OK) break;
     }
     free(buf);
@@ -563,13 +584,16 @@ stop_and_close:
 
 cleanup:
     /* read_ch closed before we finished reading (client EOF/error). */
+    GOC_DBG("handle_conn_fiber: cleanup (early EOF/error), calling read_stop on conn=%p\n", (void*)conn);
     goc_io_read_stop((uv_stream_t*)conn);
     for (;;) {
         goc_val_t* v = goc_take(read_ch);
+        GOC_DBG("handle_conn_fiber: cleanup drain v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
         if (!v || v->ok != GOC_OK) break;
     }
     free(buf);
     goc_io_handle_close((uv_handle_t*)conn, NULL);
+    GOC_DBG("handle_conn_fiber: cleanup complete\n");
 }
 
 /* =========================================================================
@@ -664,12 +688,14 @@ goc_chan* goc_http_server_respond_error(goc_http_ctx_t* ctx, int status,
 
 
 /* =========================================================================
- * 6. HTTP client — libuv TCP + HTTP/1.1
+ * 6. HTTP client — goc_io fiber-based HTTP/1.1
  *
- * All transport structs (uv_tcp_t, uv_connect_t, uv_write_t,
- * goc_http_client_t, parsing buffers) are plain-malloc'd so that libuv can
- * own them safely.  Only the final goc_http_response_t and its string/array
- * fields are goc_malloc'd so the GC keeps them alive for the caller.
+ * A single http_client_fiber drives the entire lifecycle:
+ *   DNS (goc_io_getaddrinfo) → connect (goc_io_tcp_connect) →
+ *   write (goc_io_write) → read (goc_io_read_start).
+ * All I/O operations are performed with goc_take, exactly like the server
+ * connection fiber.  The result goc_http_response_t (and its string/array
+ * fields) are goc_malloc'd so the GC keeps them alive for the caller.
  * ====================================================================== */
 
 goc_http_request_opts_t* goc_http_request_opts(void)
@@ -728,87 +754,13 @@ static int parse_url(const char* url, char** out_host,
     return 0;
 }
 
-/* ----------------------------------------------------------------------- *
- * HTTP/1.1 client state machine
- * ----------------------------------------------------------------------- */
-
-typedef struct goc_http_client {
-    uv_tcp_t*    tcp;      /* plain-malloc'd */
-    uv_write_t   write_req;
-
-    char*        req_buf;  /* plain-malloc'd request string */
-    size_t       req_len;
-
-    /* Response accumulation (plain-malloc'd, grown as data arrives). */
-    char*        resp_buf;
-    size_t       resp_len;
-    size_t       resp_cap;
-
-    /* Parsed response (goc_malloc'd — handed to caller). */
-    goc_http_response_t* response;
-    size_t       body_start;
-    ssize_t      content_length; /* -1 = read until EOF */
-
-    goc_chan*    ch;  /* goc_malloc'd channel to deliver response */
-    int          done; /* guards against double-deliver */
-} goc_http_client_t;
-
-/* Deliver the response on c->ch and begin TCP cleanup. */
-static void http_client_deliver(goc_http_client_t* c)
+/* Parse status line + headers from a raw response buffer.
+ * Returns 1 when headers are complete, 0 when more data is needed. */
+static int parse_response_head_buf(char* buf, size_t len,
+                                   goc_http_response_t** out_resp,
+                                   size_t* out_body_start,
+                                   ssize_t* out_content_length)
 {
-    if (c->done) return;
-    c->done = 1;
-
-    if (!c->response) {
-        c->response =
-            (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-        memset(c->response, 0, sizeof(*c->response));
-        c->response->headers = goc_array_make(0);
-        c->response->body    = "";
-    }
-
-    /* Attach body. */
-    size_t blen = (c->resp_len > c->body_start)
-                  ? c->resp_len - c->body_start : 0;
-    if (c->content_length >= 0 && (size_t)c->content_length < blen)
-        blen = (size_t)c->content_length;
-
-    char* body = (char*)goc_malloc(blen + 1);
-    if (blen && c->resp_buf)
-        memcpy(body, c->resp_buf + c->body_start, blen);
-    body[blen] = '\0';
-    c->response->body     = body;
-    c->response->body_len = blen;
-
-    goc_put_cb(c->ch, c->response, close_on_put, c->ch);
-}
-
-static void http_client_tcp_closed(uv_handle_t* h)
-{
-    goc_http_client_t* c = (goc_http_client_t*)h->data;
-    if (c->resp_buf) { free(c->resp_buf); c->resp_buf = NULL; }
-    if (c->req_buf)  { free(c->req_buf);  c->req_buf  = NULL; }
-    free(h); /* free the uv_tcp_t */
-    free(c);
-}
-
-static void http_client_close(goc_http_client_t* c)
-{
-    http_client_deliver(c);
-    if (c->tcp) {
-        uv_tcp_t* tcp = c->tcp;
-        c->tcp = NULL;
-        tcp->data = c;
-        uv_close((uv_handle_t*)tcp, http_client_tcp_closed);
-    }
-}
-
-/* Parse status line + headers from resp_buf; returns 1 when complete. */
-static int parse_response_head(goc_http_client_t* c)
-{
-    char*  buf = c->resp_buf;
-    size_t len = c->resp_len;
-
     /* Find \r\n\r\n. */
     char* eoh = NULL;
     for (size_t i = 0; i + 3 < len; i++) {
@@ -819,15 +771,15 @@ static int parse_response_head(goc_http_client_t* c)
     }
     if (!eoh) return 0;
 
-    c->body_start = (size_t)(eoh - buf);
+    *out_body_start = (size_t)(eoh - buf);
 
     /* Allocate response. */
     goc_http_response_t* resp =
         (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
     memset(resp, 0, sizeof(*resp));
     resp->headers = goc_array_make(8);
-    c->response   = resp;
-    c->content_length = -1;
+    *out_resp           = resp;
+    *out_content_length = -1;
 
     /* Status line. */
     int major = 0, minor = 0, status = 0;
@@ -860,7 +812,7 @@ static int parse_response_head(goc_http_client_t* c)
         memcpy(value, vstart, vlen); value[vlen] = '\0';
 
         if (strcasecmp(name, "content-length") == 0)
-            c->content_length = (ssize_t)atol(value);
+            *out_content_length = (ssize_t)atol(value);
 
         goc_http_header_t* hdr =
             (goc_http_header_t*)goc_malloc(sizeof(goc_http_header_t));
@@ -873,82 +825,7 @@ static int parse_response_head(goc_http_client_t* c)
     return 1;
 }
 
-static void http_alloc_cb(uv_handle_t* h, size_t suggested, uv_buf_t* buf)
-{
-    (void)h;
-    buf->base = (char*)malloc(suggested);
-    buf->len  = buf->base ? suggested : 0;
-}
-
-static void http_on_read(uv_stream_t* stream, ssize_t nread,
-                          const uv_buf_t* buf)
-{
-    goc_http_client_t* c = (goc_http_client_t*)stream->data;
-
-    if (nread < 0) {
-        if (buf->base) free(buf->base);
-        http_client_close(c);
-        return;
-    }
-
-    /* Grow buffer. */
-    size_t needed = c->resp_len + (size_t)nread + 1;
-    if (needed > c->resp_cap) {
-        size_t nc = c->resp_cap ? c->resp_cap * 2 : 4096;
-        while (nc < needed) nc *= 2;
-        char* nb = (char*)malloc(nc);
-        if (c->resp_len) memcpy(nb, c->resp_buf, c->resp_len);
-        if (c->resp_buf) free(c->resp_buf);
-        c->resp_buf = nb;
-        c->resp_cap = nc;
-    }
-    memcpy(c->resp_buf + c->resp_len, buf->base, (size_t)nread);
-    c->resp_len += (size_t)nread;
-    c->resp_buf[c->resp_len] = '\0';
-    free(buf->base);
-
-    /* Parse headers if not done. */
-    if (!c->response) {
-        if (!parse_response_head(c)) return; /* need more data */
-    }
-
-    /* Check if body is complete (Content-Length). */
-    if (c->content_length >= 0) {
-        size_t bso_far = c->resp_len > c->body_start
-                         ? c->resp_len - c->body_start : 0;
-        if (bso_far >= (size_t)c->content_length) {
-            uv_read_stop(stream);
-            http_client_close(c);
-        }
-    }
-}
-
-static void http_on_write(uv_write_t* req, int status)
-{
-    goc_http_client_t* c = (goc_http_client_t*)req->data;
-    if (status < 0) {
-        http_client_close(c);
-        return;
-    }
-    uv_read_start((uv_stream_t*)c->tcp, http_alloc_cb, http_on_read);
-}
-
-static void http_on_connect(uv_connect_t* req, int status)
-{
-    goc_http_client_t* c = (goc_http_client_t*)req->data;
-    free(req);
-
-    if (status < 0) {
-        http_client_close(c);
-        return;
-    }
-
-    uv_buf_t wb = uv_buf_init(c->req_buf, (unsigned int)c->req_len);
-    c->write_req.data = c;
-    uv_write(&c->write_req, (uv_stream_t*)c->tcp, &wb, 1, http_on_write);
-}
-
-/* Build raw HTTP/1.1 request. */
+/* Build raw HTTP/1.1 request (plain-malloc'd; caller must free). */
 static char* build_request(const char* method, const char* host,
                              const char* pq,   /* path[?query] */
                              const char* ct,   /* content-type, may be NULL */
@@ -1005,125 +882,173 @@ static char* build_request(const char* method, const char* host,
 }
 
 /* ----------------------------------------------------------------------- *
- * Dispatch struct marshals the request to the loop thread
+ * Fiber argument for http_client_fiber
  * ----------------------------------------------------------------------- */
 
 typedef struct {
-    uv_async_t async;  /* MUST be first */
-    /* Inputs (goc_malloc'd strings so GC keeps them alive during dispatch). */
     char*      method;
     char*      host;
     uint16_t   port;
     char*      path_and_query;
     char*      content_type;
-    char*      body;
+    char*      body;       /* goc_malloc'd copy, may be NULL */
     size_t     body_len;
     goc_array* extra_headers;
-    goc_chan*  ch;
-} goc_http_req_dispatch_t;
+    goc_chan*  ch;         /* result channel — caller is waiting on this */
+} http_client_arg_t;
 
-/* getaddrinfo context; plain-malloc'd so uv_getaddrinfo can own it. */
-typedef struct {
-    uv_getaddrinfo_t  req;    /* MUST be first */
-    char*             method;
-    char*             host;
-    uint16_t          port;
-    char*             pq;
-    char*             ct;
-    char*             body;
-    size_t            body_len;
-    goc_array*        extra_headers;
-    goc_chan*         ch;
-} goc_getaddrinfo_ctx_t;
-
-static void on_getaddrinfo(uv_getaddrinfo_t* req, int status,
-                            struct addrinfo* res)
+static void http_client_fiber(void* arg)
 {
-    goc_getaddrinfo_ctx_t* g = (goc_getaddrinfo_ctx_t*)req;
+    http_client_arg_t* a = (http_client_arg_t*)arg;
+    char* resp_buf = NULL;
+    GOC_DBG("http_client_fiber: started method=%s host=%s port=%u path=%s ch=%p\n",
+            a->method, a->host, (unsigned)a->port, a->path_and_query, (void*)a->ch);
 
-    if (status < 0 || !res) {
-        if (res) uv_freeaddrinfo(res);
-        goc_http_response_t* r =
-            (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-        memset(r, 0, sizeof(*r));
-        r->headers = goc_array_make(0);
-        r->body    = "";
-        goc_put_cb(g->ch, r, close_on_put, g->ch);
-        free(g);
-        return;
-    }
-
-    /* Build HTTP client state. */
-    goc_http_client_t* c =
-        (goc_http_client_t*)malloc(sizeof(goc_http_client_t));
-    memset(c, 0, sizeof(*c));
-    c->ch             = g->ch;
-    c->content_length = -1;
-    c->req_buf        = build_request(g->method, g->host, g->pq,
-                                       g->ct, g->body, g->body_len,
-                                       g->extra_headers, &c->req_len);
-
-    c->tcp = (uv_tcp_t*)malloc(sizeof(uv_tcp_t));
-    uv_tcp_init(g_loop, c->tcp);
-    c->tcp->data = c;
-
-    /* Copy address and set port. */
-    struct sockaddr_storage addr;
-    memcpy(&addr, res->ai_addr, res->ai_addrlen);
-    if (addr.ss_family == AF_INET)
-        ((struct sockaddr_in*)&addr)->sin_port = htons(g->port);
-    else
-        ((struct sockaddr_in6*)&addr)->sin6_port = htons(g->port);
-    uv_freeaddrinfo(res);
-
-    uv_connect_t* creq = (uv_connect_t*)malloc(sizeof(uv_connect_t));
-    creq->data = c;
-    int r = uv_tcp_connect(creq, c->tcp,
-                            (const struct sockaddr*)&addr,
-                            http_on_connect);
-    if (r < 0) {
-        free(creq);
-        http_client_close(c);
-    }
-
-    free(g);
-}
-
-static void on_http_req_dispatch(uv_async_t* h)
-{
-    goc_http_req_dispatch_t* d = (goc_http_req_dispatch_t*)h;
-
-    goc_getaddrinfo_ctx_t* g =
-        (goc_getaddrinfo_ctx_t*)malloc(sizeof(goc_getaddrinfo_ctx_t));
-    memset(g, 0, sizeof(*g));
-    g->method       = d->method;
-    g->host         = d->host;
-    g->port         = d->port;
-    g->pq           = d->path_and_query;
-    g->ct           = d->content_type;
-    g->body         = d->body;
-    g->body_len     = d->body_len;
-    g->extra_headers = d->extra_headers;
-    g->ch           = d->ch;
-
+    /* --- DNS --- */
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
+    GOC_DBG("http_client_fiber: DNS lookup for host=%s\n", a->host);
+    goc_val_t* vdns = goc_take(goc_io_getaddrinfo(a->host, NULL, &hints));
+    GOC_DBG("http_client_fiber: DNS returned v=%p ok=%d\n", (void*)vdns, vdns ? (int)vdns->ok : -1);
+    if (!vdns || vdns->ok != GOC_OK) goto deliver_error;
+    goc_io_getaddrinfo_t* dns = (goc_io_getaddrinfo_t*)vdns->val;
+    if (!dns || dns->ok != GOC_IO_OK || !dns->res) { GOC_DBG("http_client_fiber: DNS error dns=%p\n", (void*)dns); goto deliver_error; }
 
-    int r = uv_getaddrinfo(g_loop, &g->req, on_getaddrinfo,
-                            d->host, NULL, &hints);
-    if (r < 0) {
-        free(g);
-        goc_http_response_t* resp =
-            (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-        memset(resp, 0, sizeof(*resp));
-        resp->headers = goc_array_make(0);
-        resp->body    = "";
-        goc_put_cb(d->ch, resp, close_on_put, d->ch);
+    /* Pick first address and set port. */
+    struct sockaddr_storage addr;
+    memcpy(&addr, dns->res->ai_addr, dns->res->ai_addrlen);
+    if (addr.ss_family == AF_INET)
+        ((struct sockaddr_in*)&addr)->sin_port = htons(a->port);
+    else
+        ((struct sockaddr_in6*)&addr)->sin6_port = htons(a->port);
+    uv_freeaddrinfo(dns->res);
+
+    /* --- TCP init + connect --- */
+    uv_tcp_t* tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
+    GOC_DBG("http_client_fiber: tcp_init tcp=%p\n", (void*)tcp);
+    int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+    GOC_DBG("http_client_fiber: tcp_init rc=%d\n", rc);
+    if (rc < 0) { GOC_DBG("http_client_fiber: tcp_init failed\n"); goto deliver_error; }
+
+    rc = goc_unbox_int(
+        goc_take(goc_io_tcp_connect(tcp, (const struct sockaddr*)&addr))->val);
+    GOC_DBG("http_client_fiber: tcp_connect rc=%d\n", rc);
+    if (rc < 0) {
+        GOC_DBG("http_client_fiber: tcp_connect failed rc=%d\n", rc);
+        goc_io_handle_close((uv_handle_t*)tcp, NULL);
+        goto deliver_error;
     }
 
-    uv_close((uv_handle_t*)h, srv_handle_unregister);
+    /* --- Write request --- */
+    size_t req_len;
+    char* req_plain = build_request(a->method, a->host, a->path_and_query,
+                                    a->content_type, a->body, a->body_len,
+                                    a->extra_headers, &req_len);
+    /* Copy into goc_malloc so the GC keeps the buffer alive while
+     * goc_io_write dispatches asynchronously to the event loop thread. */
+    char* gc_req = (char*)goc_malloc(req_len);
+    memcpy(gc_req, req_plain, req_len);
+    free(req_plain);
+
+    uv_buf_t wb = uv_buf_init(gc_req, (unsigned int)req_len);
+    GOC_DBG("http_client_fiber: writing request len=%zu\n", req_len);
+    rc = goc_unbox_int(
+        goc_take(goc_io_write((uv_stream_t*)tcp, &wb, 1))->val);
+    GOC_DBG("http_client_fiber: write rc=%d\n", rc);
+    if (rc < 0) {
+        GOC_DBG("http_client_fiber: write failed\n");
+        goc_io_handle_close((uv_handle_t*)tcp, NULL);
+        goto deliver_error;
+    }
+
+    /* --- Read + parse response --- */
+    {
+        size_t resp_len = 0;
+        size_t resp_cap = 0;
+        goc_http_response_t* response = NULL;
+        ssize_t content_length = -1;
+        size_t  body_start     = 0;
+
+        GOC_DBG("http_client_fiber: starting read on tcp=%p\n", (void*)tcp);
+        goc_chan* rd = goc_io_read_start((uv_stream_t*)tcp);
+        GOC_DBG("http_client_fiber: read_ch=%p\n", (void*)rd);
+        for (;;) {
+            GOC_DBG("http_client_fiber: waiting for response chunk resp_len=%zu\n", resp_len);
+            goc_val_t* v = goc_take(rd);
+            GOC_DBG("http_client_fiber: response goc_take v=%p ok=%d\n", (void*)v, v ? (int)v->ok : -1);
+            if (!v || v->ok != GOC_OK) break;
+            goc_io_read_t* r = (goc_io_read_t*)v->val;
+            GOC_DBG("http_client_fiber: response chunk nread=%zd\n", r->nread);
+            if (r->nread < 0) break;
+
+            /* Grow plain-malloc buffer. */
+            size_t needed = resp_len + (size_t)r->nread + 1;
+            if (needed > resp_cap) {
+                size_t nc = resp_cap ? resp_cap * 2 : 4096;
+                while (nc < needed) nc *= 2;
+                char* nb = (char*)realloc(resp_buf, nc);
+                if (!nb) break;
+                resp_buf = nb; resp_cap = nc;
+            }
+            memcpy(resp_buf + resp_len, r->buf->base, (size_t)r->nread);
+            resp_len += (size_t)r->nread;
+            resp_buf[resp_len] = '\0';
+
+            /* Parse headers once we have them. */
+            if (!response)
+                parse_response_head_buf(resp_buf, resp_len,
+                                        &response, &body_start,
+                                        &content_length);
+
+            /* Stop once Content-Length body is complete. */
+            if (response && content_length >= 0) {
+                size_t got = resp_len > body_start ? resp_len - body_start : 0;
+                if (got >= (size_t)content_length) break;
+            }
+        }
+        GOC_DBG("http_client_fiber: read loop done, stopping read rd=%p tcp=%p\n", (void*)rd, (void*)tcp);
+        goc_io_read_stop((uv_stream_t*)tcp);
+        for (;;) {
+            goc_val_t* dv = goc_take(rd);
+            GOC_DBG("http_client_fiber: read drain dv=%p ok=%d\n", (void*)dv, dv ? (int)dv->ok : -1);
+            if (!dv || dv->ok != GOC_OK)
+                break;
+        }
+        GOC_DBG("http_client_fiber: read drain complete, closing tcp=%p\n", (void*)tcp);
+        goc_io_handle_close((uv_handle_t*)tcp, NULL);
+
+        /* --- Attach body and deliver --- */
+        if (!response) {
+            if (resp_buf) free(resp_buf);
+            goto deliver_error;
+        }
+        size_t blen = resp_len > body_start ? resp_len - body_start : 0;
+        if (content_length >= 0 && (size_t)content_length < blen)
+            blen = (size_t)content_length;
+        char* body = (char*)goc_malloc(blen + 1);
+        if (blen && resp_buf) memcpy(body, resp_buf + body_start, blen);
+        body[blen] = '\0';
+        if (resp_buf) free(resp_buf);
+        response->body     = body;
+        response->body_len = blen;
+        GOC_DBG("http_client_fiber: delivering response status=%d blen=%zu on ch=%p\n",
+                response->status, blen, (void*)a->ch);
+        goc_put_cb(a->ch, response, close_on_put, a->ch);
+        return;
+    }
+
+deliver_error: {
+    GOC_DBG("http_client_fiber: deliver_error, delivering status=0 on ch=%p\n", (void*)a->ch);
+    if (resp_buf) free(resp_buf);
+    goc_http_response_t* r =
+        (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
+    memset(r, 0, sizeof(*r));
+    r->headers = goc_array_make(0);
+    r->body    = "";
+    goc_put_cb(a->ch, r, close_on_put, a->ch);
+    }
 }
 
 goc_chan* goc_http_request(const char* method, const char* url,
@@ -1154,31 +1079,19 @@ goc_chan* goc_http_request(const char* method, const char* url,
         body_copy[body_len] = '\0';
     }
 
-    goc_http_req_dispatch_t* d =
-        (goc_http_req_dispatch_t*)goc_malloc(sizeof(goc_http_req_dispatch_t));
-    d->method        = (char*)method;  /* caller's lifetime >= dispatch */
-    d->host          = host;
-    d->port          = port;
-    d->path_and_query = pq;
-    d->content_type  = content_type ? (char*)content_type : NULL;
-    d->body          = body_copy;
-    d->body_len      = body_len;
-    d->extra_headers = opts ? opts->headers : NULL;
-    d->ch            = ch;
+    http_client_arg_t* a =
+        (http_client_arg_t*)goc_malloc(sizeof(http_client_arg_t));
+    a->method         = (char*)method;  /* caller's lifetime >= fiber */
+    a->host           = host;
+    a->port           = port;
+    a->path_and_query = pq;
+    a->content_type   = content_type ? (char*)content_type : NULL;
+    a->body           = body_copy;
+    a->body_len       = body_len;
+    a->extra_headers  = opts ? opts->headers : NULL;
+    a->ch             = ch;
 
-    gc_handle_register(d);
-    int rc = uv_async_init(g_loop, &d->async, on_http_req_dispatch);
-    if (rc < 0) {
-        gc_handle_unregister(d);
-        goc_http_response_t* r =
-            (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-        memset(r, 0, sizeof(*r));
-        r->headers = goc_array_make(0);
-        r->body    = "";
-        goc_put_cb(ch, r, close_on_put, ch);
-        return ch;
-    }
-    uv_async_send(&d->async);
+    goc_go_on(goc_default_pool(), http_client_fiber, a);
 
     /* Honour optional timeout (fiber context only). */
     if (opts && opts->timeout_ms > 0 && goc_in_fiber()) {

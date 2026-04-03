@@ -86,7 +86,7 @@ libgoc/
 │   ├── test_p01_foundation.c        # Phase 1  — Foundation
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
-│   ├── test_goc_http.c              # Component — goc_http HTTP server/client
+│   ├── test_p11_http.c              # Phase 11 — HTTP server/client (goc_http)
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
 │   ├── test_p04_callbacks.c         # Phase 4  — Callbacks
@@ -143,7 +143,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 | `test_p01_foundation` … `test_p10_io` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_stats` | executable | Component test for `goc_stats`; always compiled with `GOC_ENABLE_STATS` and `src/goc_stats.c` added directly, regardless of the `GOC_ENABLE_STATS` CMake option |
-| `test_goc_http` | executable | Component test for `goc_http`; compiled only when `LIBGOC_SERVER=ON` (default) |
+| `test_p11_http` | executable | Phase 11 tests for `goc_http` (server lifecycle, routing, handlers, middleware, HTTP client, security, ping-pong integration); compiled only when `LIBGOC_SERVER=ON` (default) |
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, and (when `LIBGOC_SERVER` is ON) `vendor/picohttpparser/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
@@ -755,6 +755,8 @@ typedef struct goc_pool {
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable before calling `goc_init`.
 
+**`LIBGOC_DEBUG`** — When defined at compile time (pass `-DLIBGOC_DEBUG=ON` to CMake), enables verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O layer, and HTTP layer via the `GOC_DBG(fmt, ...)` macro defined in `include/goc.h`. When the flag is not set the macro expands to nothing, so the callsites produce zero code. Rebuild the library and tests with `-DLIBGOC_DEBUG=ON` to activate logging.
+
 Each pool also has a **live-fiber admission cap**. By default it is
 `floor(0.6 × (available_hardware_memory / fiber_stack_size))`
 in both canary and vmem builds,
@@ -1032,13 +1034,12 @@ void cb_queue_init(void) {
 
 ## `goc_timeout` — libuv Timer
 
-`goc_timeout_req` and `goc_timeout_timer_ctx` are GC-allocated and registered via `gc_handle_register` — see [libuv Role](#libuv-role). They are unregistered in their respective `uv_close` callbacks via `gc_handle_unregister`, after which the GC may collect them.
+`goc_timeout_req` and `goc_timeout_timer_ctx` are GC-allocated and registered via `gc_handle_register` — see [libuv Role](#libuv-role). `goc_timeout_timer_ctx` is unregistered in its `uv_close` callback via `gc_handle_unregister`, after which the GC may collect it.
 
-`uv_timer_init` and `uv_timer_start` are **not thread-safe**; they must be called from the loop thread. Because `goc_timeout` may be called from any thread (fiber, pool worker, main thread), the timer initialisation is marshalled onto the loop thread via a one-shot `uv_async_t` embedded in a GC-allocated `goc_timeout_req`:
+`uv_timer_init` and `uv_timer_start` are **not thread-safe**; they must be called from the loop thread. Because `goc_timeout` may be called from any thread (fiber, pool worker, main thread), the timer initialisation is marshalled onto the loop thread via `post_on_loop()`:
 
 ```c
 typedef struct {
-    uv_async_t  async;       /* MUST be first — cast between async* and req* */
     struct goc_timeout_timer_ctx* timer_ctx;
     uint64_t    ms;
     uint64_t    deadline_ns; /* uv_hrtime() snapshot taken at goc_timeout() call time */
@@ -1056,16 +1057,14 @@ goc_chan* goc_timeout(uint64_t ms) {
     tctx->ch = ch;
     req->timer_ctx = tctx; req->ms = ms;
     req->deadline_ns = uv_hrtime();
-    gc_handle_register(req);   /* pin while libuv holds &req->async */
     gc_handle_register(tctx);  /* pin while libuv holds &tctx->timer */
-    uv_async_init(g_loop, &req->async, on_start_timer);
-    uv_async_send(&req->async);
+    post_on_loop(on_start_timer, req);
     return ch;
 }
 
 /* runs on the loop thread */
-static void on_start_timer(uv_async_t* h) {
-    goc_timeout_req* req = (goc_timeout_req*)h;
+static void on_start_timer(void* arg) {
+    goc_timeout_req* req = (goc_timeout_req*)arg;
     /* Subtract async dispatch latency so the timer fires at the wall-clock
      * deadline recorded above, not req->ms after this callback happens to run.
      * Clamp to zero if the deadline has already passed — fire next iteration. */
@@ -1075,7 +1074,6 @@ static void on_start_timer(uv_async_t* h) {
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
     uv_timer_init(g_loop, &req->timer_ctx->timer);
     uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);
-    uv_close((uv_handle_t*)h, unregister_handle_cb);  /* one-shot: close after use */
 }
 
 static void on_timeout(uv_timer_t* t) {
@@ -1324,7 +1322,7 @@ libgoc provides channel-based wrappers for libuv I/O operations in a separate he
 
 **Single-form API.** Each operation is exposed as a single function that returns `goc_chan*`; the channel delivers the result when the I/O completes. Safe from any context; composable with `goc_alts()`.
 
-**Thread-safety bridge.** Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) touch handle internals that must run on the libuv loop thread. Stream/UDP wrappers marshal each call to the loop thread via a one-shot heap-allocated `uv_async_t`. File-system and DNS operations are submitted directly (libuv routes them through its internal thread pool).
+**Thread-safety bridge.** Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) touch handle internals that must run on the libuv loop thread. All stream/UDP wrappers (read_start/stop, write, write2, connect, shutdown, UDP send/recv, signals, TTY, FS events/polls) use `post_on_loop()`: a `GOC_CALLBACK` entry is enqueued directly into the MPSC callback queue with no per-call `uv_async_t` handle. File-system and DNS operations are submitted directly (libuv routes them through its internal thread pool).
 
 **GC safety.** All `goc_chan*` pointers passed to async context structs (which are `malloc`-allocated) are registered in the `live_uv_handles` array (see `gc.c`) for the duration of the pending I/O, preventing premature collection.
 
@@ -1694,10 +1692,10 @@ Runs a build matrix across four configurations:
 
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `macos-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `windows-latest` | *(none — canary build)* | P1–P7, P9–P10, `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9–P11, `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 

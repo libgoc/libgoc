@@ -53,8 +53,12 @@ File-system (`uv_fs_*`) and DNS (`uv_getaddrinfo`, `uv_getnameinfo`) operations
 are safe to initiate from any thread; libuv routes them through its internal
 worker-thread pool and fires the callback on the event loop.
 
-Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) use a
-`uv_async_t` bridge and are safe to call from fiber or OS-thread context.
+Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) must reach the
+loop thread. The core TCP path (read_start/stop, write, tcp_connect, handle
+init/close, tcp_server_make) dispatches via `post_on_loop()` (MPSC callback
+queue, no per-call `uv_async_t`). All other operations (write2, shutdown,
+pipe_connect, UDP, signals, TTY, FS events/polls) also use `post_on_loop()`.
+Both paths are safe to call from fiber or OS-thread context.
 
 Handle initialisation (`uv_tcp_init`, `uv_pipe_init`, `uv_udp_init`, etc.)
 modifies internal loop state and must reach the event loop thread. Use the

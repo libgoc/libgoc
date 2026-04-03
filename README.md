@@ -28,10 +28,10 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - Windows (x86-64)
 
 **Helper libraries:**
-- [Async I/O API](./IO.md)
+- [Async I/O](./IO.md)
+- [Async HTTP Client/Server](./HTTP.md)
 - [Dynamic Array](./ARRAY.md)
 - [Telemetry](./TELEMETRY.md)
-- [HTTP Server](./HTTP.md)
 
 **Also see:**
 - [Design Doc](./DESIGN.md)
@@ -65,7 +65,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
   - [Async I/O →](./IO.md)
-  - [HTTP Server →](./HTTP.md)
+  - [HTTP Client/Server →](./HTTP.md)
 - [Best Practices](#best-practices)
 - [Benchmarks](#benchmarks)
 - [Building and Testing](#building-and-testing)
@@ -611,6 +611,8 @@ goc_close(w);          /* release */
 ### Thread pool
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
+
+Pass `-DLIBGOC_DEBUG=ON` to CMake to enable verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O, and HTTP layers at compile time. Off by default.
 
 ```c
 typedef enum {
