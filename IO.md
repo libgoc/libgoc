@@ -310,7 +310,7 @@ while ((v = goc_take(rch))->ok == GOC_OK) {
 | Function | Signature | Description |
 |---|---|---|
 | `goc_io_tcp_bind` | `goc_chan* goc_io_tcp_bind(uv_tcp_t* handle, const struct sockaddr* addr)` | Dispatch `uv_tcp_bind`; delivers `goc_box_int(status)`. |
-| `goc_io_tcp_server_make` | `goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog)` | Start listening on a bound TCP handle. Calls `uv_listen`; channel delivers a new `goc_malloc`-allocated and registered `uv_tcp_t*` for each incoming connection. Channel stays open until the server handle is closed. |
+| `goc_io_tcp_server_make` | `goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog, goc_chan* ready_ch)` | Start listening on a bound TCP handle. Calls `uv_listen`; channel delivers a new `goc_malloc`-allocated and registered `uv_tcp_t*` for each incoming connection. Channel stays open until the server handle is closed. If `ready_ch` is non-NULL, delivers `goc_box_int(rc)` once `uv_listen` has returned on the event-loop thread (rc == 0 = listening; rc < 0 = error). Pass NULL for fire-and-forget. |
 | `goc_io_tcp_keepalive` | `goc_chan* goc_io_tcp_keepalive(uv_tcp_t* handle, int enable, unsigned int delay)` | Dispatch `uv_tcp_keepalive`; delivers `goc_box_int(status)`. |
 | `goc_io_tcp_nodelay` | `goc_chan* goc_io_tcp_nodelay(uv_tcp_t* handle, int enable)` | Dispatch `uv_tcp_nodelay`; delivers `goc_box_int(status)`. |
 | `goc_io_tcp_simultaneous_accepts` | `goc_chan* goc_io_tcp_simultaneous_accepts(uv_tcp_t* handle, int enable)` | Dispatch `uv_tcp_simultaneous_accepts`; delivers `goc_box_int(status)`. |
@@ -320,7 +320,7 @@ while ((v = goc_take(rch))->ok == GOC_OK) {
 | Function | Signature | Description |
 |---|---|---|
 | `goc_io_pipe_bind` | `goc_chan* goc_io_pipe_bind(uv_pipe_t* handle, const char* name)` | Dispatch `uv_pipe_bind`; delivers `goc_box_int(status)`. |
-| `goc_io_pipe_server_make` | `goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog)` | Mirror of `goc_io_tcp_server_make`; delivers accepted `uv_pipe_t*` per connection. Channel stays open until the server handle is closed. |
+| `goc_io_pipe_server_make` | `goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog, goc_chan* ready_ch)` | Mirror of `goc_io_tcp_server_make`; delivers accepted `uv_pipe_t*` per connection. `ready_ch` behaves identically. Channel stays open until the server handle is closed. |
 
 ---
 
@@ -597,11 +597,11 @@ static void io_fiber(void* _) {
     goc_chan* open_ch    = goc_io_fs_open("/tmp/data.txt", UV_FS_O_RDONLY, 0);
     goc_chan* timeout_ch = goc_timeout(500);   /* from goc.h */
 
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = open_ch,    .op_kind = GOC_ALT_TAKE },
         { .ch = timeout_ch, .op_kind = GOC_ALT_TAKE },
     };
-    goc_alts_result* r = goc_alts(ops, 2);
+    goc_alts_result_t* r = goc_alts(ops, 2);
 
     if (r->ch == timeout_ch) {
         printf("open timed out\n");

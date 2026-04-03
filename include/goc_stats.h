@@ -29,32 +29,32 @@ extern "C" {
  * ---------------------------------------------------------------------- */
 
 
-enum goc_stats_event_type {
+typedef enum goc_stats_event_type {
     GOC_STATS_EVENT_POOL_STATUS,
     GOC_STATS_EVENT_WORKER_STATUS,
     GOC_STATS_EVENT_FIBER_STATUS,
     GOC_STATS_EVENT_CHANNEL_STATUS,
-};
+} goc_stats_event_type_t;
 
-enum goc_stats_pool_status {
+typedef enum goc_stats_pool_status {
     GOC_POOL_CREATED = 0,
     GOC_POOL_DESTROYED = 1,
-};
+} goc_stats_pool_status_t;
 
-enum goc_stats_worker_status {
+typedef enum goc_stats_worker_status {
     GOC_WORKER_CREATED = 0,
     GOC_WORKER_RUNNING = 1,
     GOC_WORKER_IDLE    = 2,
     GOC_WORKER_STOPPED = 3,
-};
+} goc_stats_worker_status_t;
 
-enum goc_stats_fiber_status {
+typedef enum goc_stats_fiber_status {
     GOC_FIBER_CREATED   = 0,
     GOC_FIBER_COMPLETED = 1,
-};
+} goc_stats_fiber_status_t;
 
-struct goc_stats_event {
-    enum goc_stats_event_type type;
+typedef struct goc_stats_event {
+    goc_stats_event_type_t type;
     uint64_t timestamp;
     union {
         struct { void* id; int status; int thread_count; } pool;
@@ -78,7 +78,7 @@ struct goc_stats_event {
             uint64_t entries_removed; /* dead entries removed across all compactions (only at close) */
         } channel;
     } data;
-};
+} goc_stats_event_t;
 
 /* -------------------------------------------------------------------------
  * Callback API
@@ -91,7 +91,7 @@ struct goc_stats_event {
  * or cleared at any time (thread-safe).  Setting NULL disables delivery.
  * ---------------------------------------------------------------------- */
 
-typedef void (*goc_stats_callback)(const struct goc_stats_event* ev, void* ud);
+typedef void (*goc_stats_callback)(const goc_stats_event_t* ev, void* ud);
 
 void goc_stats_set_callback(goc_stats_callback cb, void* ud);
 

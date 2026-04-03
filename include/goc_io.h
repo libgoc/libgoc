@@ -712,8 +712,13 @@ goc_chan* goc_io_tcp_bind(uv_tcp_t* handle, const struct sockaddr* addr);
  * Calls uv_listen; channel delivers a new goc_malloc-allocated + registered
  * uv_tcp_t* for each incoming connection.  Channel stays open until the
  * server handle is closed.
+ *
+ * ready_ch: optional buffered channel (capacity >= 1) that receives
+ * goc_box_int(rc) once uv_listen has been called on the event-loop thread.
+ * rc == 0 means the server is accepting connections; rc < 0 is a libuv
+ * error code.  Pass NULL for fire-and-forget behaviour.
  */
-goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog);
+goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog, goc_chan* ready_ch);
 
 /** Dispatch uv_tcp_keepalive; delivers goc_box_int(status). */
 goc_chan* goc_io_tcp_keepalive(uv_tcp_t* handle, int enable, unsigned int delay);
@@ -736,8 +741,9 @@ goc_chan* goc_io_pipe_bind(uv_pipe_t* handle, const char* name);
  *
  * Mirror of goc_io_tcp_server_make; delivers accepted uv_pipe_t* per
  * connection.  Channel stays open until the server handle is closed.
+ * ready_ch behaves identically to goc_io_tcp_server_make.
  */
-goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog);
+goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog, goc_chan* ready_ch);
 
 /* =========================================================================
  * UDP socket options

@@ -308,7 +308,7 @@ typedef struct {
 static void fan_in_fn(void* arg) {
     fan_in_args_t* a = (fan_in_args_t*)arg;
 
-    goc_alt_op* ops     = goc_malloc(sizeof(goc_alt_op) * a->workers);
+    goc_alt_op_t* ops    = goc_malloc(sizeof(goc_alt_op_t) * a->workers);
     size_t      n_active = a->workers;
     for (size_t i = 0; i < a->workers; i++) {
         ops[i].ch      = a->outs[i];
@@ -318,7 +318,7 @@ static void fan_in_fn(void* arg) {
 
     size_t received = 0;
     while (received < a->tasks && n_active > 0) {
-        goc_alts_result* r = goc_alts(ops, n_active);
+        goc_alts_result_t* r = goc_alts(ops, n_active);
         if (r->value.ok == GOC_OK) {
             received++;
         } else {

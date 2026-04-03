@@ -347,7 +347,7 @@ done:;
 static void p8_4_alts_fiber(void* arg) {
     (void)arg;
 
-    goc_alt_op ops[2] = {
+    goc_alt_op_t ops[2] = {
         { .op_kind = GOC_ALT_DEFAULT, .ch = NULL },
         { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
     };
@@ -388,7 +388,7 @@ done:;
 static void p8_5_child_fn(void* arg) {
     (void)arg;
 
-    goc_alt_op ops[2] = {
+    goc_alt_op_t ops[2] = {
         { .op_kind = GOC_ALT_DEFAULT, .ch = NULL },
         { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
     };
@@ -555,7 +555,7 @@ done:;
 static void p8_11_alts_sync_from_fiber(void* arg) {
     (void)arg;
 
-    goc_alt_op ops[1] = {
+    goc_alt_op_t ops[1] = {
         { .op_kind = GOC_ALT_DEFAULT, .ch = NULL }
     };
 

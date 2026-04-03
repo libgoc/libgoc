@@ -679,10 +679,17 @@ goc_chan* goc_io_write(uv_stream_t* handle,
                           const uv_buf_t bufs[], unsigned int nbufs)
 {
     goc_chan*             ch = goc_chan_make(1);
+    /* Allocate the dispatch struct with a trailing copy of the bufs array so
+     * that on_write_dispatch does not dereference a pointer that may have
+     * come from the caller's stack frame (which could be gone by the time the
+     * async fires). */
     goc_write_dispatch_t* d  = (goc_write_dispatch_t*)goc_malloc(
-                                    sizeof(goc_write_dispatch_t));
+                                    sizeof(goc_write_dispatch_t) +
+                                    nbufs * sizeof(uv_buf_t));
+    uv_buf_t* bufs_copy = (uv_buf_t*)((char*)d + sizeof(goc_write_dispatch_t));
+    memcpy(bufs_copy, bufs, nbufs * sizeof(uv_buf_t));
     d->handle = handle;
-    d->bufs   = bufs;
+    d->bufs   = bufs_copy;
     d->nbufs  = nbufs;
     d->ch     = ch;
     gc_handle_register(d);
@@ -741,9 +748,12 @@ goc_chan* goc_io_write2(uv_stream_t* handle,
 {
     goc_chan*              ch = goc_chan_make(1);
     goc_write2_dispatch_t* d  = (goc_write2_dispatch_t*)goc_malloc(
-                                     sizeof(goc_write2_dispatch_t));
+                                     sizeof(goc_write2_dispatch_t) +
+                                     nbufs * sizeof(uv_buf_t));
+    uv_buf_t* bufs_copy = (uv_buf_t*)((char*)d + sizeof(goc_write2_dispatch_t));
+    memcpy(bufs_copy, bufs, nbufs * sizeof(uv_buf_t));
     d->handle      = handle;
-    d->bufs        = bufs;
+    d->bufs        = bufs_copy;
     d->nbufs       = nbufs;
     d->send_handle = send_handle;
     d->ch          = ch;
@@ -1586,6 +1596,7 @@ typedef struct {
     int           backlog;
     goc_chan*     ch;
     int           is_tcp;
+    goc_chan*     ready_ch; /* optional: delivers goc_box_int(rc) when uv_listen returns */
 } goc_server_make_dispatch_t;
 
 static void on_server_make_dispatch(uv_async_t* h)
@@ -1604,32 +1615,38 @@ static void on_server_make_dispatch(uv_async_t* h)
         d->server->data = NULL;
     }
 
+    /* Signal ready channel (if any) with the listen result. */
+    if (d->ready_ch)
+        goc_put_cb(d->ready_ch, goc_box_int(rc), close_on_put, d->ready_ch);
+
     uv_close((uv_handle_t*)h, unregister_io_handle);
 }
 
-goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog)
+goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog, goc_chan* ready_ch)
 {
     goc_chan*                    ch = goc_chan_make(16);
     goc_server_make_dispatch_t*  d  = (goc_server_make_dispatch_t*)goc_malloc(
                                           sizeof(goc_server_make_dispatch_t));
-    d->server  = (uv_stream_t*)handle;
-    d->backlog = backlog;
-    d->ch      = ch;
-    d->is_tcp  = 1;
+    d->server   = (uv_stream_t*)handle;
+    d->backlog  = backlog;
+    d->ch       = ch;
+    d->is_tcp   = 1;
+    d->ready_ch = ready_ch;
     gc_handle_register(d);
     dispatch_async_or_abort(&d->async, on_server_make_dispatch, "goc_io_tcp_server_make");
     return ch;
 }
 
-goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog)
+goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog, goc_chan* ready_ch)
 {
     goc_chan*                    ch = goc_chan_make(16);
     goc_server_make_dispatch_t*  d  = (goc_server_make_dispatch_t*)goc_malloc(
                                           sizeof(goc_server_make_dispatch_t));
-    d->server  = (uv_stream_t*)handle;
-    d->backlog = backlog;
-    d->ch      = ch;
-    d->is_tcp  = 0;
+    d->server   = (uv_stream_t*)handle;
+    d->backlog  = backlog;
+    d->ch       = ch;
+    d->is_tcp   = 0;
+    d->ready_ch = ready_ch;
     gc_handle_register(d);
     dispatch_async_or_abort(&d->async, on_server_make_dispatch, "goc_io_pipe_server_make");
     return ch;

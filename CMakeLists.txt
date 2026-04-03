@@ -16,6 +16,7 @@ option(LIBGOC_VMEM        "Use minicoro virtual memory allocator (off by default
 option(LIBGOC_ASAN        "Build an instrumented copy of goc with AddressSanitizer" OFF)
 option(LIBGOC_TSAN        "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE    "Instrument goc and tests for code coverage" OFF)
+option(LIBGOC_SERVER      "Build the goc_http HTTP/1.1 library" ON)
 option(GOC_ENABLE_STATS   "Enable telemetry / statistics collection (goc_stats)" OFF)
 set(LIBGOC_STACK_SIZE "0" CACHE STRING "Default fiber stack size in bytes (0 = let minicoro decide)")
 
@@ -41,6 +42,8 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUV REQUIRED IMPORTED_TARGET libuv)
 pkg_check_modules(BDWGC REQUIRED IMPORTED_TARGET bdw-gc-threaded)
 
+# picohttpparser is vendored under vendor/picohttpparser — no external package needed.
+
 # ---------------------------------------------------------------------------
 # Source lists
 # ---------------------------------------------------------------------------
@@ -63,6 +66,13 @@ if(GOC_ENABLE_STATS)
     set(GOC_SOURCES ${GOC_SOURCES} src/goc_stats.c)
 endif()
 
+if(LIBGOC_SERVER)
+    set(GOC_SOURCES ${GOC_SOURCES}
+        src/goc_http.c
+        vendor/picohttpparser/picohttpparser.c
+    )
+endif()
+
 # ---------------------------------------------------------------------------
 # Helper: apply common compile options to a goc library target
 # ---------------------------------------------------------------------------
@@ -71,6 +81,7 @@ function(goc_configure_target target_name)
         PUBLIC  include
         PRIVATE src
                 vendor/minicoro
+                vendor/picohttpparser
     )
     # GC_THREADS: enable bdwgc multi-thread support on all platforms.
     # GC_PTHREADS: on POSIX this activates gc_pthread_redirects.h so that
@@ -185,6 +196,11 @@ enable_testing()
 # Discover test source files (requires cmake_path — CMake >= 3.20)
 file(GLOB TEST_SOURCES "tests/test_p*.c" "tests/test_goc_*.c")
 
+# Exclude the HTTP test when LIBGOC_SERVER is disabled.
+if(NOT LIBGOC_SERVER)
+    list(FILTER TEST_SOURCES EXCLUDE REGEX "test_goc_http\.c$")
+endif()
+
 foreach(test_src IN LISTS TEST_SOURCES)
     cmake_path(GET test_src STEM test_name)
 
@@ -237,10 +253,13 @@ foreach(test_src IN LISTS TEST_SOURCES)
     add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
 
-# The stats test suite is significantly heavier than the others and regularly
-# exceeds the default ctest --timeout on slow CI runners (e.g. Windows).
-# Override the per-test timeout to give it enough headroom.
-set_tests_properties(test_goc_stats PROPERTIES TIMEOUT 180)
+# Some test suites are significantly heavier than the others and regularly
+# exceed the default ctest --timeout on slow CI runners (e.g. Windows, vmem, macOS).
+# Override the per-test timeout to give them enough headroom.
+set_tests_properties(test_goc_stats             PROPERTIES TIMEOUT 180)
+set_tests_properties(test_goc_http              PROPERTIES TIMEOUT 540)
+set_tests_properties(test_p03_channel_io        PROPERTIES TIMEOUT 180)
+set_tests_properties(test_p05_select_timeout    PROPERTIES TIMEOUT 300)
 
 # ---------------------------------------------------------------------------
 # Coverage target (requires lcov + genhtml)
@@ -280,6 +299,11 @@ install(TARGETS goc
 install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_stats.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+if(LIBGOC_SERVER)
+    install(FILES include/goc_http.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
+endif()
 if(LIBGOC_SHARED)
     install(TARGETS goc_shared
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

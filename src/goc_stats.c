@@ -24,7 +24,7 @@
 
 typedef struct stats_node {
     _Atomic(struct stats_node *) next;
-    struct goc_stats_event       ev;
+    goc_stats_event_t       ev;
     bool                         is_barrier;
 } stats_node;
 
@@ -49,7 +49,7 @@ static void sq_push(stats_node *node) {
 /* Pop on the loop thread only.
  * Copies the event into *out, frees the old sentinel, returns true.
  * Returns false when the queue is empty (g_sq_tail->next == NULL). */
-static bool sq_pop(struct goc_stats_event *out, bool *is_barrier) {
+static bool sq_pop(goc_stats_event_t *out, bool *is_barrier) {
     stats_node *tail = g_sq_tail;
     stats_node *next = atomic_load_explicit(&tail->next, memory_order_acquire);
     if (!next) return false;
@@ -101,7 +101,7 @@ static uint64_t goc_stats_now(void) {
 static bool stats_drain(void) {
     goc_stats_callback cb = atomic_load_explicit(&g_cb, memory_order_acquire);
     void *ud              = atomic_load_explicit(&g_cb_ud, memory_order_relaxed);
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     bool saw_barrier = false;
     bool is_barrier;
     while (sq_pop(&ev, &is_barrier)) {
@@ -142,7 +142,7 @@ static void stats_on_async(uv_async_t *h) {
  * Default callback
  * -------------------------------------------------------------------------- */
 
-static void goc_stats_default_callback(const struct goc_stats_event *ev, void *ud) {
+static void goc_stats_default_callback(const goc_stats_event_t *ev, void *ud) {
     (void)ud;
     const char *type = "?";
     switch (ev->type) {
@@ -279,7 +279,7 @@ bool goc_stats_is_enabled(void) {
  * Internal emit functions
  * -------------------------------------------------------------------------- */
 
-static void goc_stats_dispatch(const struct goc_stats_event *ev) {
+static void goc_stats_dispatch(const goc_stats_event_t *ev) {
     if (!atomic_load_explicit(&stats_enabled, memory_order_acquire)) return;
 
     stats_node *node = (stats_node *)malloc(sizeof(stats_node));
@@ -292,7 +292,7 @@ static void goc_stats_dispatch(const struct goc_stats_event *ev) {
 }
 
 void goc_stats_submit_event_pool(void *id, int status, int thread_count) {
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     ev.type                   = GOC_STATS_EVENT_POOL_STATUS;
     ev.timestamp              = goc_stats_now();
     ev.data.pool.id           = id;
@@ -303,7 +303,7 @@ void goc_stats_submit_event_pool(void *id, int status, int thread_count) {
 
 void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pending_jobs,
                                    uint64_t steal_attempts, uint64_t steal_successes) {
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     ev.type                       = GOC_STATS_EVENT_WORKER_STATUS;
     ev.timestamp                  = goc_stats_now();
     ev.data.worker.id             = id;
@@ -316,7 +316,7 @@ void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pendin
 }
 
 void goc_stats_submit_event_fiber(int id, int last_worker_id, int status) {
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     ev.type                      = GOC_STATS_EVENT_FIBER_STATUS;
     ev.timestamp                 = goc_stats_now();
     ev.data.fiber.id             = id;
@@ -328,7 +328,7 @@ void goc_stats_submit_event_fiber(int id, int last_worker_id, int status) {
 void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count,
                                     uint64_t taker_scans, uint64_t putter_scans,
                                     uint64_t compaction_runs, uint64_t entries_removed) {
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     ev.type                          = GOC_STATS_EVENT_CHANNEL_STATUS;
     ev.timestamp                     = goc_stats_now();
     ev.data.channel.id               = id;

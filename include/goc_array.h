@@ -181,6 +181,33 @@ goc_array* goc_array_slice(const goc_array* arr, size_t start, size_t end);
  */
 void** goc_array_to_c(const goc_array* arr);
 
+/* -------------------------------------------------------------------------
+ * String interop
+ * ---------------------------------------------------------------------- */
+
+/**
+ * goc_array_from_str() — Create a byte array from a null-terminated C string.
+ *
+ * Each byte of s is stored as goc_box_int(byte). The null terminator is not
+ * included. Equivalent to iterating over s and calling goc_array_push for each
+ * byte.
+ *
+ * Returns a GC-managed pointer. Never returns NULL.
+ * Passing NULL for s produces an empty array.
+ */
+goc_array* goc_array_from_str(const char* s);
+
+/**
+ * goc_array_to_str() — Return a GC-heap null-terminated string from a byte array.
+ *
+ * Each element is interpreted as goc_box_int(byte). The result is a fresh
+ * GC-heap allocation of len+1 bytes with a null terminator appended.
+ *
+ * Returns a GC-managed pointer. Never returns NULL.
+ * An empty array produces an empty string ("").
+ */
+char* goc_array_to_str(const goc_array* arr);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

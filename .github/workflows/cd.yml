@@ -42,8 +42,6 @@ jobs:
       BDWGC_PREFIX: "${{ github.workspace }}/.local/bdwgc"
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -96,8 +94,9 @@ jobs:
           cp include/goc_io.h dist/
           cp include/goc_array.h dist/
           cp include/goc_stats.h dist/
+          cp include/goc_http.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-linux-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h goc_http.h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -112,8 +111,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Install Homebrew dependencies
         run: brew install cmake libuv bdw-gc pkg-config
@@ -138,8 +135,9 @@ jobs:
           cp include/goc_io.h dist/
           cp include/goc_array.h dist/
           cp include/goc_stats.h dist/
+          cp include/goc_http.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-macos-arm64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h goc_http.h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -154,8 +152,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
@@ -193,8 +189,9 @@ jobs:
           cp include/goc_io.h dist/
           cp include/goc_array.h dist/
           cp include/goc_stats.h dist/
+          cp include/goc_http.h dist/
           cd dist
-          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h
+          tar czf ../libgoc-${{ needs.tag.outputs.tag }}-canary-windows-x86_64.tar.gz libgoc.a goc.h goc_io.h goc_array.h goc_stats.h goc_http.h
 
       - uses: actions/upload-artifact@v4
         with:

@@ -14,6 +14,7 @@
 #ifndef GOC_H
 #define GOC_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -63,18 +64,18 @@ typedef enum {
     GOC_ALT_TAKE,
     GOC_ALT_PUT,
     GOC_ALT_DEFAULT,
-} goc_alt_kind;
+} goc_alt_kind_t;
 
 typedef struct {
-    goc_chan*    ch;
-    goc_alt_kind op_kind;
-    void*        put_val;
-} goc_alt_op;
+    goc_chan*      ch;
+    goc_alt_kind_t op_kind;
+    void*          put_val;
+} goc_alt_op_t;
 
 typedef struct {
     goc_chan* ch;
     goc_val_t value;
-} goc_alts_result;
+} goc_alts_result_t;
 
 /* -------------------------------------------------------------------------
  * Lifecycle
@@ -134,6 +135,15 @@ void* goc_malloc(size_t n);
  * Aborts on allocation failure. Never returns NULL (unless n == 0).
  */
 void* goc_realloc(void* ptr, size_t n);
+
+/**
+ * goc_sprintf() — printf into a GC-heap-allocated string.
+ *
+ * Formats fmt with the given arguments and returns a null-terminated string
+ * allocated on the Boehm GC heap. The caller need not free the result.
+ * Aborts on allocation failure. Never returns NULL.
+ */
+char* goc_sprintf(const char* fmt, ...);
 
 /* -------------------------------------------------------------------------
  * Scalar/pointer boxing helpers
@@ -403,7 +413,7 @@ goc_chan* goc_write_lock(goc_mutex* mx);
 /**
  * goc_alts() — Select over multiple channel operations (fiber context only).
  *
- * ops : array of n goc_alt_op descriptors.  Each op specifies a channel,
+ * ops : array of n goc_alt_op_t descriptors.  Each op specifies a channel,
  *       whether the arm is a take, put, or default, and (for put arms) the
  *       value to send.
  * n   : number of ops (must be >= 1).
@@ -422,7 +432,7 @@ goc_chan* goc_write_lock(goc_mutex* mx);
  * Must only be called from within a fiber; calling from OS thread context
  * aborts with a diagnostic message.
  */
-goc_alts_result* goc_alts(goc_alt_op* ops, size_t n);
+goc_alts_result_t* goc_alts(goc_alt_op_t* ops, size_t n);
 
 /**
  * goc_alts_sync() — Select over multiple channel operations (OS thread context).
@@ -431,7 +441,7 @@ goc_alts_result* goc_alts(goc_alt_op* ops, size_t n);
  * parking a fiber. Must not be called from a fiber;
  * calling from fiber context aborts with a diagnostic message.
  */
-goc_alts_result* goc_alts_sync(goc_alt_op* ops, size_t n);
+goc_alts_result_t* goc_alts_sync(goc_alt_op_t* ops, size_t n);
 
 /* -------------------------------------------------------------------------
  * Timeout

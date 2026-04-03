@@ -610,11 +610,11 @@ static void test_p7_5(void) {
     goc_chan* tch = goc_timeout(P7_5_TIMEOUT_MS);
     ASSERT(tch != NULL);
 
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = result_ch, .op_kind = GOC_ALT_TAKE },   /* index 0: data */
         { .ch = tch,       .op_kind = GOC_ALT_TAKE },   /* index 1: timeout */
     };
-    goc_alts_result* r = goc_alts_sync(ops, 2);
+    goc_alts_result_t* r = goc_alts_sync(ops, 2);
 
     /* Close result_ch unconditionally — ensures that any fiber still parked
      * as a putter (e.g., the fast fiber if the timeout won on a slow runner)

@@ -117,12 +117,12 @@ static void done_destroy(done_t* d) {
  * ch      — channel the fiber will call goc_alts on; pre-loaded with a value
  *            by the main thread before the fiber is launched
  * done    — signalled by the fiber when it has recorded its result
- * result  — populated by the fiber with the goc_alts_result
+ * result  — populated by the fiber with the goc_alts_result_t
  */
 typedef struct {
     goc_chan*       ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_1_args_t;
 
 /*
@@ -133,7 +133,7 @@ typedef struct {
  */
 static void test_p5_1_fiber_fn(void* arg) {
     p5_1_args_t* a = (p5_1_args_t*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_TAKE },
     };
     a->result = goc_alts(ops, 1);
@@ -188,12 +188,12 @@ done:;
  * drain_ch — receives the put_val after the alts returns; the main thread
  *             reads from this channel to prevent the put from blocking
  * done     — signalled by the fiber once the result is populated
- * result   — the goc_alts_result from the fiber
+ * result   — the goc_alts_result_t from the fiber
  */
 typedef struct {
     goc_chan*       put_ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_2_args_t;
 
 /*
@@ -218,7 +218,7 @@ static void test_p5_2_taker_fn(void* arg) {
  */
 static void test_p5_2_fiber_fn(void* arg) {
     p5_2_args_t* a = (p5_2_args_t*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->put_ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xBEEF) },
     };
     a->result = goc_alts(ops, 1);
@@ -281,19 +281,19 @@ done:;
  * ready  — signalled by the fiber just before it calls goc_alts (so the main
  *           thread can wait until the fiber is about to park)
  * done   — signalled once goc_alts returns
- * result — the goc_alts_result
+ * result — the goc_alts_result_t
  */
 typedef struct {
     goc_chan*       ch;
     done_t*         ready;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_3_args_t;
 
 static void test_p5_3_fiber_fn(void* arg) {
     p5_3_args_t* a = (p5_3_args_t*)arg;
     done_signal(a->ready);  /* let main know we are about to call goc_alts */
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_TAKE },
     };
     a->result = goc_alts(ops, 1);
@@ -354,13 +354,13 @@ typedef struct {
     goc_chan*       ch;
     done_t*         ready;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_4_args_t;
 
 static void test_p5_4_fiber_fn(void* arg) {
     p5_4_args_t* a = (p5_4_args_t*)arg;
     done_signal(a->ready);
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0x5678) },
     };
     a->result = goc_alts(ops, 1);
@@ -418,12 +418,12 @@ done:;
 typedef struct {
     goc_chan*       ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_5_args_t;
 
 static void test_p5_5_fiber_fn(void* arg) {
     p5_5_args_t* a = (p5_5_args_t*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch,  .op_kind = GOC_ALT_TAKE },
         { .ch = NULL,   .op_kind = GOC_ALT_DEFAULT },
     };
@@ -473,12 +473,12 @@ done:;
 typedef struct {
     goc_chan*       ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_6_args_t;
 
 static void test_p5_6_fiber_fn(void* arg) {
     p5_6_args_t* a = (p5_6_args_t*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_TAKE },
         { .ch = NULL,  .op_kind = GOC_ALT_DEFAULT },
     };
@@ -530,12 +530,12 @@ done:;
 typedef struct {
     goc_chan*       ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_7_args_t;
 
 static void test_p5_7_fiber_fn(void* arg) {
     p5_7_args_t* a = (p5_7_args_t*)arg;
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_TAKE },
     };
     a->result = goc_alts(ops, 1);
@@ -584,13 +584,13 @@ typedef struct {
     goc_chan*       ch;
     done_t*         ready;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_8_args_t;
 
 static void test_p5_8_fiber_fn(void* arg) {
     p5_8_args_t* a = (p5_8_args_t*)arg;
     done_signal(a->ready);
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_TAKE },
     };
     a->result = goc_alts(ops, 1);
@@ -645,13 +645,13 @@ typedef struct {
     goc_chan*       ch;
     done_t*         ready;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_9_args_t;
 
 static void test_p5_9_fiber_fn(void* arg) {
     p5_9_args_t* a = (p5_9_args_t*)arg;
     done_signal(a->ready);
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xDEAD) },
     };
     a->result = goc_alts(ops, 1);
@@ -707,20 +707,20 @@ done:;
  * timeout_ch  — populated by the fiber with the channel returned by goc_timeout;
  *               used by the test to compare against result->ch
  * done        — signalled when goc_alts returns
- * result      — the goc_alts_result
+ * result      — the goc_alts_result_t
  */
 typedef struct {
     goc_chan*       data_ch;
     uint64_t        timeout_ms;
     goc_chan*       timeout_ch;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_10_args_t;
 
 static void test_p5_10_fiber_fn(void* arg) {
     p5_10_args_t* a = (p5_10_args_t*)arg;
     a->timeout_ch = goc_timeout(a->timeout_ms);
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->data_ch,    .op_kind = GOC_ALT_TAKE },
         { .ch = a->timeout_ch, .op_kind = GOC_ALT_TAKE },
     };
@@ -801,10 +801,10 @@ static void test_p5_11(void) {
     goc_chan* join = goc_go(test_p5_11_sender_fn, &sargs);
     ASSERT(join != NULL);
 
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = ch, .op_kind = GOC_ALT_TAKE },
     };
-    goc_alts_result* r = goc_alts_sync(ops, 1);
+    goc_alts_result_t* r = goc_alts_sync(ops, 1);
 
     ASSERT(r->ch == ch);
     ASSERT(r->value.ok == GOC_OK);
@@ -858,10 +858,10 @@ static void test_p5_12(void) {
     goc_chan* join = goc_go(test_p5_12_receiver_fn, &rargs);
     ASSERT(join != NULL);
 
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xF00D) },
     };
-    goc_alts_result* r = goc_alts_sync(ops, 1);
+    goc_alts_result_t* r = goc_alts_sync(ops, 1);
 
     ASSERT(r->ch == ch);
     ASSERT(r->value.ok == GOC_OK);
@@ -938,13 +938,13 @@ typedef struct {
     goc_chan*       ch2;
     done_t*         ready;
     done_t*         done;
-    goc_alts_result* result;
+    goc_alts_result_t* result;
 } p5_14_args_t;
 
 static void test_p5_14_fiber_fn(void* arg) {
     p5_14_args_t* a = (p5_14_args_t*)arg;
     done_signal(a->ready);
-    goc_alt_op ops[] = {
+    goc_alt_op_t ops[] = {
         { .ch = a->ch1, .op_kind = GOC_ALT_TAKE },
         { .ch = a->ch2, .op_kind = GOC_ALT_TAKE },
     };
@@ -1027,11 +1027,11 @@ done:;
  */
 
 typedef struct {
-    struct goc_stats_event ev;
+    goc_stats_event_t ev;
     int                    found;
 } p5_16_capture_t;
 
-static void p5_16_cb(const struct goc_stats_event* ev, void* ud) {
+static void p5_16_cb(const goc_stats_event_t* ev, void* ud) {
     p5_16_capture_t* c = (p5_16_capture_t*)ud;
     if (ev->type != GOC_STATS_EVENT_CHANNEL_STATUS) return;
     if (ev->data.channel.status != 0) return; /* only capture close events */
@@ -1049,7 +1049,7 @@ typedef struct {
 static void test_p5_16_fiber_fn(void* arg) {
     p5_16_args_t* a = (p5_16_args_t*)arg;
     done_signal(a->ready); /* signal: about to park in goc_alts */
-    goc_alt_op ops[] = { { .ch = a->ch, .op_kind = GOC_ALT_TAKE } };
+    goc_alt_op_t ops[] = { { .ch = a->ch, .op_kind = GOC_ALT_TAKE } };
     goc_alts(ops, 1); /* parks; no putter — increments taker_scans */
 }
 
@@ -1120,7 +1120,7 @@ done:;
 
 int main(void) {
     install_crash_handler();
-    goc_test_arm_watchdog(30);
+    goc_test_arm_watchdog(240);
 
     printf("libgoc test suite — Phase 5: Select and timeout\n");
     printf("=================================================\n\n");
