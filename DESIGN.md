@@ -86,7 +86,7 @@ libgoc/
 │   ├── test_p01_foundation.c        # Phase 1  — Foundation
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
-│   ├── test_goc_http.c              # Component — goc_http HTTP server/client
+│   ├── test_p11_http.c              # Phase 11 — HTTP server/client (goc_http)
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
 │   ├── test_p04_callbacks.c         # Phase 4  — Callbacks
@@ -143,7 +143,7 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 | `test_p01_foundation` … `test_p10_io` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_stats` | executable | Component test for `goc_stats`; always compiled with `GOC_ENABLE_STATS` and `src/goc_stats.c` added directly, regardless of the `GOC_ENABLE_STATS` CMake option |
-| `test_goc_http` | executable | Component test for `goc_http`; compiled only when `LIBGOC_SERVER=ON` (default) |
+| `test_p11_http` | executable | Phase 11 test for `goc_http`; compiled only when `LIBGOC_SERVER=ON` (default) |
 
 A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, and (when `LIBGOC_SERVER` is ON) `vendor/picohttpparser/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_shared`, `goc_asan`, `goc_tsan`) are configured through this function.
 
@@ -1692,10 +1692,10 @@ Runs a build matrix across four configurations:
 
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `macos-latest` | *(none — canary build)* | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `windows-latest` | *(none — canary build)* | P1–P7, P9–P10, `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P10), `test_goc_array`, `test_goc_stats`, `test_goc_http` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9–P11, `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 

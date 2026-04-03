@@ -1,5 +1,5 @@
 /*
- * tests/test_goc_http.c — Phase 11: HTTP server and client tests
+ * tests/test_p11_http.c — Phase 11: HTTP server and client tests
  *
  * Verifies the goc_http HTTP library declared in goc_http.h.
  * Tests run a real HTTP server on loopback ports and make real HTTP client
@@ -7,7 +7,7 @@
  *
  * Build:  cmake -B build && cmake --build build
  * Run:    ctest --test-dir build --output-on-failure
- *         ./build/test_goc_http
+ *         ./build/test_p11_http
  *
  * Test coverage:
  *

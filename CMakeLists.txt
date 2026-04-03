@@ -211,7 +211,7 @@ file(GLOB TEST_SOURCES "tests/test_p*.c" "tests/test_goc_*.c")
 
 # Exclude the HTTP test when LIBGOC_SERVER is disabled.
 if(NOT LIBGOC_SERVER)
-    list(FILTER TEST_SOURCES EXCLUDE REGEX "test_goc_http\.c$")
+    list(FILTER TEST_SOURCES EXCLUDE REGEX "test_p11_http\.c$")
 endif()
 
 foreach(test_src IN LISTS TEST_SOURCES)
@@ -276,7 +276,7 @@ endforeach()
 # exceed the default ctest --timeout on slow CI runners (e.g. Windows, vmem, macOS).
 # Override the per-test timeout to give them enough headroom.
 set_tests_properties(test_goc_stats             PROPERTIES TIMEOUT 180)
-set_tests_properties(test_goc_http              PROPERTIES TIMEOUT 540)
+set_tests_properties(test_p11_http              PROPERTIES TIMEOUT 540)
 set_tests_properties(test_p03_channel_io        PROPERTIES TIMEOUT 180)
 set_tests_properties(test_p05_select_timeout    PROPERTIES TIMEOUT 300)
 
