@@ -15,6 +15,7 @@
 
 ## Table of Contents
 
+- [Ping-Pong Example](#ping-pong-example)
 - [Design](#design)
 - [Thread Safety](#thread-safety)
 - [Status Codes](#status-codes)
@@ -25,7 +26,99 @@
 - [4. Sending Responses](#4-sending-responses)
 - [5. Middleware](#5-middleware)
 - [6. HTTP Client](#6-http-client)
-- [Ping-Pong Example](#ping-pong-example)
+
+---
+
+## Ping-Pong Example
+
+Two HTTP servers bounce a counter back and forth over HTTP.
+
+- **Server A** (port 8080): on `POST /ping`, reads the counter from the body,
+  increments it, and POSTs to server B. When the round limit is reached it
+  responds `200` to its caller and stops.
+- **Server B** (port 8081): on `POST /ping`, reads the counter, increments it,
+  and POSTs back to server A.
+- `main_fiber` sets up both servers, fires the first request, then waits on a
+  done-channel that server A closes when finished.
+- Both servers share the default pool.
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "goc.h"
+#include "goc_http.h"
+
+#define ROUNDS   10000
+#define ADDR_A   "http://127.0.0.1:8080/ping"
+#define ADDR_B   "http://127.0.0.1:8081/ping"
+
+static goc_chan* done;   /* closed by server A when counter reaches ROUNDS */
+
+/* Server A handler: receives counter, responds, forwards to B (or stops). */
+static void handler_a(goc_http_ctx_t* ctx) {
+    int n = atoi(goc_http_server_body_str(ctx));
+    goc_chan* resp_ch = goc_http_server_respond(ctx, 200, "text/plain", "ok");
+    goc_take(resp_ch);
+
+    if (n >= ROUNDS) {
+        goc_close(done);
+        return;
+    }
+
+    char* msg = goc_sprintf("%d", n + 1);
+    goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
+    goc_http_post(ADDR_B, "text/plain", msg, fwd_opts);
+}
+
+/* Server B handler: receives counter, responds, forwards to A. */
+static void handler_b(goc_http_ctx_t* ctx) {
+    int n = atoi(goc_http_server_body_str(ctx));
+    goc_chan* resp_ch = goc_http_server_respond(ctx, 200, "text/plain", "ok");
+    goc_take(resp_ch);
+
+    char* msg = goc_sprintf("%d", n + 1);
+    goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
+    goc_http_post(ADDR_A, "text/plain", msg, fwd_opts);
+}
+
+static void main_fiber(void* _) {
+    done = goc_chan_make(0);
+
+    goc_http_server_opts_t* opts_a = goc_http_server_opts();
+    goc_http_server_t* a = goc_http_server_make(opts_a);
+    goc_http_server_route(a, "POST", "/ping", handler_a);
+    goc_chan* ready_a = goc_http_server_listen(a, "127.0.0.1", 8080);
+
+    goc_http_server_opts_t* opts_b = goc_http_server_opts();
+    goc_http_server_t* b = goc_http_server_make(opts_b);
+    goc_http_server_route(b, "POST", "/ping", handler_b);
+    goc_chan* ready_b = goc_http_server_listen(b, "127.0.0.1", 8081);
+
+    /* Wait for both servers to be ready before sending the first request. */
+    goc_take(ready_a);
+    goc_take(ready_b);
+
+    goc_http_request_opts_t* start_opts = goc_http_request_opts();
+    goc_http_post(ADDR_A, "text/plain", "0", start_opts);
+
+    goc_take(done);
+
+    goc_chan* close_a = goc_http_server_close(a);
+    goc_chan* close_b = goc_http_server_close(b);
+    goc_take(close_a);
+    goc_take(close_b);
+
+    printf("ping-pong: %d round trips complete\n", ROUNDS);
+}
+
+int main(void) {
+    goc_init();
+    goc_go(main_fiber, NULL);
+    goc_shutdown();
+    return 0;
+}
+```
 
 ---
 
@@ -319,13 +412,13 @@ parallel and awaited with `goc_alts` or `goc_take_all`:
 
 ```c
 goc_http_request_opts_t* opts1 = goc_http_request_opts();
-goc_http_request_opts_t* opts2 = goc_http_request_opts();
 goc_chan* c1 = goc_http_get(URL_A, opts1);
+
+goc_http_request_opts_t* opts2 = goc_http_request_opts();
 goc_chan* c2 = goc_http_get(URL_B, opts2);
-goc_val_t* v1 = goc_take(c1);
-goc_val_t* v2 = goc_take(c2);
-goc_http_response_t* r1 = (goc_http_response_t*)v1->val;
-goc_http_response_t* r2 = (goc_http_response_t*)v2->val;
+
+goc_http_response_t* r1 = goc_take(c1)->val;
+goc_http_response_t* r2 = goc_take(c2)->val;
 ```
 
 ### Options
@@ -378,94 +471,3 @@ goc_http_response_t* post_r = (goc_http_response_t*)post_val->val;
 
 ---
 
-## Ping-Pong Example
-
-Two HTTP servers bounce a counter back and forth over HTTP.
-
-- **Server A** (port 8080): on `POST /ping`, reads the counter from the body,
-  increments it, and POSTs to server B. When the round limit is reached it
-  responds `200` to its caller and stops.
-- **Server B** (port 8081): on `POST /ping`, reads the counter, increments it,
-  and POSTs back to server A.
-- `main_fiber` sets up both servers, fires the first request, then waits on a
-  done-channel that server A closes when finished.
-- Both servers share the default pool.
-
-```c
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include "goc.h"
-#include "goc_http.h"
-
-#define ROUNDS   10000
-#define ADDR_A   "http://127.0.0.1:8080/ping"
-#define ADDR_B   "http://127.0.0.1:8081/ping"
-
-static goc_chan* done;   /* closed by server A when counter reaches ROUNDS */
-
-/* Server A handler: receives counter, responds, forwards to B (or stops). */
-static void handler_a(goc_http_ctx_t* ctx) {
-    int n = atoi(goc_http_server_body_str(ctx));
-    goc_chan* resp_ch = goc_http_server_respond(ctx, 200, "text/plain", "ok");
-    goc_take(resp_ch);
-
-    if (n >= ROUNDS) {
-        goc_close(done);
-        return;
-    }
-
-    char* msg = goc_sprintf("%d", n + 1);
-    goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
-    goc_http_post(ADDR_B, "text/plain", msg, fwd_opts);
-}
-
-/* Server B handler: receives counter, responds, forwards to A. */
-static void handler_b(goc_http_ctx_t* ctx) {
-    int n = atoi(goc_http_server_body_str(ctx));
-    goc_chan* resp_ch = goc_http_server_respond(ctx, 200, "text/plain", "ok");
-    goc_take(resp_ch);
-
-    char* msg = goc_sprintf("%d", n + 1);
-    goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
-    goc_http_post(ADDR_A, "text/plain", msg, fwd_opts);
-}
-
-static void main_fiber(void* _) {
-    done = goc_chan_make(0);
-
-    goc_http_server_opts_t* opts_a = goc_http_server_opts();
-    goc_http_server_t* a = goc_http_server_make(opts_a);
-    goc_http_server_opts_t* opts_b = goc_http_server_opts();
-    goc_http_server_t* b = goc_http_server_make(opts_b);
-
-    goc_http_server_route(a, "POST", "/ping", handler_a);
-    goc_http_server_route(b, "POST", "/ping", handler_b);
-
-    goc_chan* ready_a = goc_http_server_listen(a, "127.0.0.1", 8080);
-    goc_chan* ready_b = goc_http_server_listen(b, "127.0.0.1", 8081);
-
-    /* Wait for both servers to be ready before sending the first request. */
-    goc_take(ready_a);
-    goc_take(ready_b);
-
-    goc_http_request_opts_t* start_opts = goc_http_request_opts();
-    goc_http_post(ADDR_A, "text/plain", "0", start_opts);
-
-    goc_take(done);
-
-    goc_chan* close_a = goc_http_server_close(a);
-    goc_chan* close_b = goc_http_server_close(b);
-    goc_take(close_a);
-    goc_take(close_b);
-
-    printf("ping-pong: %d round trips complete\n", ROUNDS);
-}
-
-int main(void) {
-    goc_init();
-    goc_go(main_fiber, NULL);
-    goc_shutdown();
-    return 0;
-}
-```

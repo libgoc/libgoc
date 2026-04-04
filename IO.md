@@ -15,6 +15,7 @@
 
 ## Table of Contents
 
+- [Example: Open, Write, Close](#example-open-write-close)
 - [Design](#design)
 - [Thread Safety](#thread-safety)
 - [Status Codes](#status-codes)
@@ -31,6 +32,41 @@
 - [9. Process](#9-process)
 - [10. Misc](#10-misc)
 - [11. GC handle lifetime management](#11-gc-handle-lifetime-management)
+
+---
+
+## Example: Open, Write, Close
+
+```c
+#include "goc.h"
+#include "goc_io.h"
+
+static void main_fiber(void* _) {
+    /* Open */
+    goc_chan* done_opening = goc_io_fs_open("/tmp/hello.txt",
+                                            UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC,
+                                            0644);
+    goc_val_t* vfd = goc_take(done_opening);
+    uv_file fd = goc_unbox_int(vfd->val);
+    if (fd < 0) return;
+
+    /* Write */
+    const char data[] = "hello, libgoc\n";
+    goc_chan* done_writing = goc_io_fs_write(fd, data, sizeof(data) - 1, 0);
+    goc_take(done_writing);
+
+    /* Close */
+    goc_chan* done_closing = goc_io_fs_close(fd);
+    goc_take(done_closing);
+}
+
+int main(void) {
+    goc_init();
+    goc_go(main_fiber, NULL);
+    goc_shutdown();
+    return 0;
+}
+```
 
 ---
 
@@ -391,37 +427,6 @@ All file-system functions are safe to call from any context (fiber or OS thread)
 | `goc_io_fs_fsync` | `goc_chan* goc_io_fs_fsync(uv_file file)` | Dispatch `uv_fs_fsync`; delivers `goc_box_int(status)`. |
 | `goc_io_fs_fdatasync` | `goc_chan* goc_io_fs_fdatasync(uv_file file)` | Dispatch `uv_fs_fdatasync`; delivers `goc_box_int(status)`. |
 | `goc_io_fs_statfs` | `goc_chan* goc_io_fs_statfs(const char* path)` | Dispatch `uv_fs_statfs`; delivers `goc_io_fs_statfs_t*`. |
-
-**Example — open, write, read, close (fiber context)**
-
-```c
-#include "goc.h"
-#include "goc_io.h"
-
-static void file_fiber(void* _) {
-    /* Open */
-    goc_val_t* vfd = goc_take(goc_io_fs_open("/tmp/hello.txt",
-                                              UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC,
-                                              0644));
-    uv_file fd = (uv_file)goc_unbox_int(vfd->val);
-    if (fd < 0) return;
-
-    /* Write */
-    const char data[] = "hello, libgoc\n";
-    goc_val_t* vw = goc_take(goc_io_fs_write(fd, data, sizeof(data) - 1, 0));
-    (void)vw;
-
-    /* Close */
-    goc_take(goc_io_fs_close(fd));
-}
-
-int main(void) {
-    goc_init();
-    goc_go(file_fiber, NULL);
-    goc_shutdown();
-    return 0;
-}
-```
 
 ---
 

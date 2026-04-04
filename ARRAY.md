@@ -8,8 +8,9 @@ Elements are stored as `void*` pointers (type-erased, consistent with channels a
 
 ## Table of Contents
 
-1. [Design](#design)
-2. [API Reference](#api-reference)
+1. [Quick Example](#quick-example)
+2. [Design](#design)
+3. [API Reference](#api-reference)
    - [Construction](#construction)
    - [Length](#length)
    - [Random Access](#random-access)
@@ -19,9 +20,33 @@ Elements are stored as `void*` pointers (type-erased, consistent with channels a
    - [Slicing](#slicing)
    - [String Interop](#string-interop)
    - [C-Array Interop](#c-array-interop)
-3. [Complexity Summary](#complexity-summary)
-4. [Thread Safety](#thread-safety)
-5. [Examples](#examples)
+4. [Complexity Summary](#complexity-summary)
+5. [Thread Safety](#thread-safety)
+6. [Examples](#examples)
+
+---
+
+## Quick Example
+
+### Building and traversing an array
+
+```c
+#include "goc_array.h"
+#include <stdio.h>
+
+goc_array* arr = goc_array_make(0);
+
+goc_array_push(arr, goc_box_int(10));
+goc_array_push(arr, goc_box_int(20));
+goc_array_push(arr, goc_box_int(30));
+
+for (size_t i = 0; i < goc_array_len(arr); i++) {
+    printf("%d\n", goc_unbox_int(goc_array_get(arr, i)));
+}
+// 10
+// 20
+// 30
+```
 
 ---
 
@@ -186,26 +211,6 @@ goc_array* goc_array_from(void** items, size_t n);   /* see Construction */
 ---
 
 ## Examples
-
-### Building and traversing an array
-
-```c
-#include "goc_array.h"
-#include <stdio.h>
-
-goc_array* arr = goc_array_make(0);
-
-goc_array_push(arr, goc_box_int(10));
-goc_array_push(arr, goc_box_int(20));
-goc_array_push(arr, goc_box_int(30));
-
-for (size_t i = 0; i < goc_array_len(arr); i++) {
-    printf("%ld\n", (long)goc_unbox_int(goc_array_get(arr, i)));
-}
-// 10
-// 20
-// 30
-```
 
 ### Using as a queue (FIFO)
 
