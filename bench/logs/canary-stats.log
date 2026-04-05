@@ -34,70 +34,88 @@ gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench'
 cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  -DGOC_ENABLE_STATS bench.c /home/divyansh/repos/libgoc/build-bench/libgoc.a -luv -lrt -L/usr/local/lib -lgc -lpthread -ldl  -o bench-libgoc
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 126ms (1577608 round trips/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 647ms (771869 hops/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1082ms (184689 msg/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2847ms (70238 tasks/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 873ms (2590 primes/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 673ms (2968 round trips/s, avg 305.6us p50 299.6us p95 329.6us p99 382.4us, warmup 200)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 31170  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 4
-HTTP server throughput: 38950 requests in 5000ms (7790 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 228146  |  timeouts: 47418 alloc / 0 fired  |  cb-queue hwm: 60
+make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
+cmake -S /home/divyansh/repos/libgoc -B /home/divyansh/repos/libgoc/build-bench -DCMAKE_BUILD_TYPE=Release -DLIBGOC_VMEM=OFF -DGOC_ENABLE_STATS=1
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/divyansh/repos/libgoc/build-bench
+cmake --build /home/divyansh/repos/libgoc/build-bench --target goc
+gmake[1]: Entering directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[2]: Entering directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[3]: Entering directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench'
+[100%] Built target goc
+gmake[3]: Leaving directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[2]: Leaving directory '/home/divyansh/repos/libgoc/build-bench'
+gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench'
+cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  -DGOC_ENABLE_STATS bench.c /home/divyansh/repos/libgoc/build-bench/libgoc.a -luv -lrt -L/usr/local/lib -lgc -lpthread -ldl  -o bench-libgoc
+=== Pool Size: 1 ===
+GOC_POOL_THREADS=1
+Channel ping-pong: 200000 round trips in 128ms (1557767 round trips/s)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Ring benchmark: 500000 hops across 128 tasks in 675ms (740404 hops/s)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1019ms (196118 msg/s)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Spawn idle tasks: 200000 fibers in 2750ms (72723 tasks/s)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 865ms (2615 primes/s)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+HTTP ping-pong: 2000 round trips in 689ms (2901 round trips/s, avg 311.8us p50 307.1us p95 350.1us p99 396.1us, warmup 200)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 31802  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 4
+HTTP server throughput: 41033 requests in 5000ms (8207 req/s, 0 errors, concurrency 32, warmup 1000ms)
+  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 213412  |  timeouts: 49672 alloc / 0 fired  |  cb-queue hwm: 59
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 129ms (1542329 round trips/s)
+Channel ping-pong: 200000 round trips in 128ms (1562135 round trips/s)
   [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 677ms (738131 hops/s)
+Ring benchmark: 500000 hops across 128 tasks in 676ms (739258 hops/s)
   [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1009ms (198144 msg/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1024ms (195172 msg/s)
   [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4106ms (48703 tasks/s)
-  [stats] steal: 112476 attempts / 112473 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 885ms (2555 primes/s)
-  [stats] steal: 112476 attempts / 112473 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 767ms (2607 round trips/s, avg 349.0us p50 301.9us p95 436.0us p99 502.9us, warmup 200)
-  [stats] steal: 156529 attempts / 115327 successes / 41202 misses  |  idle wakeups: 38342  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 39159 requests in 5000ms (7832 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 542231 attempts / 131987 successes / 410244 misses  |  idle wakeups: 390652  |  timeouts: 47422 alloc / 0 fired  |  cb-queue hwm: 113
+Spawn idle tasks: 200000 fibers in 3967ms (50411 tasks/s)
+  [stats] steal: 112773 attempts / 112770 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 814ms (2776 primes/s)
+  [stats] steal: 112773 attempts / 112770 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+HTTP ping-pong: 2000 round trips in 805ms (2484 round trips/s, avg 365.4us p50 320.7us p95 474.5us p99 529.1us, warmup 200)
+  [stats] steal: 157450 attempts / 115598 successes / 41852 misses  |  idle wakeups: 39021  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
+HTTP server throughput: 39340 requests in 5000ms (7868 req/s, 0 errors, concurrency 32, warmup 1000ms)
+  [stats] steal: 497260 attempts / 130635 successes / 366625 misses  |  idle wakeups: 347967  |  timeouts: 47516 alloc / 0 fired  |  cb-queue hwm: 61
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 116ms (1718605 round trips/s)
+Channel ping-pong: 200000 round trips in 113ms (1764665 round trips/s)
   [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 514ms (972427 hops/s)
+Ring benchmark: 500000 hops across 128 tasks in 486ms (1028759 hops/s)
   [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1089ms (183538 msg/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1007ms (198523 msg/s)
   [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 6412ms (31188 tasks/s)
-  [stats] steal: 119191 attempts / 119175 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 859ms (2632 primes/s)
-  [stats] steal: 119191 attempts / 119175 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 794ms (2518 round trips/s, avg 360.5us p50 387.2us p95 443.8us p99 496.8us, warmup 200)
-  [stats] steal: 246985 attempts / 122357 successes / 124628 misses  |  idle wakeups: 39418  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 38633 requests in 5000ms (7727 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 1590383 attempts / 163760 successes / 1426623 misses  |  idle wakeups: 447535  |  timeouts: 46423 alloc / 0 fired  |  cb-queue hwm: 44
+Spawn idle tasks: 200000 fibers in 3959ms (50507 tasks/s)
+  [stats] steal: 113170 attempts / 113152 successes / 18 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 864ms (2617 primes/s)
+  [stats] steal: 113170 attempts / 113152 successes / 18 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+HTTP ping-pong: 2000 round trips in 988ms (2024 round trips/s, avg 447.2us p50 442.5us p95 623.7us p99 665.7us, warmup 200)
+  [stats] steal: 238299 attempts / 115216 successes / 123083 misses  |  idle wakeups: 39650  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
+HTTP server throughput: 36278 requests in 5000ms (7256 req/s, 0 errors, concurrency 32, warmup 1000ms)
+  [stats] steal: 1477648 attempts / 155046 successes / 1322602 misses  |  idle wakeups: 414317  |  timeouts: 43821 alloc / 0 fired  |  cb-queue hwm: 57
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 102ms (1959812 round trips/s)
+Channel ping-pong: 200000 round trips in 102ms (1942858 round trips/s)
   [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 525ms (951500 hops/s)
+Ring benchmark: 500000 hops across 128 tasks in 520ms (961378 hops/s)
   [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1235ms (161849 msg/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 928ms (215291 msg/s)
   [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4017ms (49779 tasks/s)
-  [stats] steal: 114765 attempts / 114699 successes / 66 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 973ms (2324 primes/s)
-  [stats] steal: 114765 attempts / 114699 successes / 66 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 882ms (2265 round trips/s, avg 403.7us p50 415.6us p95 461.3us p99 499.7us, warmup 200)
-  [stats] steal: 423778 attempts / 117783 successes / 305995 misses  |  idle wakeups: 41927  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 36624 requests in 5000ms (7325 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 3418135 attempts / 162045 successes / 3256090 misses  |  idle wakeups: 439922  |  timeouts: 44433 alloc / 0 fired  |  cb-queue hwm: 86
+Spawn idle tasks: 200000 fibers in 4136ms (48346 tasks/s)
+  [stats] steal: 118779 attempts / 118707 successes / 72 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+Prime sieve: 2262 primes up to 20000 in 828ms (2731 primes/s)
+  [stats] steal: 118779 attempts / 118707 successes / 72 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+HTTP ping-pong: 2000 round trips in 1192ms (1677 round trips/s, avg 538.9us p50 538.9us p95 693.1us p99 723.0us, warmup 200)
+  [stats] steal: 413240 attempts / 120308 successes / 292932 misses  |  idle wakeups: 40925  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
+HTTP server throughput: 34781 requests in 5000ms (6956 req/s, 0 errors, concurrency 32, warmup 1000ms)
+  [stats] steal: 3204168 attempts / 166830 successes / 3037338 misses  |  idle wakeups: 408328  |  timeouts: 41825 alloc / 0 fired  |  cb-queue hwm: 56
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'

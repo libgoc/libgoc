@@ -96,8 +96,9 @@ static void cb_queue_init(void)
     g_cb_queue.tail = sentinel;
 }
 
-/* Enqueue an entry onto g_cb_queue (producer — any thread). */
-static void cb_queue_push(mpsc_node *node)
+/* Enqueue an entry onto g_cb_queue (producer — any thread).
+ * Returns the queue depth *before* this push (0 means queue was empty). */
+static size_t cb_queue_push(mpsc_node *node)
 {
     atomic_store_explicit(&node->next, NULL, memory_order_relaxed);
     /* Vyukov: exchange head and link previous head's next to this node. */
@@ -106,7 +107,8 @@ static void cb_queue_push(mpsc_node *node)
     atomic_store_explicit(&prev->next, node, memory_order_release);
 
     /* Update depth and high-water mark (relaxed — approximate is fine). */
-    size_t depth = atomic_fetch_add_explicit(&g_cb_queue_depth, 1, memory_order_relaxed) + 1;
+    size_t prev_depth = atomic_fetch_add_explicit(&g_cb_queue_depth, 1, memory_order_relaxed);
+    size_t depth = prev_depth + 1;
     size_t hwm   = atomic_load_explicit(&g_cb_queue_hwm, memory_order_relaxed);
     while (depth > hwm) {
         if (atomic_compare_exchange_weak_explicit(&g_cb_queue_hwm, &hwm, depth,
@@ -114,6 +116,7 @@ static void cb_queue_push(mpsc_node *node)
                                                   memory_order_relaxed))
             break;
     }
+    return prev_depth;
 }
 
 /* Dequeue from g_cb_queue (consumer — loop thread only).
@@ -148,20 +151,22 @@ void post_callback(goc_entry *entry, void *value)
 
     mpsc_node *node = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
     node->entry = entry;
-    cb_queue_push(node);
+    size_t prev_depth = cb_queue_push(node);
 
     uv_async_t *w = atomic_load_explicit(&g_wakeup, memory_order_acquire);
-    GOC_DBG("post_callback: entry=%p ch=%p is_put=%d wakeup=%p depth_after_push=%zu\n",
-            (void*)entry, (void*)entry->ch, (int)entry->is_put, (void*)w,
-            atomic_load_explicit(&g_cb_queue_depth, memory_order_relaxed));
+    GOC_DBG("post_callback: entry=%p ch=%p is_put=%d wakeup=%p prev_depth=%zu\n",
+            (void*)entry, (void*)entry->ch, (int)entry->is_put, (void*)w, prev_depth);
 
-    if (w) {
+    /* Coalescing: skip uv_async_send when the queue was already non-empty.
+     * A prior send is already in flight; on_wakeup will drain everything
+     * enqueued up to that point, including this entry. */
+    if (w && prev_depth == 0) {
         int rc = uv_async_send(w);
         GOC_DBG("post_callback: SENT rc=%d wakeup=%p\n", rc, (void*)w);
         if (rc < 0) {
             GOC_DBG("post_callback: uv_async_send FAILED wakeup=%p rc=%d\n", (void*)w, rc);
         }
-    } else if (on_loop_thread()) {
+    } else if (!w && on_loop_thread()) {
         /* Shutdown/teardown edge: wakeup handle may already be gone. Drain
          * directly so loop-thread callbacks are not stranded. */
         drain_cb_queue_guarded();

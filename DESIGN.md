@@ -981,9 +981,10 @@ When a pool thread wakes a callback entry, it needs to post work back safely. A 
 /* init */
 uv_async_init(loop, &wakeup_handle, on_wakeup);
 
-/* pool thread: enqueue callback entry, then signal loop */
-mpsc_push(&callback_queue, entry);
-uv_async_send(&wakeup_handle);
+/* pool thread: enqueue callback entry, signal loop only on first enqueue */
+size_t prev_depth = mpsc_push(&callback_queue, entry);
+if (prev_depth == 0)
+    uv_async_send(&wakeup_handle);  /* coalesced: skip if queue already non-empty */
 
 /* loop thread: drain queue, invoke callbacks */
 static void on_wakeup(uv_async_t* h) {
@@ -999,14 +1000,17 @@ static void on_wakeup(uv_async_t* h) {
 
 `uv_async_send` is the only libuv call made from pool threads. It is explicitly safe to call from any thread.
 
-> **`post_callback` guards against calling `uv_async_send` on a closed handle using an atomic acquire/release pair.** `g_wakeup` is declared `_Atomic(uv_async_t *)`. `goc_init` stores the handle pointer with `memory_order_release` after `uv_async_init` completes. `on_wakeup_closed` stores `NULL` with `memory_order_release` once the handle is fully closed. `post_callback` reads with `memory_order_acquire`, guaranteeing it either sees a fully-initialised handle or NULL — never a partial or stale pointer. A pool worker woken by `goc_shutdown`'s Step 1 `goc_close` loop may call `post_callback` after the handle is closed; the acquire load returns NULL and the send is skipped. The entry is already safely enqueued; `on_shutdown_signal` drains the queue before the loop exits:
+> **`post_callback` coalesces wakeup signals: `uv_async_send` is called only when the queue transitions from empty to non-empty (pre-push depth == 0).** When depth > 0 a prior send is already in flight and libuv will fire `on_wakeup` to drain everything in the queue at that point, including the newly enqueued entry. This eliminates the per-enqueue `uv_async_send` cost within a burst, directly reducing idle wakeup count.
+>
+> **`post_callback` also guards against calling `uv_async_send` on a closed handle using an atomic acquire/release pair.** `g_wakeup` is declared `_Atomic(uv_async_t *)`. `goc_init` stores the handle pointer with `memory_order_release` after `uv_async_init` completes. `on_wakeup_closed` stores `NULL` with `memory_order_release` once the handle is fully closed. `post_callback` reads with `memory_order_acquire`, guaranteeing it either sees a fully-initialised handle or NULL — never a partial or stale pointer. A pool worker woken by `goc_shutdown`'s Step 1 `goc_close` loop may call `post_callback` after the handle is closed; the acquire load returns NULL and the send is skipped. The entry is already safely enqueued; `on_shutdown_signal` drains the queue before the loop exits:
 >
 > ```c
 > void post_callback(goc_entry* e, void* value) {
->     /* ... push to g_cb_queue ... */
+>     /* ... push to g_cb_queue, returns pre-push depth ... */
+>     size_t prev_depth = mpsc_push(&g_cb_queue, node);
 >     uv_async_t* wakeup = atomic_load_explicit(&g_wakeup, memory_order_acquire);
->     if (wakeup)
->         uv_async_send(wakeup);
+>     if (wakeup && prev_depth == 0)
+>         uv_async_send(wakeup);  /* first enqueue in this burst — wake loop thread */
 > }
 > ```
 
