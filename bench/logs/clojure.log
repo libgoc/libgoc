@@ -1,114 +1,126 @@
 make: Entering directory '/home/divyansh/repos/libgoc/bench/clojure'
 === Pool Size: 1 ===
 clojure -J-Dclojure.core.async.pool-size=1 -M -m bench.core
-CLOJURE_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 139ms (1438537 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 158ms (3151742 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 590ms (338579 msg/s)
-Spawn idle tasks: 200000 go-blocks in 262ms (762292 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1077ms (2099 primes/s)
+Channel ping-pong: 200000 round trips in 128ms (1554223 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 158ms (3154408 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 631ms (316930 msg/s)
+Spawn idle tasks: 200000 go-blocks in 344ms (580865 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1128ms (2004 primes/s)
+HTTP ping-pong: 2000 round trips in 871ms (2296 round trips/s, avg 432.1us p50 392.0us p95 509.8us p99 697.7us, warmup 200)
+HTTP server throughput: 171547 requests in 5000ms (34309 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 clojure -J-Dclojure.core.async.pool-size=2 -M -m bench.core
-CLOJURE_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 220ms (906763 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 247ms (2018366 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 538ms (371580 msg/s)
-Spawn idle tasks: 200000 go-blocks in 225ms (888865 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 977ms (2314 primes/s)
+Channel ping-pong: 200000 round trips in 209ms (953282 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 282ms (1767663 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 537ms (372238 msg/s)
+Spawn idle tasks: 200000 go-blocks in 232ms (858573 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1044ms (2167 primes/s)
+HTTP ping-pong: 2000 round trips in 840ms (2379 round trips/s, avg 417.1us p50 369.2us p95 475.9us p99 660.4us, warmup 200)
+HTTP server throughput: 184982 requests in 5000ms (36996 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 clojure -J-Dclojure.core.async.pool-size=4 -M -m bench.core
-CLOJURE_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 215ms (927094 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 244ms (2041579 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 538ms (371527 msg/s)
-Spawn idle tasks: 200000 go-blocks in 240ms (831559 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1263ms (1791 primes/s)
+Channel ping-pong: 200000 round trips in 193ms (1035511 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 218ms (2290974 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 546ms (365976 msg/s)
+Spawn idle tasks: 200000 go-blocks in 234ms (851906 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1303ms (1735 primes/s)
+HTTP ping-pong: 2000 round trips in 865ms (2311 round trips/s, avg 429.4us p50 378.6us p95 508.6us p99 657.0us, warmup 200)
+HTTP server throughput: 188561 requests in 5000ms (37712 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 clojure -J-Dclojure.core.async.pool-size=8 -M -m bench.core
-CLOJURE_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 257ms (777435 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 245ms (2039333 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 551ms (362582 msg/s)
-Spawn idle tasks: 200000 go-blocks in 266ms (750159 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1447ms (1563 primes/s)
+Channel ping-pong: 200000 round trips in 234ms (854514 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 248ms (2012361 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 572ms (349189 msg/s)
+Spawn idle tasks: 200000 go-blocks in 333ms (598840 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1410ms (1603 primes/s)
+HTTP ping-pong: 2000 round trips in 828ms (2415 round trips/s, avg 410.9us p50 356.7us p95 473.3us p99 869.3us, warmup 200)
+HTTP server throughput: 190238 requests in 5000ms (38048 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/clojure'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/clojure'
 === Pool Size: 1 ===
 clojure -J-Dclojure.core.async.pool-size=1 -M -m bench.core
-CLOJURE_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 135ms (1475056 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 172ms (2903334 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 579ms (344863 msg/s)
-Spawn idle tasks: 200000 go-blocks in 251ms (793753 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1366ms (1656 primes/s)
+Channel ping-pong: 200000 round trips in 133ms (1501366 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 162ms (3084642 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 598ms (334085 msg/s)
+Spawn idle tasks: 200000 go-blocks in 227ms (879620 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1060ms (2133 primes/s)
+HTTP ping-pong: 2000 round trips in 852ms (2345 round trips/s, avg 423.1us p50 387.7us p95 480.0us p99 627.7us, warmup 200)
+HTTP server throughput: 191038 requests in 5000ms (38208 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 clojure -J-Dclojure.core.async.pool-size=2 -M -m bench.core
-CLOJURE_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 250ms (798905 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 255ms (1959171 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 531ms (376259 msg/s)
-Spawn idle tasks: 200000 go-blocks in 217ms (917459 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1052ms (2148 primes/s)
+Channel ping-pong: 200000 round trips in 209ms (953979 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 258ms (1935692 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 543ms (367981 msg/s)
+Spawn idle tasks: 200000 go-blocks in 251ms (795787 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1113ms (2032 primes/s)
+HTTP ping-pong: 2000 round trips in 917ms (2180 round trips/s, avg 455.1us p50 398.3us p95 539.2us p99 952.4us, warmup 200)
+HTTP server throughput: 185558 requests in 5000ms (37112 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 clojure -J-Dclojure.core.async.pool-size=4 -M -m bench.core
-CLOJURE_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 234ms (854186 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 243ms (2050558 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 528ms (378694 msg/s)
-Spawn idle tasks: 200000 go-blocks in 237ms (842494 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1309ms (1727 primes/s)
+Channel ping-pong: 200000 round trips in 192ms (1041368 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 230ms (2166573 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 527ms (379341 msg/s)
+Spawn idle tasks: 200000 go-blocks in 245ms (815510 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1263ms (1790 primes/s)
+HTTP ping-pong: 2000 round trips in 821ms (2436 round trips/s, avg 407.3us p50 353.4us p95 487.6us p99 637.4us, warmup 200)
+HTTP server throughput: 190162 requests in 5000ms (38032 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 clojure -J-Dclojure.core.async.pool-size=8 -M -m bench.core
-CLOJURE_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 231ms (863775 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 244ms (2043519 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 541ms (369592 msg/s)
-Spawn idle tasks: 200000 go-blocks in 240ms (831633 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1253ms (1805 primes/s)
+Channel ping-pong: 200000 round trips in 225ms (885469 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 258ms (1936842 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 589ms (339209 msg/s)
+Spawn idle tasks: 200000 go-blocks in 253ms (789762 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1236ms (1829 primes/s)
+HTTP ping-pong: 2000 round trips in 842ms (2375 round trips/s, avg 417.8us p50 370.9us p95 492.9us p99 612.4us, warmup 200)
+HTTP server throughput: 184833 requests in 5000ms (36967 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/clojure'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/clojure'
 === Pool Size: 1 ===
 clojure -J-Dclojure.core.async.pool-size=1 -M -m bench.core
-CLOJURE_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 142ms (1403666 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 166ms (2998850 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 591ms (338063 msg/s)
-Spawn idle tasks: 200000 go-blocks in 245ms (815298 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1173ms (1928 primes/s)
+Channel ping-pong: 200000 round trips in 129ms (1547662 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 159ms (3138948 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 598ms (334225 msg/s)
+Spawn idle tasks: 200000 go-blocks in 238ms (838555 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1136ms (1990 primes/s)
+HTTP ping-pong: 2000 round trips in 849ms (2354 round trips/s, avg 421.5us p50 375.1us p95 506.4us p99 627.8us, warmup 200)
+HTTP server throughput: 184199 requests in 5000ms (36840 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 clojure -J-Dclojure.core.async.pool-size=2 -M -m bench.core
-CLOJURE_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 218ms (917285 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 270ms (1849240 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 550ms (363153 msg/s)
-Spawn idle tasks: 200000 go-blocks in 251ms (794636 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1119ms (2021 primes/s)
+Channel ping-pong: 200000 round trips in 194ms (1026913 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 272ms (1835635 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 559ms (357510 msg/s)
+Spawn idle tasks: 200000 go-blocks in 235ms (850090 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 942ms (2400 primes/s)
+HTTP ping-pong: 2000 round trips in 854ms (2341 round trips/s, avg 424.0us p50 379.7us p95 495.2us p99 618.7us, warmup 200)
+HTTP server throughput: 185863 requests in 5000ms (37173 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 clojure -J-Dclojure.core.async.pool-size=4 -M -m bench.core
-CLOJURE_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 216ms (922041 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 220ms (2269710 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 539ms (370819 msg/s)
-Spawn idle tasks: 200000 go-blocks in 243ms (819986 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1220ms (1853 primes/s)
+Channel ping-pong: 200000 round trips in 186ms (1071377 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 202ms (2470090 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 543ms (367653 msg/s)
+Spawn idle tasks: 200000 go-blocks in 261ms (763939 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1210ms (1868 primes/s)
+HTTP ping-pong: 2000 round trips in 878ms (2278 round trips/s, avg 435.7us p50 404.0us p95 491.1us p99 605.0us, warmup 200)
+HTTP server throughput: 184600 requests in 5000ms (36920 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 clojure -J-Dclojure.core.async.pool-size=8 -M -m bench.core
-CLOJURE_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 261ms (765616 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 240ms (2075803 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 543ms (367855 msg/s)
-Spawn idle tasks: 200000 go-blocks in 220ms (905371 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1345ms (1681 primes/s)
+Channel ping-pong: 200000 round trips in 207ms (965557 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 253ms (1971886 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 546ms (365949 msg/s)
+Spawn idle tasks: 200000 go-blocks in 264ms (756515 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1354ms (1670 primes/s)
+HTTP ping-pong: 2000 round trips in 862ms (2320 round trips/s, avg 427.7us p50 381.6us p95 473.1us p99 644.0us, warmup 200)
+HTTP server throughput: 182503 requests in 5000ms (36501 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/clojure'

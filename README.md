@@ -36,7 +36,6 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 **Also see:**
 - [Design Doc](./DESIGN.md)
 - [Benchmarks](/bench/README.md)
-- [Optimization Plan](./OPTIMIZATION.md)
 
 ---
 

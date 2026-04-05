@@ -110,10 +110,6 @@ make -C clojure run-all
 
 <!-- BEGIN AUTO BENCH REPORT -->
 
-> Note: the comparative tables below were generated before adding benchmarks
-> #6 (HTTP ping-pong) and #7 (HTTP server throughput), so they currently cover
-> the first five CSP benchmarks only.
-
 This report evaluates the performance of **libgoc canary**, **libgoc vmem**, and **Clojure core.async** relative to the **Go** runtime. All figures represent operations per second; the multiplier in parentheses indicates performance relative to the Go baseline (e.g., **1.10x** means 10% faster, **0.50x** means half the speed).
 
 ---
@@ -123,50 +119,70 @@ This report evaluates the performance of **libgoc canary**, **libgoc vmem**, and
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2,462,723 | 1,600,108 **(0.65x)** | 558,292 **(0.23x)** | 1,475,056 **(0.60x)** |
-| **2** | 2,299,174 | 1,616,540 **(0.70x)** | 555,948 **(0.24x)** | 917,285 **(0.40x)** |
-| **4** | 2,316,612 | 1,825,994 **(0.79x)** | 693,443 **(0.30x)** | 927,094 **(0.40x)** |
-| **8** | 2,305,221 | 2,121,074 **(0.92x)** | 859,841 **(0.37x)** | 863,775 **(0.37x)** |
+| **1** | 2,444,611 | 1,578,329 **(0.65x)** | 565,448 **(0.23x)** | 1,574,662 **(0.64x)** |
+| **2** | 2,297,554 | 1,547,300 **(0.67x)** | 548,104 **(0.24x)** | 1,026,913 **(0.45x)** |
+| **4** | 2,255,150 | 1,708,094 **(0.76x)** | 679,304 **(0.30x)** | 1,071,377 **(0.48x)** |
+| **8** | 2,324,713 | 1,961,411 **(0.84x)** | 861,469 **(0.37x)** | 965,557 **(0.42x)** |
 
 ### Ring (hops/s)
 *Measures message passing latency across a circular topology.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2,394,205 | 734,025 **(0.31x)** | 35,110 **(0.01x)** | 3,151,742 **(1.32x)** |
-| **2** | 2,278,856 | 691,170 **(0.30x)** | 34,654 **(0.02x)** | 2,018,366 **(0.89x)** |
-| **4** | 2,259,653 | 998,693 **(0.44x)** | 50,900 **(0.02x)** | 2,269,710 **(1.00x)** |
-| **8** | 2,263,918 | 942,573 **(0.42x)** | 49,061 **(0.02x)** | 2,075,803 **(0.92x)** |
+| **1** | 2,410,934 | 762,732 **(0.32x)** | 34,346 **(0.01x)** | 3,154,408 **(1.31x)** |
+| **2** | 2,304,645 | 746,943 **(0.32x)** | 33,915 **(0.01x)** | 1,935,692 **(0.84x)** |
+| **4** | 2,403,568 | 1,019,167 **(0.42x)** | 50,312 **(0.02x)** | 2,470,090 **(1.03x)** |
+| **8** | 2,259,049 | 967,802 **(0.43x)** | 47,827 **(0.02x)** | 2,012,361 **(0.89x)** |
 
 ### Selective receive / fan-out / fan-in (msg/s)
 *Evaluates complex orchestration and selection logic.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 640,172 | 201,047 **(0.31x)** | 241,784 **(0.38x)** | 344,863 **(0.54x)** |
-| **2** | 707,669 | 192,201 **(0.27x)** | 246,297 **(0.35x)** | 376,259 **(0.53x)** |
-| **4** | 755,743 | 198,760 **(0.26x)** | 240,128 **(0.32x)** | 378,694 **(0.50x)** |
-| **8** | 764,424 | 188,333 **(0.25x)** | 242,987 **(0.32x)** | 369,592 **(0.48x)** |
+| **1** | 675,606 | 221,407 **(0.33x)** | 250,848 **(0.37x)** | 334,225 **(0.49x)** |
+| **2** | 694,154 | 196,567 **(0.28x)** | 233,751 **(0.34x)** | 372,238 **(0.54x)** |
+| **4** | 746,758 | 214,383 **(0.29x)** | 225,000 **(0.30x)** | 379,341 **(0.51x)** |
+| **8** | 747,718 | 197,473 **(0.26x)** | 252,645 **(0.34x)** | 365,949 **(0.49x)** |
 
 ### Spawn idle tasks (tasks/s)
 *Tests the efficiency of task creation and scheduling.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 237,190 | 169,533 **(0.71x)** | 66,555 **(0.28x)** | 815,298 **(3.44x)** |
-| **2** | 419,821 | 75,506 **(0.18x)** | 16,195 **(0.04x)** | 917,459 **(2.19x)** |
-| **4** | 563,616 | 76,238 **(0.14x)** | 56,376 **(0.10x)** | 842,494 **(1.49x)** |
-| **8** | 583,660 | 70,784 **(0.12x)** | 56,404 **(0.10x)** | 905,371 **(1.55x)** |
+| **1** | 254,612 | 147,659 **(0.58x)** | 93,269 **(0.37x)** | 879,620 **(3.45x)** |
+| **2** | 454,971 | 68,991 **(0.15x)** | 32,800 **(0.07x)** | 858,573 **(1.89x)** |
+| **4** | 568,774 | 68,272 **(0.12x)** | 64,391 **(0.11x)** | 851,906 **(1.50x)** |
+| **8** | 567,625 | 68,628 **(0.12x)** | 94,419 **(0.17x)** | 789,762 **(1.39x)** |
 
 ### Prime sieve (primes/s)
 *High-concurrency filtering test.*
 
 | Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
 | :--- | :--- | :--- | :--- | :--- |
-| **1** | 2,024 | 2,829 **(1.40x)** | 776 **(0.38x)** | 2,099 **(1.04x)** |
-| **2** | 4,088 | 2,889 **(0.71x)** | 640 **(0.16x)** | 2,314 **(0.57x)** |
-| **4** | 7,747 | 2,878 **(0.37x)** | 822 **(0.11x)** | 1,853 **(0.24x)** |
-| **8** | 14,297 | 2,907 **(0.20x)** | 853 **(0.06x)** | 1,805 **(0.13x)** |
+| **1** | 2,020 | 2,826 **(1.40x)** | 1,005 **(0.50x)** | 2,133 **(1.06x)** |
+| **2** | 4,067 | 2,879 **(0.71x)** | 847 **(0.21x)** | 2,400 **(0.59x)** |
+| **4** | 7,798 | 2,906 **(0.37x)** | 888 **(0.11x)** | 1,868 **(0.24x)** |
+| **8** | 14,148 | 2,889 **(0.20x)** | 847 **(0.06x)** | 1,829 **(0.13x)** |
+
+### HTTP ping-pong (round trips/s)
+*Two HTTP/1.1 servers on loopback bounce a counter back and forth.*
+
+| Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 2,073 | 3,287 **(1.59x)** | 3,022 **(1.46x)** | 2,354 **(1.14x)** |
+| **2** | 2,309 | 3,029 **(1.31x)** | 2,938 **(1.27x)** | 2,379 **(1.03x)** |
+| **4** | 2,818 | 2,479 **(0.88x)** | 2,395 **(0.85x)** | 2,436 **(0.86x)** |
+| **8** | 2,721 | 1,850 **(0.68x)** | 2,278 **(0.84x)** | 2,415 **(0.89x)** |
+
+### HTTP server throughput (req/s)
+*One server, many concurrent keep-alive clients; measures sustained request rate.*
+
+| Pool | Go (Baseline) | libgoc | libgoc vmem | Clojure |
+| :--- | :--- | :--- | :--- | :--- |
+| **1** | 9,914 | 8,257 **(0.83x)** | 8,405 **(0.85x)** | 38,208 **(3.85x)** |
+| **2** | 20,049 | 7,929 **(0.40x)** | 8,065 **(0.40x)** | 37,996 **(1.90x)** |
+| **4** | 44,073 | 7,979 **(0.18x)** | 7,767 **(0.18x)** | 38,048 **(0.86x)** |
+| **8** | 76,973 | 7,256 **(0.09x)** | 7,652 **(0.10x)** | 38,048 **(0.49x)** |
 
 ---
 
@@ -176,18 +192,23 @@ Geometric mean of the ×Go multipliers across pool sizes 1, 2, 4, 8.
 
 | Benchmark | libgoc (canary) | libgoc (vmem) | Clojure |
 | :--- | :---: | :---: | :---: |
-| Ping-pong | 0.76× | 0.28× | 0.43× |
-| Ring | 0.36× | 0.02× | 1.02× |
-| Fan-out/Fan-in | 0.27× | 0.34× | 0.51× |
-| Spawn idle | 0.21× | 0.10× | 2.04× |
-| Prime sieve | 0.52× | 0.14× | 0.36× |
+| Ping-pong | 0.72× | 0.28× | 0.49× |
+| Ring | 0.37× | 0.02× | 1.00× |
+| Fan-out/Fan-in | 0.29× | 0.34× | 0.51× |
+| Spawn idle | 0.19× | 0.15× | 1.92× |
+| Prime sieve | 0.52× | 0.16× | 0.37× |
+| HTTP ping-pong | 1.06× | 1.07× | 0.97× |
+| HTTP throughput | 0.27× | 0.28× | 1.33× |
 
 **Takeaways:**
-- libgoc canary ping-pong now peaks at 0.92× Go at pool=8, with a geometric mean of 0.76× (up from the previous snapshot), showing continued scaling progress.
-- Ring remains a weak point for canary (0.36× geomean), with best throughput at pool=4 (998,693 hops/s, 0.44× Go). vmem stays bottlenecked at ~0.02× due to virtual-memory stack overhead.
-- Fan-out/fan-in shifted in vmem’s favor in this run set: vmem reaches a 0.34× geomean versus canary at 0.27×, though both are still below Clojure (0.51×) and Go.
-- Spawn idle tasks is still the largest canary regression under contention: 0.21× geomean, dropping sharply past pool=1. vmem remains volatile here (notably 0.04× at pool=2), while Clojure retains a large advantage (2.04×).
-- Prime sieve: canary remains strongest at pool=1 (1.40× Go) but trails at higher pool sizes, landing at 0.52× geomean. vmem is at 0.14× and Clojure at 0.36×.
-- Overall, canary shows clear gains in ping-pong and maintains competitive single-thread sieve behavior, but ring and especially spawn-idle scalability continue to dominate the optimization backlog.
+- libgoc canary ping-pong peaks at 0.84× Go at pool=8 with a geomean of 0.72×, showing continued scaling progress. vmem holds steady at 0.28×.
+- Ring remains a weak point for canary (0.37× geomean), with best throughput at pool=4–8 (~0.42–0.43× Go). vmem stays bottlenecked at ~0.02× due to virtual-memory stack overhead. Clojure matches Go exactly (1.00× geomean).
+- Fan-out/fan-in: vmem (0.34×) edges out canary (0.29×) here, though both remain well below Clojure (0.51×) and Go.
+- Spawn idle tasks is still the sharpest regression under contention: canary drops to 0.19× geomean, falling from 0.58× at pool=1 to 0.12× at pool=2+. vmem (0.15×) suffers similarly. Clojure retains a large lead (1.92×).
+- Prime sieve: canary leads at pool=1 (1.40× Go) but trails at higher pool sizes (0.52× geomean). vmem improved to 0.16× (up from the previous snapshot). Clojure holds at 0.37×.
+- HTTP ping-pong is a bright spot: both canary (1.06×) and vmem (1.07×) outperform Go at pool sizes 1–2, suggesting the HTTP layer integrates efficiently with the task scheduler at low concurrency. Performance degrades at pool=8 under contention.
+- HTTP server throughput does not scale with pool size in libgoc or vmem (both plateau around 7–8 k req/s), while Go scales linearly to 77 k req/s at pool=8. Clojure (1.33× geomean) benefits from its thread-pool model at low pool counts but also plateaus at higher sizes.
+
+For root-cause analysis of these results, proposed fixes, and the prioritized optimization roadmap, see [OPTIMIZATION.md](../OPTIMIZATION.md).
 
 <!-- END AUTO BENCH REPORT -->

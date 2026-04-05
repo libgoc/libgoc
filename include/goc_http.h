@@ -294,8 +294,17 @@ goc_http_request_opts_t* goc_http_request_opts(void);
  * body_len     : byte length of body; 0 for bodyless requests.
  * opts         : request options; use goc_http_request_opts() for defaults.
  *
- * Returns a channel that delivers a goc_http_response_t* when the response
- * arrives.  Must be called from fiber context.
+ * Returns a buffered channel (capacity 1) that delivers a goc_http_response_t*
+ * when the response arrives.  On network error, status is 0 and body is "".
+ *
+ * If opts->timeout_ms > 0 and the call is made from fiber context, the
+ * function blocks (via goc_alts) until either the response arrives or the
+ * timeout fires.  On timeout the original request channel is closed and a new
+ * pre-filled channel carrying a zero-status response is returned.
+ *
+ * Must be called from fiber context when a timeout is set; may be called
+ * from any fiber context otherwise (pool assignment follows opts->pool or
+ * goc_current_or_default_pool()).
  */
 goc_chan* goc_http_request(const char* method, const char* url,
                            const char* content_type,

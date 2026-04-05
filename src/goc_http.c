@@ -1494,7 +1494,8 @@ goc_chan* goc_http_request(const char* method, const char* url,
             goc_close(toch);
             return toch;
         }
-        /* Response arrived before timeout — re-wrap on a fresh channel. */
+        /* Response arrived before timeout — cancel the timer and re-wrap. */
+        goc_close(tch);
         goc_chan* ch2 = goc_chan_make(1);
         goc_put(ch2, res->value.val);
         goc_close(ch2);

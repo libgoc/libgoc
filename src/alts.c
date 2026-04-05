@@ -81,7 +81,7 @@ static size_t alts_build_index_array(goc_alt_op_t *ops, size_t n, size_t *indice
         if (ops[i].op_kind == GOC_ALT_DEFAULT) {
             n_default++;
             if (n_default > 1) {
-                fprintf(stderr, "%s: more than one default arm provided (got %zu)\n", func_name, n_default);
+                fprintf(stderr, "libgoc: %s: more than one default arm provided (got %zu)\n", func_name, n_default);
                 abort();
             }
             *default_idx = i;
@@ -210,7 +210,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
     mco_coro *running = mco_running();
     if (!running) {
         /* Calling goc_alts from a bare OS thread is a programming error. */
-        fprintf(stderr, "goc_alts: cannot be called from OS thread (not in fiber context)\n");
+        fprintf(stderr, "libgoc: goc_alts: cannot be called from OS thread (not in fiber context)\n");
         abort();
     }
 
@@ -434,7 +434,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
      * A NULL winner here means the protocol is broken — abort rather than
      * silently producing undefined behaviour via a NULL dereference. */
     if (winner == NULL) {
-        fprintf(stderr, "goc_alts: no winner after wake — woken CAS invariant violated\n");
+        fprintf(stderr, "libgoc: goc_alts: no winner after wake — woken CAS invariant violated\n");
         abort();
     }
 
@@ -456,7 +456,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
  * ------------------------------------------------------------------------- */
 goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
     if (mco_running() != NULL) {
-        fprintf(stderr, "goc_alts_sync: cannot be called from fiber context\n");
+        fprintf(stderr, "libgoc: goc_alts_sync: cannot be called from fiber context\n");
         abort();
     }
 
@@ -680,7 +680,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
 
     /* Same invariant as goc_alts: exactly one entry must have won the woken CAS. */
     if (winner == NULL) {
-        fprintf(stderr, "goc_alts_sync: no winner after wake — woken CAS invariant violated\n");
+        fprintf(stderr, "libgoc: goc_alts_sync: no winner after wake — woken CAS invariant violated\n");
         abort();
     }
 
