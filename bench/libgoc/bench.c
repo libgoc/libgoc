@@ -1,7 +1,7 @@
 /*
  * bench/libgoc/bench.c — CSP concurrency benchmarks for libgoc
  *
- * Five micro-benchmarks that stress different aspects of the libgoc runtime.
+ * Seven micro-benchmarks that stress different aspects of the libgoc runtime.
  * Each benchmark is self-contained and can be read independently.
  *
  * Benchmarks
@@ -27,6 +27,14 @@
  *    multiples of a discovered prime.  Stresses long chains of fibers and
  *    sustained channel traffic.
  *
+ * 6. HTTP ping-pong — two HTTP/1.1 servers on loopback ports bounce a
+ *    counter back and forth, measuring end-to-end request/response overhead
+ *    including TCP I/O and integration with the libgoc HTTP layer.
+ *
+ * 7. HTTP server throughput — one HTTP/1.1 server serves a tiny plaintext
+ *    response while many concurrent keep-alive clients issue GET requests,
+ *    measuring sustained requests/second under load.
+ *
  * Building
  * --------
  *   make -C bench/libgoc build          # single build
@@ -49,11 +57,14 @@
  */
 
 #include "goc.h"
+#include "goc_http.h"
 #include "goc_stats.h"
 
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <uv.h>
 
 
@@ -394,8 +405,6 @@ static void bench_fan_in(size_t workers, size_t tasks) {
  * This measures:
  *   - Fiber creation throughput (goc_go cost × count)
  *   - Mass wakeup throughput (goc_close broadcasting to all parked fibers)
- *
- * NOTE: This benchmark is currently disabled in main().
  */
 
 /*
@@ -449,8 +458,6 @@ static void bench_spawn_idle(size_t count) {
  *
  * This stresses long chains of fibers and sustained point-to-point channel
  * traffic over the full run.
- *
- * NOTE: This benchmark is currently disabled in main().
  */
 
 typedef struct {
@@ -565,6 +572,286 @@ static void bench_prime_sieve(size_t max) {
 
 
 /* =========================================================================
+ * 6. HTTP ping-pong benchmark
+ * =========================================================================
+ *
+ * Two HTTP/1.1 servers (A on port 19090, B on port 19091) bounce a counter
+ * back and forth, mirroring the ping-pong example in HTTP.md.
+ *
+ * Server A (POST /ping): reads the counter, responds "ok", then forwards
+ * counter+1 to server B.  When counter >= rounds it closes `done` and stops.
+ * Server B (POST /ping): reads the counter, responds "ok", then forwards
+ * counter+1 back to server A.
+ *
+ * Timing: starts just before the first fire-and-forget POST to A, ends when
+ * `done` is closed (i.e., after `rounds` HTTP round trips have completed).
+ *
+ * NOTE: The round count is intentionally lower than the CSP benchmarks
+ * because the current libgoc HTTP client opens a new TCP connection for
+ * every request.  The benchmark still exercises the HTTP server, client,
+ * and fiber-scheduling integration end-to-end.
+ */
+
+#define HTTP_PP_PORT_A 19090
+#define HTTP_PP_PORT_B 19091
+#define HTTP_PP_URL_A  "http://127.0.0.1:19090/ping"
+#define HTTP_PP_URL_B  "http://127.0.0.1:19091/ping"
+
+/*
+ * State shared between the two HTTP handler fibers.
+ * Written once in bench_http_ping_pong before the servers start; read-only
+ * thereafter (safe: the ping-pong chain is sequential).
+ */
+static struct {
+    goc_chan* done;
+    size_t    warmup;
+    size_t    measured;
+    size_t    total;
+    uint64_t* lat_ns;
+    uint64_t  t_meas_start;
+    uint64_t  t_meas_end;
+} g_http_pp;
+
+static int cmp_u64(const void* a, const void* b) {
+    const uint64_t va = *(const uint64_t*)a;
+    const uint64_t vb = *(const uint64_t*)b;
+    return (va > vb) - (va < vb);
+}
+
+static double percentile_us(const uint64_t* sorted, size_t n, int pct) {
+    if (n == 0)
+        return 0.0;
+    size_t idx = (size_t)(((uint64_t)pct * (uint64_t)(n - 1) + 50u) / 100u);
+    return (double)sorted[idx] / 1000.0;
+}
+
+/*
+ * http_pp_handler_a — POST /ping handler for server A.
+ *
+ * Responds "ok" to the caller, then forwards counter+1 to server B.
+ * Closes `done` instead of forwarding when the round limit is reached.
+ */
+static void http_pp_handler_a(goc_http_ctx_t* ctx) {
+    int n = 0;
+    uint64_t sent_ns = 0;
+    const char* body = goc_http_server_body_str(ctx);
+    (void)sscanf(body, "%d,%" SCNu64, &n, &sent_ns);
+
+    uint64_t now = uv_hrtime();
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+
+    if ((size_t)n > g_http_pp.warmup && (size_t)n <= g_http_pp.total && sent_ns > 0) {
+        size_t idx = (size_t)n - g_http_pp.warmup - 1;
+        g_http_pp.lat_ns[idx] = now - sent_ns;
+    }
+
+    if ((size_t)n >= g_http_pp.total) {
+        g_http_pp.t_meas_end = now;
+        goc_close(g_http_pp.done);
+        return;
+    }
+
+    if ((size_t)n == g_http_pp.warmup)
+        g_http_pp.t_meas_start = now;
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    /* Keep relay synchronous so benchmark teardown does not race with
+     * in-flight client write callbacks. */
+    goc_take(goc_http_post(HTTP_PP_URL_B, "text/plain",
+                           goc_sprintf("%d,%" PRIu64, n + 1, uv_hrtime()),
+                           opts));
+}
+
+/*
+ * http_pp_handler_b — POST /ping handler for server B.
+ *
+ * Responds "ok" to the caller, then forwards counter+1 back to server A.
+ */
+static void http_pp_handler_b(goc_http_ctx_t* ctx) {
+    int n = 0;
+    uint64_t sent_ns = 0;
+    const char* body = goc_http_server_body_str(ctx);
+    (void)sscanf(body, "%d,%" SCNu64, &n, &sent_ns);
+
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    /* Keep relay synchronous so benchmark teardown does not race with
+     * in-flight client write callbacks. */
+    goc_take(goc_http_post(HTTP_PP_URL_A, "text/plain",
+                           goc_sprintf("%d,%" PRIu64, n, sent_ns), opts));
+}
+
+/*
+ * bench_http_ping_pong — run HTTP ping-pong for `rounds` round trips.
+ *
+ * Starts two servers, fires the initial request, waits for completion, then
+ * shuts both servers down gracefully before returning.
+ */
+static void bench_http_ping_pong(size_t rounds) {
+    g_http_pp.done   = goc_chan_make(0);
+    g_http_pp.measured = rounds;
+    g_http_pp.warmup   = rounds / 10;
+    if (g_http_pp.warmup < 100)
+        g_http_pp.warmup = 100;
+    g_http_pp.total      = g_http_pp.warmup + g_http_pp.measured;
+    g_http_pp.lat_ns     = (uint64_t*)goc_malloc(sizeof(uint64_t) * g_http_pp.measured);
+    g_http_pp.t_meas_start = 0;
+    g_http_pp.t_meas_end   = 0;
+
+    goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv_a, "POST", "/ping", http_pp_handler_a);
+    goc_chan* ready_a = goc_http_server_listen(srv_a, "127.0.0.1", HTTP_PP_PORT_A);
+
+    goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv_b, "POST", "/ping", http_pp_handler_b);
+    goc_chan* ready_b = goc_http_server_listen(srv_b, "127.0.0.1", HTTP_PP_PORT_B);
+
+    goc_take(ready_a);
+    goc_take(ready_b);
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(HTTP_PP_URL_A, "text/plain", "0,0", opts);
+    goc_take(g_http_pp.done);
+
+    if (g_http_pp.t_meas_start == 0 || g_http_pp.t_meas_end <= g_http_pp.t_meas_start) {
+        g_http_pp.t_meas_start = uv_hrtime();
+        g_http_pp.t_meas_end = g_http_pp.t_meas_start + 1;
+    }
+
+    goc_take(goc_http_server_close(srv_a));
+    goc_take(goc_http_server_close(srv_b));
+
+    uint64_t meas_ns = g_http_pp.t_meas_end - g_http_pp.t_meas_start;
+    double s    = (double)meas_ns / 1e9;
+    int    ms   = (int)(s * 1000);
+    double rate = (double)g_http_pp.measured / s;
+
+    uint64_t* sorted = (uint64_t*)goc_malloc(sizeof(uint64_t) * g_http_pp.measured);
+    memcpy(sorted, g_http_pp.lat_ns, sizeof(uint64_t) * g_http_pp.measured);
+    qsort(sorted, g_http_pp.measured, sizeof(uint64_t), cmp_u64);
+
+    uint64_t sum_ns = 0;
+    for (size_t i = 0; i < g_http_pp.measured; i++)
+        sum_ns += g_http_pp.lat_ns[i];
+
+    double avg_us = ((double)sum_ns / (double)g_http_pp.measured) / 1000.0;
+    double p50_us = percentile_us(sorted, g_http_pp.measured, 50);
+    double p95_us = percentile_us(sorted, g_http_pp.measured, 95);
+    double p99_us = percentile_us(sorted, g_http_pp.measured, 99);
+
+    printf("HTTP ping-pong: %zu round trips in %dms (%.0f round trips/s, avg %.1fus p50 %.1fus p95 %.1fus p99 %.1fus, warmup %zu)\n",
+           g_http_pp.measured, ms, rate, avg_us, p50_us, p95_us, p99_us,
+           g_http_pp.warmup);
+    bench_print_stats();
+}
+
+
+/* =========================================================================
+ * 7. HTTP server throughput benchmark
+ * =========================================================================
+ *
+ * One HTTP/1.1 loopback server serves GET /plaintext with a fixed tiny body
+ * "OK".  `concurrency` client fibers issue back-to-back keep-alive GETs
+ * using a shared request shape, and we measure successful responses over a
+ * fixed measurement window after a warmup phase.
+ */
+
+#define HTTP_TP_PORT 19100
+#define HTTP_TP_URL  "http://127.0.0.1:19100/plaintext"
+
+static void http_tp_handler(goc_http_ctx_t* ctx) {
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", "OK"));
+}
+
+typedef struct {
+    uint64_t warmup_end_ns;
+    uint64_t measure_end_ns;
+    uint64_t* succ_out;
+    uint64_t* err_out;
+} http_tp_worker_args_t;
+
+static void http_tp_worker(void* arg) {
+    http_tp_worker_args_t* a = (http_tp_worker_args_t*)arg;
+    uint64_t succ = 0;
+    uint64_t err  = 0;
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    opts->timeout_ms = 1000;
+
+    for (;;) {
+        if (uv_hrtime() >= a->measure_end_ns)
+            break;
+
+        goc_http_response_t* r =
+            (goc_http_response_t*)goc_take(goc_http_get(HTTP_TP_URL, opts))->val;
+        uint64_t done_ns = uv_hrtime();
+
+        if (done_ns >= a->warmup_end_ns && done_ns < a->measure_end_ns) {
+            if (r && r->status == 200)
+                succ++;
+            else
+                err++;
+        }
+    }
+
+    *a->succ_out = succ;
+    *a->err_out  = err;
+}
+
+static void bench_http_server_throughput(size_t concurrency,
+                                         int warmup_ms,
+                                         int measure_ms) {
+    if (concurrency == 0 || warmup_ms < 0 || measure_ms <= 0)
+        return;
+
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "GET", "/plaintext", http_tp_handler);
+    goc_take(goc_http_server_listen(srv, "127.0.0.1", HTTP_TP_PORT));
+
+    uint64_t start_ns      = uv_hrtime();
+    uint64_t warmup_end_ns = start_ns + (uint64_t)warmup_ms * 1000000ull;
+    uint64_t measure_end_ns = warmup_end_ns + (uint64_t)measure_ms * 1000000ull;
+
+    uint64_t* succ = (uint64_t*)goc_malloc(sizeof(uint64_t) * concurrency);
+    uint64_t* err  = (uint64_t*)goc_malloc(sizeof(uint64_t) * concurrency);
+    goc_chan** joins = (goc_chan**)goc_malloc(sizeof(goc_chan*) * concurrency);
+    http_tp_worker_args_t* args =
+        (http_tp_worker_args_t*)goc_malloc(sizeof(http_tp_worker_args_t) * concurrency);
+
+    for (size_t i = 0; i < concurrency; i++) {
+        succ[i] = 0;
+        err[i]  = 0;
+        args[i].warmup_end_ns  = warmup_end_ns;
+        args[i].measure_end_ns = measure_end_ns;
+        args[i].succ_out       = &succ[i];
+        args[i].err_out        = &err[i];
+        joins[i] = goc_go(http_tp_worker, &args[i]);
+    }
+
+    goc_take_all(joins, concurrency);
+    goc_take(goc_http_server_close(srv));
+
+    uint64_t total_succ = 0;
+    uint64_t total_err  = 0;
+    for (size_t i = 0; i < concurrency; i++) {
+        total_succ += succ[i];
+        total_err  += err[i];
+    }
+
+    double s = (double)measure_ms / 1000.0;
+    double rate = (double)total_succ / s;
+    printf("HTTP server throughput: %" PRIu64 " requests in %dms (%.0f req/s, %" PRIu64 " errors, concurrency %zu, warmup %dms)\n",
+           total_succ, measure_ms, rate, total_err, concurrency, warmup_ms);
+    bench_print_stats();
+}
+
+
+/* =========================================================================
  * main
  * =========================================================================
  */
@@ -576,12 +863,28 @@ static void main_fiber(void* _) {
     size_t select_tasks   = 200000;
     size_t spawn_count    = 200000;
     size_t prime_max      = 20000;
+    /* Lower count than CSP benchmarks: each HTTP request opens a new TCP
+     * connection.  See bench_http_ping_pong comment for context. */
+    size_t http_rounds    = 2000;
+    size_t http_tp_concurrency = 32;
+    int http_tp_warmup_ms = 1000;
+    int http_tp_measure_ms = 5000;
 
-    bench_ping_pong(ping_rounds);
-    bench_ring(ring_nodes, ring_hops);
-    bench_fan_in(select_workers, select_tasks);
-    bench_spawn_idle(spawn_count);
-    bench_prime_sieve(prime_max);
+    const char* http_only = getenv("GOC_BENCH_HTTP_ONLY");
+    int run_http_only = (http_only && http_only[0] == '1');
+
+    if (!run_http_only) {
+        bench_ping_pong(ping_rounds);
+        bench_ring(ring_nodes, ring_hops);
+        bench_fan_in(select_workers, select_tasks);
+        bench_spawn_idle(spawn_count);
+        bench_prime_sieve(prime_max);
+    }
+
+    bench_http_ping_pong(http_rounds);
+    bench_http_server_throughput(http_tp_concurrency,
+                                 http_tp_warmup_ms,
+                                 http_tp_measure_ms);
 }
 
 int main(void) {

@@ -43,7 +43,7 @@
 ### Pool Events (`GOC_STATS_EVENT_POOL_STATUS`)
 | Field          | Type    | Description                   |
 |----------------|---------|-------------------------------|
-| `id`           | `void*` | Pool pointer                  |
+| `id`           | `int`   | Monotonic pool ID             |
 | `status`       | `int`   | See `goc_stats_pool_status_t`   |
 | `thread_count` | `int`   | Number of worker threads      |
 
@@ -56,7 +56,7 @@
 | Field              | Type       | Description                                                        |
 |--------------------|------------|--------------------------------------------------------------------|
 | `id`               | `int`      | Worker index                                                       |
-| `pool_id`          | `void*`    | Pool pointer                                                       |
+| `pool_id`          | `int`      | Owning pool ID                                                     |
 | `status`           | `int`      | See `goc_stats_worker_status_t`                                      |
 | `pending_jobs`     | `int`      | Live fiber count in the pool                                       |
 | `steal_attempts`   | `uint64_t` | Lifetime steal attempts for this worker (only meaningful at `STOPPED`) |
@@ -74,6 +74,7 @@
 |------------------|-------|-------------------------------------|
 | `id`             | `int` | Monotonically increasing fiber ID   |
 | `last_worker_id` | `int` | Worker that last ran this fiber (`-1` if not yet scheduled) |
+| `last_pool_id`   | `int` | Pool ID associated with the fiber at emit time |
 | `status`         | `int` | See `goc_stats_fiber_status_t`        |
 
 | `goc_stats_fiber_status_t` | Value | Meaning                      |
@@ -130,16 +131,16 @@ typedef struct goc_stats_event {
 	goc_stats_event_type_t type;
 	uint64_t timestamp;
 	union {
-		struct { void* id; int status; int thread_count; } pool;
+		struct { int id; int status; int thread_count; } pool;
 		struct {
 			int      id;
-			void*    pool_id;
+			int      pool_id;
 			int      status;
 			int      pending_jobs;
 			uint64_t steal_attempts;   /* only meaningful at STOPPED */
 			uint64_t steal_successes;  /* only meaningful at STOPPED */
 		} worker;
-		struct { int id; int last_worker_id; int status; } fiber;
+		struct { int id; int last_worker_id; int last_pool_id; int status; } fiber;
 		struct {
 			int      id;
 			int      status;
@@ -164,14 +165,14 @@ Macros emit events if telemetry is enabled, or become no-ops otherwise:
 	goc_stats_submit_event_pool((id), (status), (thread_count))
 #  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, steal_suc) \
 	goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs), (steal_att), (steal_suc))
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status) \
-	goc_stats_submit_event_fiber((id), (last_worker_id), (status))
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, last_pool_id, status) \
+	goc_stats_submit_event_fiber((id), (last_worker_id), (last_pool_id), (status))
 #  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) \
 	goc_stats_submit_event_channel((id), (status), (buf_size), (item_count), (ts), (ps), (cr), (er))
 #else
 #  define GOC_STATS_POOL_STATUS(id, status, thread_count)                             ((void)0)
 #  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, suc)  ((void)0)
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)                          ((void)0)
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, last_pool_id, status)            ((void)0)
 #  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er)  ((void)0)
 #endif
 ```
@@ -211,16 +212,16 @@ When `GOC_ENABLE_STATS` is not defined, these functions are still present but al
 After `goc_stats_init()`, all events are printed to stdout by the built-in default callback. For a program that creates a pool, spawns a fiber, and shuts down, the output looks like:
 
 ```
-[goc_stats] WORKER @ 1748000000000000000: id=0 pool=0x55a1b2c3d000 status=0 pending=0
-[goc_stats] WORKER @ 1748000000001000000: id=1 pool=0x55a1b2c3d000 status=0 pending=0
-[goc_stats] POOL @ 1748000000002000000: pool=0x55a1b2c3d000 status=0 threads=2
-[goc_stats] FIBER @ 1748000000003000000: id=0 last_worker=-1 status=0
-[goc_stats] WORKER @ 1748000000004000000: id=0 pool=0x55a1b2c3d000 status=1 pending=1
-[goc_stats] FIBER @ 1748000000005000000: id=0 last_worker=0 status=1
-[goc_stats] WORKER @ 1748000000006000000: id=0 pool=0x55a1b2c3d000 status=2 pending=0
-[goc_stats] POOL @ 1748000000007000000: pool=0x55a1b2c3d000 status=1 threads=2
-[goc_stats] WORKER @ 1748000000008000000: id=0 pool=0x55a1b2c3d000 status=3 pending=0
-[goc_stats] WORKER @ 1748000000009000000: id=1 pool=0x55a1b2c3d000 status=3 pending=0
+[goc_stats] WORKER @ 1748000000000000000: id=0 pool=0 status=0 pending=0
+[goc_stats] WORKER @ 1748000000001000000: id=1 pool=0 status=0 pending=0
+[goc_stats] POOL @ 1748000000002000000: pool=0 status=0 threads=2
+[goc_stats] FIBER @ 1748000000003000000: id=0 last_worker=-1 last_pool=0 status=0
+[goc_stats] WORKER @ 1748000000004000000: id=0 pool=0 status=1 pending=1
+[goc_stats] FIBER @ 1748000000005000000: id=0 last_worker=0 last_pool=0 status=1
+[goc_stats] WORKER @ 1748000000006000000: id=0 pool=0 status=2 pending=0
+[goc_stats] POOL @ 1748000000007000000: pool=0 status=1 threads=2
+[goc_stats] WORKER @ 1748000000008000000: id=0 pool=0 status=3 pending=0
+[goc_stats] WORKER @ 1748000000009000000: id=1 pool=0 status=3 pending=0
 ```
 
 See the [Event Types](#event-types) tables for status enum values.
@@ -249,12 +250,12 @@ int main(void) {
 ### Emitting events (internal use)
 
 ```c
-GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_CREATED, thread_count);
-GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_DESTROYED, thread_count);
+GOC_STATS_POOL_STATUS(pool_id, GOC_POOL_CREATED, thread_count);
+GOC_STATS_POOL_STATUS(pool_id, GOC_POOL_DESTROYED, thread_count);
 /* steal_attempts and steal_successes are 0 except at STOPPED */
-GOC_STATS_WORKER_STATUS(worker_id, pool, GOC_WORKER_RUNNING, pending_jobs, 0, 0);
-GOC_STATS_WORKER_STATUS(worker_id, pool, GOC_WORKER_STOPPED, 0, steal_att, steal_suc);
-GOC_STATS_FIBER_STATUS(fiber_id, last_worker_id, GOC_FIBER_CREATED);
+GOC_STATS_WORKER_STATUS(worker_id, pool_id, GOC_WORKER_RUNNING, pending_jobs, 0, 0);
+GOC_STATS_WORKER_STATUS(worker_id, pool_id, GOC_WORKER_STOPPED, 0, steal_att, steal_suc);
+GOC_STATS_FIBER_STATUS(fiber_id, last_worker_id, pool_id, GOC_FIBER_CREATED);
 /* scan/compaction counters are 0 at open; populated at close */
 GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, 1, ch->buf_size, 0, 0, 0, 0, 0); // open
 GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, 0, ch->buf_size, ch->item_count,

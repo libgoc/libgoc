@@ -1,6 +1,6 @@
 # Go Benchmarks
 
-Standalone CSP benchmarks implemented in Go.  All five benchmarks are enabled
+Standalone CSP benchmarks implemented in Go.  All seven benchmarks are enabled
 and mirror those in `bench/libgoc/bench.c` for a direct performance comparison.
 
 ## Running
@@ -22,6 +22,8 @@ make run-all
 | 3 | **Selective receive / fan-out / fan-in** | Producer → N workers → `reflect.Select` collector |
 | 4 | **Spawn idle tasks** | Spawn N goroutines that block immediately, then wake them |
 | 5 | **Prime sieve** | Concurrent Eratosthenes pipeline |
+| 6 | **HTTP ping-pong** | Two HTTP/1.1 servers bounce a counter between each other |
+| 7 | **HTTP server throughput** | One server serves plaintext while concurrent keep-alive clients load it |
 
 ## Output Format
 

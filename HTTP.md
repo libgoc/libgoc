@@ -40,7 +40,7 @@ Two HTTP servers bounce a counter back and forth over HTTP.
   and POSTs back to server A.
 - `main_fiber` sets up both servers, fires the first request, then waits on a
   done-channel that server A closes when finished.
-- Both servers share the default pool.
+- Both servers share the default thread pool.
 
 ```c
 #include <stdio.h>
@@ -68,6 +68,7 @@ static void handler_a(goc_http_ctx_t* ctx) {
 
     char* msg = goc_sprintf("%d", n + 1);
     goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
+    fwd_opts->keep_alive = 1;
     goc_http_post(ADDR_B, "text/plain", msg, fwd_opts);
 }
 
@@ -79,6 +80,7 @@ static void handler_b(goc_http_ctx_t* ctx) {
 
     char* msg = goc_sprintf("%d", n + 1);
     goc_http_request_opts_t* fwd_opts = goc_http_request_opts();
+    fwd_opts->keep_alive = 1;
     goc_http_post(ADDR_A, "text/plain", msg, fwd_opts);
 }
 
@@ -100,6 +102,7 @@ static void main_fiber(void* _) {
     goc_take(ready_b);
 
     goc_http_request_opts_t* start_opts = goc_http_request_opts();
+    start_opts->keep_alive = 1;
     goc_http_post(ADDR_A, "text/plain", "0", start_opts);
 
     goc_take(done);
@@ -139,7 +142,8 @@ what `goc_io` already uses.
 
 **Client**: outbound requests return a channel that delivers a
 `goc_http_response_t*` when the response arrives. A single `http_client_fiber`
-on the default pool drives the entire request: DNS lookup via
+on `opts->pool` (or `goc_current_or_default_pool()` when unset) drives the
+entire request: DNS lookup via
 `goc_io_getaddrinfo`, TCP connect via `goc_io_tcp_connect`, write via
 `goc_io_write`, and read/parse via `goc_io_read_start`. All I/O completes
 through `goc_take` in the fiber. The event loop is never blocked; other fibers
@@ -176,7 +180,7 @@ through `goc_http_ctx_t` helpers; the context is valid only until
 Server-side functions (`goc_http_server_respond`, `goc_http_server_header`, etc.) operate
 within the per-connection fiber and do not need any cross-thread dispatch.
 Client-side functions (`goc_http_get`, `goc_http_post`, etc.) launch a fiber
-on the default pool that drives the entire request through `goc_io` channel
+on `opts->pool` (or the current-or-default pool when unset) that drives the entire request through `goc_io` channel
 operations and are safe to call from any fiber.
 
 `goc_http_ctx_t` must not be passed across independent requests or stored
@@ -244,7 +248,7 @@ typedef goc_http_status_t (*goc_http_middleware_t)(goc_http_ctx_t* ctx);
  */
 typedef struct {
     /* Pool whose libuv loop the server runs on.
-     * Default (NULL): goc_default_pool(). */
+    * Default (NULL): goc_current_or_default_pool(). */
     goc_pool* pool;
 
     /* Middleware chain executed in order inside the per-request fiber before
@@ -265,12 +269,21 @@ typedef struct {
 /* goc_http_request_opts_t — options for outbound requests.
  * Obtain a heap-allocated zero-initialised default with goc_http_request_opts(). */
 typedef struct {
+    /* Pool to run the outbound client fiber on.
+     * Default (NULL): goc_current_or_default_pool(). */
+    goc_pool* pool;
+
     /* Extra headers to send with the request.
      * goc_array of goc_http_header_t*.  Default (NULL): none. */
     goc_array* headers;
 
     /* Request timeout in milliseconds.  0 = no timeout. */
     uint64_t timeout_ms;
+
+    /* Enable HTTP/1.1 keep-alive and connection reuse.
+     * 0 = disabled (default), non-zero = enabled.
+     */
+    int keep_alive;
 } goc_http_request_opts_t;
 ```
 
@@ -280,7 +293,7 @@ typedef struct {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_http_server_opts` | `goc_http_server_opts_t* goc_http_server_opts(void)` | Allocate and return a default options struct. All fields zero-initialised: `pool` defaults to `goc_default_pool()`, `middleware` to NULL. |
+| `goc_http_server_opts` | `goc_http_server_opts_t* goc_http_server_opts(void)` | Allocate and return a default options struct. `pool` defaults to `goc_current_or_default_pool()`, `middleware` to NULL. |
 | `goc_http_server_make` | `goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)` | Allocate and initialise a server from `opts`. Returns a GC-managed pointer. Never returns NULL (aborts on failure). |
 | `goc_http_server_listen` | `goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port)` | Bind and start listening on `host:port`. Returns a channel that delivers `goc_box_int(rc)` once `uv_listen` has been called on the event-loop thread (rc == 0 = ready; rc < 0 = libuv error). Always `goc_take()` the channel before sending requests. |
 | `goc_http_server_close` | `goc_chan* goc_http_server_close(goc_http_server_t* srv)` | Gracefully stop accepting new connections and drain in-flight requests. Returns a channel delivering `goc_box_int(0)` when shutdown is complete. Safe from any context. |
@@ -404,8 +417,10 @@ All client functions return a channel that delivers a `goc_http_response_t*`
 when the response arrives. `goc_take` the channel to receive the result.
 Must be called from fiber context.
 
-`goc_http_request_opts_t` carries optional headers and a timeout. Pass
-`goc_http_request_opts()` for defaults (no extra headers, no timeout).
+`goc_http_request_opts_t` carries optional pool override, headers, timeout,
+and a keep-alive toggle. Pass `goc_http_request_opts()` for defaults (pool
+defaults to `goc_current_or_default_pool()`, no extra headers, no timeout,
+keep-alive disabled).
 
 Because the functions return channels, multiple requests can be issued in
 parallel and awaited with `goc_alts` or `goc_take_all`:
@@ -425,7 +440,7 @@ goc_http_response_t* r2 = goc_take(c2)->val;
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_http_request_opts` | `goc_http_request_opts_t* goc_http_request_opts(void)` | Allocate and return a default request options struct. Zero-initialised: no headers, no timeout. |
+| `goc_http_request_opts` | `goc_http_request_opts_t* goc_http_request_opts(void)` | Allocate and return a default request options struct. Pool defaults to `goc_current_or_default_pool()`, no headers, no timeout, keep-alive disabled. |
 
 ### REST helpers
 
@@ -460,6 +475,7 @@ h->name  = "Authorization";
 h->value = "Bearer my-token";
 opts->headers    = goc_array_of(h);
 opts->timeout_ms = 5000;
+opts->keep_alive = 1;
 
 goc_chan* post_ch = goc_http_post("http://api.example.com/items",
                                    "application/json",

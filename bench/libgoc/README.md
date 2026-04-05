@@ -45,7 +45,7 @@ an explicit positive cap for repeatable stress testing.
 
 ## Benchmarks
 
-All five benchmarks are **implemented and enabled** in `bench.c`.
+All seven benchmarks are **implemented and enabled** in `bench.c`.
 
 | # | Name | Status |
 |---|------|--------|
@@ -54,6 +54,8 @@ All five benchmarks are **implemented and enabled** in `bench.c`.
 | 3 | **Selective receive / fan-out / fan-in** — producer → N workers → `goc_alts` collector | ✅ enabled |
 | 4 | **Spawn idle tasks** — spawn many fibers that park immediately, then wake them | ✅ enabled |
 | 5 | **Prime sieve** — concurrent Eratosthenes pipeline | ✅ enabled |
+| 6 | **HTTP ping-pong** — two HTTP/1.1 servers bounce a counter back and forth | ✅ enabled |
+| 7 | **HTTP server throughput** — one server serves plaintext under keep-alive client load | ✅ enabled |
 
 ## Output Format
 
@@ -71,6 +73,8 @@ Ring benchmark: 500000 hops across 128 tasks in 495ms (1008686 hops/s)
 Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 840ms (238041 msg/s)
 Spawn idle tasks: 200000 fibers in 1203ms (166231 tasks/s)
 Prime sieve: 2262 primes up to 20000 in 877ms (2577 primes/s)
+HTTP ping-pong: <rounds> round trips in <ms>ms (<rate> round trips/s, avg <us> p50 <us> p95 <us> p99 <us>, warmup <rounds>)
+HTTP server throughput: <requests> requests in <ms>ms (<rate> req/s, <errors> errors, concurrency <n>, warmup <ms>ms)
 ```
 
 ## Multi-Pool Testing

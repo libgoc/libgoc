@@ -194,12 +194,14 @@ static const goc_stats_event_t* find_any_worker_status(
 
 static void emit_worker_event(void* arg) {
     (void)arg;
-    GOC_STATS_WORKER_STATUS(/*id=*/42, /*pool_id=*/NULL, GOC_WORKER_RUNNING, /*pending_jobs=*/5, /*steal_att=*/0, /*steal_suc=*/0);
+    GOC_STATS_WORKER_STATUS(/*id=*/42, /*pool_id=*/1234, GOC_WORKER_RUNNING, /*pending_jobs=*/5, /*steal_att=*/0, /*steal_suc=*/0);
 }
 
 static void emit_fiber_event(void* arg) {
     (void)arg;
-    GOC_STATS_FIBER_STATUS(/*id=*/7, /*last_worker_id=*/3, GOC_FIBER_COMPLETED);
+    GOC_STATS_FIBER_STATUS(/*id=*/7, /*last_worker_id=*/3,
+                           /*last_pool_id=*/0xABCD,
+                           GOC_FIBER_COMPLETED);
 }
 
 static void emit_channel_event(void* arg) {
@@ -241,7 +243,7 @@ static void test_s1_3(void) {
     ASSERT(ev->type == GOC_STATS_EVENT_WORKER_STATUS);
     ASSERT(ev->timestamp > 0);
     ASSERT(ev->data.worker.id           == 42);
-    ASSERT(ev->data.worker.pool_id      == NULL);
+    ASSERT(ev->data.worker.pool_id      == 1234);
     ASSERT(ev->data.worker.status       == GOC_WORKER_RUNNING);
     ASSERT(ev->data.worker.pending_jobs == 5);
     /* New: assert steal_attempts == 0 and steal_successes == 0 */
@@ -263,6 +265,7 @@ static void test_s1_4(void) {
     ASSERT(ev->timestamp > 0);
     ASSERT(ev->data.fiber.id             == 7);
     ASSERT(ev->data.fiber.last_worker_id == 3);
+    ASSERT(ev->data.fiber.last_pool_id   == 0xABCD);
     ASSERT(ev->data.fiber.status         == GOC_FIBER_COMPLETED);
     TEST_PASS();
 done:;
@@ -319,12 +322,14 @@ static void test_s2_1(void) {
     const goc_stats_event_t* created = find_any_fiber_created();
     ASSERT(created != NULL);
     ASSERT(created->data.fiber.last_worker_id == -1);
+    ASSERT(created->data.fiber.last_pool_id >= 0);
     ASSERT(created->timestamp > 0);
     int fiber_id = created->data.fiber.id;
 
     const goc_stats_event_t* completed = find_fiber_event(fiber_id, GOC_FIBER_COMPLETED);
     ASSERT(completed != NULL);
     ASSERT(completed->data.fiber.last_worker_id >= 0);
+    ASSERT(completed->data.fiber.last_pool_id == created->data.fiber.last_pool_id);
     ASSERT(completed->timestamp >= created->timestamp);
 
     TEST_PASS();
@@ -393,7 +398,7 @@ static void test_s2_4(void) {
     TEST_BEGIN("S2.4  pool creation and destruction events");
     drain_pending_events();
     goc_pool* pool = goc_pool_make(3);
-    void* pool_id = pool;
+    int pool_id = goc_pool_id(pool);
     const goc_stats_event_t* create_ev = NULL;
     const goc_stats_event_t* destroy_ev = NULL;
     // Find pool created event
@@ -632,7 +637,7 @@ static void test_s5_1(void) {
     drain_pending_events();
 
     goc_pool* pool = goc_pool_make(2);
-    void* pool_id = pool;
+    int pool_id = goc_pool_id(pool);
 
     /* Submit many short fibers to provoke work stealing between the 2 workers.
      * Each fiber emits ~4 events (FIBER_CREATED, FIBER_COMPLETED, join_ch

@@ -252,7 +252,19 @@ typedef struct {
     goc_pool* expected_pool;
     done_t*   done;
     bool      ran;
+    bool      cur_pool_ok;
+    bool      cur_or_default_ok;
+    bool      cur_fiber_nonnull;
+    bool      child_pool_ok;
 } p6_1_args_t;
+
+static void test_p6_1_child_fn(void* arg) {
+    p6_1_args_t* a = (p6_1_args_t*)arg;
+    a->child_pool_ok =
+        (goc_current_pool() == a->expected_pool) &&
+        (goc_current_or_default_pool() == a->expected_pool) &&
+        (goc_current_fiber() != NULL);
+}
 
 /*
  * Fiber for P6.1.
@@ -261,6 +273,13 @@ typedef struct {
  */
 static void test_p6_1_fiber_fn(void* arg) {
     p6_1_args_t* a = (p6_1_args_t*)arg;
+    a->cur_pool_ok = (goc_current_pool() == a->expected_pool);
+    a->cur_or_default_ok = (goc_current_or_default_pool() == a->expected_pool);
+    a->cur_fiber_nonnull = (goc_current_fiber() != NULL);
+    (void)goc_current_thread();
+
+    /* goc_go should inherit the current pool when called from a fiber. */
+    goc_take(goc_go(test_p6_1_child_fn, a));
     a->ran = true;
     done_signal(a->done);
 }
@@ -292,6 +311,10 @@ static void test_p6_1(void) {
 
     done_wait(&done);
     ASSERT(args.ran == true);
+    ASSERT(args.cur_pool_ok == true);
+    ASSERT(args.cur_or_default_ok == true);
+    ASSERT(args.cur_fiber_nonnull == true);
+    ASSERT(args.child_pool_ok == true);
 
     /* Join channel must close once the fiber exits. */
     goc_val_t* v = goc_take_sync(join);
@@ -1672,7 +1695,7 @@ static void test_p6_24(void) {
 
     goc_pool* pool = goc_pool_make(2);
     ASSERT(pool != NULL);
-    void* pool_id = pool;
+    int pool_id = -1;
 
     /* Burst of short fibers to provoke work stealing. */
     for (int i = 0; i < 64; i++)
@@ -1686,14 +1709,22 @@ static void test_p6_24(void) {
     uv_mutex_lock(&evbuf.mtx);
     for (size_t i = 0; i < evbuf.count; i++) {
         const goc_stats_event_t* ev = &evbuf.buf[i];
+        if (pool_id < 0 &&
+            ev->type == GOC_STATS_EVENT_POOL_STATUS &&
+            ev->data.pool.status == GOC_POOL_CREATED &&
+            ev->data.pool.thread_count == 2) {
+            pool_id = ev->data.pool.id;
+        }
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
+        if (pool_id < 0) continue;
         if (ev->data.worker.pool_id != pool_id) continue;
         ASSERT(ev->data.worker.steal_successes <= ev->data.worker.steal_attempts);
         stopped_found++;
     }
     uv_mutex_unlock(&evbuf.mtx);
 
+    ASSERT(pool_id >= 0);
     ASSERT(stopped_found >= 2);
 
     TEST_PASS();
@@ -1722,7 +1753,7 @@ static void test_p6_25(void) {
 
     goc_pool* pool = goc_pool_make(2);
     ASSERT(pool != NULL);
-    void* pool_id = pool;
+    int pool_id = -1;
 
     for (int i = 0; i < 64; i++)
         goc_go_on(pool, p6_steal_noop, NULL);
@@ -1740,13 +1771,21 @@ static void test_p6_25(void) {
     uv_mutex_lock(&evbuf.mtx);
     for (size_t i = 0; i < evbuf.count; i++) {
         const goc_stats_event_t* ev = &evbuf.buf[i];
+        if (pool_id < 0 &&
+            ev->type == GOC_STATS_EVENT_POOL_STATUS &&
+            ev->data.pool.status == GOC_POOL_CREATED &&
+            ev->data.pool.thread_count == 2) {
+            pool_id = ev->data.pool.id;
+        }
         if (ev->type != GOC_STATS_EVENT_WORKER_STATUS) continue;
         if (ev->data.worker.status != GOC_WORKER_STOPPED) continue;
+        if (pool_id < 0) continue;
         if (ev->data.worker.pool_id != pool_id) continue;
         ev_att_sum += ev->data.worker.steal_attempts;
     }
     uv_mutex_unlock(&evbuf.mtx);
 
+    ASSERT(pool_id >= 0);
     ASSERT((att1 - att0) == ev_att_sum);
 
     TEST_PASS();

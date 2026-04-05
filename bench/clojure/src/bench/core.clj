@@ -1,6 +1,6 @@
 ; bench/clojure/src/bench/core.clj — CSP concurrency benchmarks for Clojure core.async
 ;
-; Five micro-benchmarks that mirror bench/go/main.go and bench/libgoc/bench.c
+; Seven micro-benchmarks that mirror bench/go/main.go and bench/libgoc/bench.c
 ; so that Go, libgoc, and Clojure results can be compared directly.
 ;
 ; Benchmarks
@@ -10,6 +10,9 @@
 ; 3. Selective receive / fan-out / fan-in — producer → N workers → alts! collector.
 ; 4. Spawn idle tasks — spawn N go-blocks that park immediately, then wake them all.
 ; 5. Prime sieve — concurrent Eratosthenes pipeline of go-block filter stages.
+; 6. HTTP ping-pong — two http-kit servers bounce a counter over HTTP/1.1.
+; 7. HTTP server throughput — one http-kit server serves a tiny plaintext
+;    response while many concurrent keep-alive clients issue GET requests.
 ;
 ; Running
 ; -------
@@ -19,7 +22,10 @@
 
 (ns bench.core
   (:require [clojure.core.async :as a
-             :refer [go go-loop chan <! >! <!! >!! close! alts!]]))
+             :refer [go go-loop chan <! >! <!! >!! close! alts!]]
+            [clojure.string :as str]
+            [org.httpkit.server :as http-server]
+            [org.httpkit.client :as http-client]))
 
 (def ^:private ping-rounds    200000)
 (def ^:private ring-nodes     128)
@@ -28,6 +34,11 @@
 (def ^:private select-tasks   200000)
 (def ^:private spawn-count    200000)
 (def ^:private prime-max      20000)
+(def ^:private http-rounds    2000)
+(def ^:private http-tp-concurrency 32)
+(def ^:private http-tp-warmup-ms   1000)
+(def ^:private http-tp-measure-ms  5000)
+
 
 
 ; ============================================================================
@@ -228,19 +239,124 @@
               count max ms rate))))
 
 
+(defn bench-http-ping-pong [rounds]
+  (let [warmup     (max 100 (long (/ rounds 10)))
+        total      (+ warmup rounds)
+        done-ch    (chan)
+        samples    (long-array rounds)
+        meas-start (atom 0)
+        meas-end   (atom 0)
+        url-a      "http://127.0.0.1:19090/ping"
+        url-b      "http://127.0.0.1:19091/ping"
+        parse-msg  (fn [s]
+                     (let [[n t] (str/split (str/trim s) #"," 2)
+                           n'    (Long/parseLong n)
+                           t'    (if (and t (not (str/blank? t)))
+                                   (Long/parseLong t)
+                                   0)]
+                       [n' t']))
+        handler-a  (fn [req]
+                     (let [[n sent-ns] (parse-msg (slurp (:body req)))
+                           now         (System/nanoTime)]
+                       (when (and (> n warmup) (<= n total) (pos? sent-ns))
+                         (aset-long samples (int (- n warmup 1)) (- now sent-ns)))
+                       (if (>= n total)
+                         (do (reset! meas-end now)
+                             (close! done-ch))
+                         (do
+                           (when (= n warmup)
+                             (reset! meas-start now))
+                             @(http-client/post url-b {:body (str (inc n) "," (System/nanoTime))})))
+                       {:status 200 :body "ok"}))
+        handler-b  (fn [req]
+                     (let [[n sent-ns] (parse-msg (slurp (:body req)))]
+                           @(http-client/post url-a {:body (str n "," sent-ns)})
+                       {:status 200 :body "ok"}))
+        srv-a      (http-server/run-server handler-a {:port 19090})
+        srv-b      (http-server/run-server handler-b {:port 19091})]
+    @(http-client/post url-a {:body "0,0"})
+    (<!! done-ch)
+    (let [start-ns (if (pos? @meas-start) @meas-start (System/nanoTime))
+          end-ns   (if (> @meas-end start-ns) @meas-end (inc start-ns))
+          meas-ns  (- end-ns start-ns)
+          s        (/ meas-ns 1e9)
+          ms       (long (/ meas-ns 1e6))
+          vals     (vec samples)
+          sorted   (vec (sort vals))
+          idx      (fn [pct]
+                     (int (Math/round (/ (* pct (dec rounds)) 100.0))))
+          p50-us   (/ (double (nth sorted (idx 50))) 1000.0)
+          p95-us   (/ (double (nth sorted (idx 95))) 1000.0)
+          p99-us   (/ (double (nth sorted (idx 99))) 1000.0)
+          avg-us   (/ (/ (double (reduce + vals)) rounds) 1000.0)
+          rate     (/ rounds s)]
+      (srv-a)
+      (srv-b)
+      (printf "HTTP ping-pong: %d round trips in %dms (%.0f round trips/s, avg %.1fus p50 %.1fus p95 %.1fus p99 %.1fus, warmup %d)\n"
+              rounds ms rate avg-us p50-us p95-us p99-us warmup))))
+
+
+; ============================================================================
+; 7. HTTP server throughput
+; ============================================================================
+
+(defn bench-http-server-throughput [concurrency warmup-ms measure-ms]
+  (when (and (pos? concurrency) (>= warmup-ms 0) (pos? measure-ms))
+    (let [url             "http://127.0.0.1:19100/plaintext"
+          handler         (fn [_req] {:status 200 :body "OK"})
+          stop-server     (http-server/run-server handler {:port 19100})
+          warmup-end-ns   (+ (System/nanoTime) (* warmup-ms 1000000))
+          measure-end-ns  (+ warmup-end-ns (* measure-ms 1000000))
+          workers         (mapv (fn [_]
+                                  (future
+                                    (loop [succ 0
+                                           err  0]
+                                      (if (>= (System/nanoTime) measure-end-ns)
+                                        {:succ succ :err err}
+                                        (let [resp      (try
+                                                          @(http-client/get url {:timeout 1000})
+                                                          (catch Throwable _
+                                                            {:status 0}))
+                                              done-ns   (System/nanoTime)
+                                              in-window (and (>= done-ns warmup-end-ns)
+                                                             (< done-ns measure-end-ns))
+                                              ok?       (= 200 (:status resp))]
+                                          (cond
+                                            (and in-window ok?)
+                                            (recur (inc succ) err)
+
+                                            in-window
+                                            (recur succ (inc err))
+
+                                            :else
+                                            (recur succ err)))))))
+                                (range concurrency))
+          totals          (reduce (fn [{acc-succ :succ acc-err :err}
+                                      {w-succ :succ w-err :err}]
+                                    {:succ (+ acc-succ w-succ)
+                                     :err  (+ acc-err w-err)})
+                                  {:succ 0 :err 0}
+                                  (mapv deref workers))
+          seconds         (/ measure-ms 1000.0)
+          rate            (/ (:succ totals) seconds)]
+      (stop-server)
+      (printf "HTTP server throughput: %d requests in %dms (%.0f req/s, %d errors, concurrency %d, warmup %dms)\n"
+              (:succ totals) measure-ms rate (:err totals) concurrency warmup-ms))))
+
+
 ; ============================================================================
 ; main
 ; ============================================================================
 
 (defn -main [& _args]
-  (let [pool-size (Long/parseLong
-                   (System/getProperty "clojure.core.async.pool-size" "8"))]
-    (printf "CLOJURE_POOL_THREADS=%d\n" pool-size)
-    (flush))
-  (bench-ping-pong    ping-rounds)
-  (bench-ring         ring-nodes ring-hops)
-  (bench-fan-in       select-workers select-tasks)
-  (bench-spawn-idle   spawn-count)
-  (bench-prime-sieve  prime-max)
+  (bench-ping-pong   ping-rounds)
+  (bench-ring        ring-nodes ring-hops)
+  (bench-fan-in      select-workers select-tasks)
+  (bench-spawn-idle  spawn-count)
+  (bench-prime-sieve prime-max)
+  (bench-http-ping-pong http-rounds)
+  (bench-http-server-throughput http-tp-concurrency
+                                http-tp-warmup-ms
+                                http-tp-measure-ms)
   (flush)
   (shutdown-agents))

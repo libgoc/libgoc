@@ -19,6 +19,7 @@
 #include "../include/goc.h"
 #include "../include/goc_stats.h"
 #include "internal.h"
+#include "channel_internal.h"
 
 /* Lifetime timeout counters — relaxed atomics, read via accessor at teardown */
 static _Atomic uint64_t g_timeout_allocations = 0;
@@ -37,7 +38,41 @@ typedef struct {
 typedef struct goc_timeout_timer_ctx {
     uv_timer_t timer;         /* MUST be first member — freed from uv_close callback */
     goc_chan*  ch;
+    _Atomic int start_state;  /* 0=not-started, 1=started, 2=closed */
+    _Atomic int cancel_requested;
 } goc_timeout_timer_ctx;
+
+static void unregister_handle_cb(uv_handle_t* h);
+
+static void on_cancel_timer(void* arg)
+{
+    goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)arg;
+    int state = atomic_load_explicit(&tctx->start_state, memory_order_acquire);
+
+    GOC_DBG("on_cancel_timer: tctx=%p timer=%p ch=%p state=%d cancel=%d\n",
+            (void*)tctx, (void*)&tctx->timer, (void*)tctx->ch, state,
+            atomic_load_explicit(&tctx->cancel_requested, memory_order_acquire));
+
+    if (state != 1)
+        return;
+
+    if (uv_is_closing((uv_handle_t*)&tctx->timer))
+        return;
+
+    uv_timer_stop(&tctx->timer);
+    atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
+    uv_close((uv_handle_t*)&tctx->timer, unregister_handle_cb);
+}
+
+static void on_timeout_channel_closed(void* ud)
+{
+    goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)ud;
+    atomic_store_explicit(&tctx->cancel_requested, 1, memory_order_release);
+    GOC_DBG("on_timeout_channel_closed: tctx=%p timer=%p ch=%p state=%d\n",
+            (void*)tctx, (void*)&tctx->timer, (void*)tctx->ch,
+            atomic_load_explicit(&tctx->start_state, memory_order_acquire));
+    post_on_loop(on_cancel_timer, tctx);
+}
 
 /* -------------------------------------------------------------------------
  * Static callbacks (loop thread)
@@ -52,6 +87,7 @@ static void on_timeout(uv_timer_t* t)
     GOC_DBG("on_timeout: timer=%p ch=%p\n", (void*)t, (void*)ch);
     atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
     goc_close(ch);
+    atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
     uv_close((uv_handle_t*)t, unregister_handle_cb);
 }
 
@@ -72,6 +108,13 @@ static void on_start_timer(void* arg)
     uint64_t elapsed_ms = elapsed_ns / 1000000ULL;
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
 
+    if (atomic_load_explicit(&req->timer_ctx->cancel_requested, memory_order_acquire)) {
+        GOC_DBG("on_start_timer: cancel requested before init req=%p tctx=%p ch=%p\n",
+                (void*)req, (void*)req->timer_ctx, (void*)req->timer_ctx->ch);
+        gc_handle_unregister(req->timer_ctx);
+        return;
+    }
+
     int rc = uv_timer_init(g_loop, &req->timer_ctx->timer);
     GOC_DBG("on_start_timer: uv_timer_init timer=%p rc=%d remaining=%llu\n",
             (void*)&req->timer_ctx->timer, rc, (unsigned long long)remaining);
@@ -81,10 +124,21 @@ static void on_start_timer(void* arg)
         return;
     }
 
+    atomic_store_explicit(&req->timer_ctx->start_state, 1, memory_order_release);
+
+    if (atomic_load_explicit(&req->timer_ctx->cancel_requested, memory_order_acquire)) {
+        GOC_DBG("on_start_timer: cancel requested after init req=%p tctx=%p timer=%p\n",
+                (void*)req, (void*)req->timer_ctx, (void*)&req->timer_ctx->timer);
+        atomic_store_explicit(&req->timer_ctx->start_state, 2, memory_order_release);
+        uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
+        return;
+    }
+
     rc = uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);  /* one-shot */
     GOC_DBG("on_start_timer: uv_timer_start rc=%d\n", rc);
     if (rc < 0) {
         goc_close(req->timer_ctx->ch);
+        atomic_store_explicit(&req->timer_ctx->start_state, 2, memory_order_release);
         uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
     }
 }
@@ -102,6 +156,8 @@ goc_chan* goc_timeout(uint64_t ms)
             (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx);
 
     tctx->ch = ch;
+        atomic_store_explicit(&tctx->start_state, 0, memory_order_relaxed);
+        atomic_store_explicit(&tctx->cancel_requested, 0, memory_order_relaxed);
 
     req->timer_ctx   = tctx;
     req->ms          = ms;
@@ -109,6 +165,7 @@ goc_chan* goc_timeout(uint64_t ms)
 
     /* Register tctx: it holds the timer handle and the channel pointer. */
     gc_handle_register(tctx);
+    chan_set_on_close(ch, on_timeout_channel_closed, tctx);
 
     atomic_fetch_add_explicit(&g_timeout_allocations, 1, memory_order_relaxed);
 

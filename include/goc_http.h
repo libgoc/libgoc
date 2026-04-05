@@ -134,12 +134,24 @@ typedef struct {
  * Obtain a heap-allocated zero-initialised default with
  * goc_http_request_opts(); set only the fields you need. */
 typedef struct {
+    /* Pool to run the outbound client fiber on.
+     * Default (NULL): goc_current_or_default_pool(). */
+    goc_pool* pool;
+
     /* Extra headers to send with the request.
      * goc_array of goc_http_header_t*.  Default (NULL): none. */
     goc_array* headers;
 
     /* Request timeout in milliseconds.  0 = no timeout. */
     uint64_t timeout_ms;
+
+    /* Enable HTTP/1.1 keep-alive and connection reuse.
+     * 0 = disabled (default), non-zero = enabled.
+     *
+     * When enabled, goc_http may reuse an existing connection to the same
+     * host:port for subsequent requests on the same worker thread.
+     */
+    int keep_alive;
 } goc_http_request_opts_t;
 
 /* =========================================================================
@@ -183,6 +195,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
  * goc_http_server_close — gracefully stop the server.
  *
  * Stops accepting new connections and drains in-flight requests.
+ * Waits for all active connections to close before completing shutdown.
  * Returns a channel delivering goc_box_int(0) when shutdown is complete.
  */
 goc_chan* goc_http_server_close(goc_http_server_t* srv);
@@ -266,7 +279,8 @@ goc_chan* goc_http_server_respond_error(goc_http_ctx_t* ctx, int status,
 
 /**
  * goc_http_request_opts — allocate and return a default request options
- * struct.  Zero-initialised: no extra headers, no timeout.
+ * struct.  Zero-initialised: no extra headers, no timeout,
+ * keep-alive disabled, and pool set to goc_current_or_default_pool().
  */
 goc_http_request_opts_t* goc_http_request_opts(void);
 

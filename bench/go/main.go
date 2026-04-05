@@ -1,7 +1,7 @@
 /*
 Package main contains standalone CSP concurrency benchmarks for Go.
 
-Five micro-benchmarks exercise different aspects of Go's goroutine scheduler
+Seven micro-benchmarks exercise different aspects of Go's goroutine scheduler
 and channel primitives.  The benchmarks mirror those in bench/libgoc/bench.c
 so that Go and libgoc results can be compared directly.
 
@@ -17,6 +17,11 @@ Benchmarks
      on a shared channel, then wake them all; measures creation and wakeup cost.
   5. Prime sieve — a concurrent pipeline where each stage filters multiples of a
      discovered prime, stressing long chains of goroutines and sustained traffic.
+  6. HTTP ping-pong — two HTTP/1.1 servers on loopback ports bounce a counter
+     back and forth, exercising net/http server/client throughput.
+  7. HTTP server throughput — one HTTP/1.1 server serves a tiny plaintext
+	  response while many concurrent keep-alive clients issue GET requests,
+	  measuring sustained requests/second under load.
 
 Usage:
   go run .                    # single run (current GOMAXPROCS)
@@ -27,7 +32,13 @@ package main
 
 import (
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"reflect"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -40,12 +51,21 @@ func main() {
 	selectTasks   := 200000
 	spawnCount    := 200000
 	primeMax      := 20000
+	// Lower than CSP benchmarks: net/http pools connections, but each new
+	// connection pair still adds setup overhead.  2000 rounds gives a fast,
+	// stable rate measurement.
+	httpRounds    := 2000
+	httpTPConcurrency := 32
+	httpTPWarmupMs := 1000
+	httpTPMeasureMs := 5000
 
 	pingPong(pingRounds)
 	ringBenchmark(ringNodes, ringHops)
 	fanInBenchmark(selectWorkers, selectTasks)
 	spawnIdle(spawnCount)
 	primeSieve(primeMax)
+	httpPingPong(httpRounds)
+	httpServerThroughput(httpTPConcurrency, httpTPWarmupMs, httpTPMeasureMs)
 }
 
 
@@ -332,4 +352,262 @@ func filter(in <-chan int, prime int) <-chan int {
 		close(out)
 	}()
 	return out
+}
+
+
+// ============================================================================
+// 6. HTTP ping-pong
+// ============================================================================
+
+// httpPingPong measures HTTP/1.1 loopback request/response throughput.
+//
+	// Two servers (A and B) bounce a counter back and forth. Server A reads the
+	// counter, writes "ok", then forwards counter+1 to B and waits for that
+	// request to complete. Server B does the same back to A. When A sees counter
+	// >= rounds it closes `done` instead of forwarding.
+//
+// Go's http.Client reuses keep-alive connections by default, so throughput
+// here is higher than for libgoc (which opens a new TCP connection per
+// request). The numbers are still included for end-to-end comparison.
+//
+// Uses fixed loopback ports (19090/19091) and /ping endpoints to mirror the
+// libgoc and Clojure benchmark setup as closely as possible.
+// The initial POST is synchronous so the timer starts only after the first
+// server handshake has been initiated.
+func httpPingPong(rounds int) {
+	const addrA = "127.0.0.1:19090"
+	const addrB = "127.0.0.1:19091"
+	const urlA = "http://127.0.0.1:19090/ping"
+	const urlB = "http://127.0.0.1:19091/ping"
+
+	warmup := rounds / 10
+	if warmup < 100 {
+		warmup = 100
+	}
+	total := warmup + rounds
+
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	latNs := make([]int64, rounds)
+	var measStart int64
+	var measEnd int64
+
+	lnA, err := net.Listen("tcp", addrA)
+	if err != nil {
+		fmt.Printf("HTTP ping-pong: listen error on %s: %v\n", addrA, err)
+		return
+	}
+	lnB, err := net.Listen("tcp", addrB)
+	if err != nil {
+		lnA.Close()
+		fmt.Printf("HTTP ping-pong: listen error on %s: %v\n", addrB, err)
+		return
+	}
+
+	client := &http.Client{}
+
+	muxA := http.NewServeMux()
+	muxA.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		n, sentNs := parseCounterStamp(string(body))
+		now := time.Now().UnixNano()
+		w.Write([]byte("ok"))
+
+		if n > warmup && n <= total && sentNs > 0 {
+			latNs[n-warmup-1] = now - sentNs
+		}
+
+		if n >= total {
+			measEnd = now
+			doneOnce.Do(func() { close(done) })
+			return
+		}
+		if n == warmup {
+			measStart = now
+		}
+
+		resp, _ := client.Post(urlB, "text/plain",
+			strings.NewReader(fmt.Sprintf("%d,%d", n+1, time.Now().UnixNano())))
+		if resp != nil {
+			resp.Body.Close()
+		}
+	})
+
+	muxB := http.NewServeMux()
+	muxB.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		n, sentNs := parseCounterStamp(string(body))
+		w.Write([]byte("ok"))
+		resp, _ := client.Post(urlA, "text/plain",
+			strings.NewReader(fmt.Sprintf("%d,%d", n, sentNs)))
+		if resp != nil {
+			resp.Body.Close()
+		}
+	})
+
+	srvA := &http.Server{Handler: muxA}
+	srvB := &http.Server{Handler: muxB}
+	go srvA.Serve(lnA)
+	go srvB.Serve(lnB)
+
+	resp, _ := client.Post(urlA, "text/plain", strings.NewReader("0,0"))
+	if resp != nil {
+		resp.Body.Close()
+	}
+	<-done
+
+	if measStart == 0 || measEnd <= measStart {
+		measStart = time.Now().UnixNano()
+		measEnd = measStart + 1
+	}
+	measured := time.Duration(measEnd - measStart)
+
+	srvA.Close()
+	srvB.Close()
+
+	sorted := append([]int64(nil), latNs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+
+	var sum int64
+	for _, v := range latNs {
+		sum += v
+	}
+
+	ms := int(measured.Nanoseconds() / 1_000_000)
+	rate := float64(rounds) / measured.Seconds()
+	avgUs := float64(sum) / float64(rounds) / 1000.0
+	p50Us := percentileUs(sorted, 50)
+	p95Us := percentileUs(sorted, 95)
+	p99Us := percentileUs(sorted, 99)
+
+	fmt.Printf("HTTP ping-pong: %d round trips in %dms (%.0f round trips/s, avg %.1fus p50 %.1fus p95 %.1fus p99 %.1fus, warmup %d)\n",
+		rounds, ms, rate, avgUs, p50Us, p95Us, p99Us, warmup)
+}
+
+func parseCounterStamp(s string) (int, int64) {
+	parts := strings.SplitN(strings.TrimSpace(s), ",", 2)
+	if len(parts) == 0 {
+		return 0, 0
+	}
+	n, _ := strconv.Atoi(parts[0])
+	if len(parts) < 2 {
+		return n, 0
+	}
+	t, _ := strconv.ParseInt(parts[1], 10, 64)
+	return n, t
+}
+
+func percentileUs(sorted []int64, pct int) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := (pct*(len(sorted)-1) + 50) / 100
+	return float64(sorted[idx]) / 1000.0
+}
+
+
+// ============================================================================
+// 7. HTTP server throughput
+// ============================================================================
+
+// httpServerThroughput measures sustained HTTP plaintext throughput.
+//
+// One loopback server serves GET /plaintext with body "OK". `concurrency`
+// worker goroutines continuously issue keep-alive GET requests and count
+// completions in the measurement window after warmup.
+func httpServerThroughput(concurrency int, warmupMs int, measureMs int) {
+	if concurrency <= 0 || warmupMs < 0 || measureMs <= 0 {
+		return
+	}
+
+	const addr = "127.0.0.1:19100"
+	url := "http://" + addr + "/plaintext"
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Printf("HTTP server throughput: listen error: %v\n", err)
+		return
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/plaintext", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(ln)
+
+	transport := &http.Transport{
+		DisableKeepAlives:   false,
+		MaxIdleConns:        concurrency * 2,
+		MaxIdleConnsPerHost: concurrency * 2,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   1 * time.Second,
+	}
+
+	start := time.Now()
+	warmupEnd := start.Add(time.Duration(warmupMs) * time.Millisecond)
+	measureEnd := warmupEnd.Add(time.Duration(measureMs) * time.Millisecond)
+
+	succ := make([]uint64, concurrency)
+	errs := make([]uint64, concurrency)
+
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+	for i := 0; i < concurrency; i++ {
+		idx := i
+		go func() {
+			defer wg.Done()
+			var okCount uint64
+			var errCount uint64
+
+			for {
+				if !time.Now().Before(measureEnd) {
+					break
+				}
+
+				resp, reqErr := client.Get(url)
+				done := time.Now()
+				inWindow := !done.Before(warmupEnd) && done.Before(measureEnd)
+
+				if reqErr == nil && resp != nil {
+					io.Copy(io.Discard, resp.Body)
+					status := resp.StatusCode
+					resp.Body.Close()
+					if inWindow {
+						if status == http.StatusOK {
+							okCount++
+						} else {
+							errCount++
+						}
+					}
+				} else if inWindow {
+					errCount++
+				}
+			}
+
+			succ[idx] = okCount
+			errs[idx] = errCount
+		}()
+	}
+
+	wg.Wait()
+	srv.Close()
+	transport.CloseIdleConnections()
+
+	var totalSucc uint64
+	var totalErr uint64
+	for i := 0; i < concurrency; i++ {
+		totalSucc += succ[i]
+		totalErr += errs[i]
+	}
+
+	seconds := float64(measureMs) / 1000.0
+	rate := float64(totalSucc) / seconds
+	fmt.Printf("HTTP server throughput: %d requests in %dms (%.0f req/s, %d errors, concurrency %d, warmup %dms)\n",
+		totalSucc, measureMs, rate, totalErr, concurrency, warmupMs)
 }

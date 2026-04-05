@@ -588,9 +588,12 @@ void goc_init(void) {
 
 void goc_shutdown(void) {
     lifecycle_abort_non_main_thread("goc_shutdown");
+    GOC_DBG("goc_shutdown: begin\n");
 
     /* B.1 — Drain and destroy all registered pools (including g_default_pool). */
+    GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all begin\n");
     pool_registry_destroy_all();
+    GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all done\n");
 
     /* B.2 — Destroy channel mutexes and tear down the live-channels registry.
      *
@@ -610,21 +613,27 @@ void goc_shutdown(void) {
     live_channels_cap = 0;
 
     uv_mutex_destroy(&g_live_mutex);
+    GOC_DBG("goc_shutdown: B.2 channels/mutex teardown done\n");
 
     /* B.2.1 — Destroy all RW mutex internal locks. */
+    GOC_DBG("goc_shutdown: B.2.1 mutex_registry_destroy_all begin\n");
     mutex_registry_destroy_all();
+    GOC_DBG("goc_shutdown: B.2.1 mutex_registry_destroy_all done\n");
 
     /* B.3 — Shut down the event loop and join the loop thread.
      *
      * Keep g_live_uv_mutex alive until loop shutdown completes: close
      * callbacks that run on the loop thread call gc_handle_unregister(). */
+    GOC_DBG("goc_shutdown: B.3 loop_shutdown begin\n");
     loop_shutdown();
+    GOC_DBG("goc_shutdown: B.3 loop_shutdown done\n");
 
     /* B.3a — Tear down the live UV handle roots registry. */
     live_uv_handles     = NULL;
     live_uv_handles_len = 0;
     live_uv_handles_cap = 0;
     uv_mutex_destroy(&g_live_uv_mutex);
+    GOC_DBG("goc_shutdown: B.3a live_uv teardown done\n");
 
     /* B.4 — Free all fiber root chunks accumulated during this lifecycle.
      *
@@ -643,4 +652,5 @@ void goc_shutdown(void) {
         atomic_store_explicit(&fiber_root_bitmap[w], 0, memory_order_relaxed);
     atomic_store_explicit(&fiber_root_num_chunks, 0, memory_order_relaxed);
     uv_mutex_destroy(&fiber_root_mutex);
+    GOC_DBG("goc_shutdown: B.4 fiber roots teardown done; shutdown complete\n");
 }

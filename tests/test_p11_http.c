@@ -36,7 +36,10 @@
  *   P11.23 Correctness: goc_http_response_t->body_len matches respond_buf len
  *   P11.24 Correctness: custom request headers via opts->headers received
  *   P11.25 Security: CRLF in header value blocked (header-injection)
- *   P11.26 Integration: ping-pong — two servers bounce a counter 500 round trips
+ *   P11.26 Integration: ping-pong — two servers bounce a counter 500 round trips (keep-alive enabled)
+ *   P11.27 Keep-alive: client/server persistent connection handles sequential requests
+ *   P11.28 Regression: fire-and-forget ping-pong survives repeated immediate teardown
+ *   P11.29 Regression: fire-and-forget connect churn survives repeated teardown
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -863,6 +866,7 @@ typedef struct {
     goc_chan* done;
     int       port;
     int       oversized_status;
+    int       oversized_status2;
     int       followup_status;
 } p11_oversize_t;
 
@@ -875,13 +879,21 @@ static void fiber_p11_19(void* arg)
 
     char* big = (char*)calloc(P11_19_BODY_BYTES, 1);
     if (big) {
+        goc_http_request_opts_t* o = goc_http_request_opts();
+        o->keep_alive = 1;
         goc_http_response_t* r1 = (goc_http_response_t*)goc_take(
             goc_http_post_buf(local_url("/ok", a->port),
                               "application/octet-stream",
                               big, P11_19_BODY_BYTES,
-                              goc_http_request_opts()))->val;
+                              o))->val;
+        goc_http_response_t* r2 = (goc_http_response_t*)goc_take(
+            goc_http_post_buf(local_url("/ok", a->port),
+                              "application/octet-stream",
+                              big, P11_19_BODY_BYTES,
+                              o))->val;
         free(big);
         a->oversized_status = r1 ? r1->status : -1;
+        a->oversized_status2 = r2 ? r2->status : -1;
     }
 
     /* Follow-up: server must still accept normal requests after the rejection. */
@@ -907,6 +919,7 @@ static void test_p11_19(void)
     goc_take_sync(args.done);
     /* Server closed without sending a response: status must be 0. */
     ASSERT(args.oversized_status == 0);
+    ASSERT(args.oversized_status2 == 0);
     /* Server must still be live for subsequent requests. */
     ASSERT(args.followup_status == 200);
     TEST_PASS();
@@ -1258,7 +1271,9 @@ static void pp_handler_a(goc_http_ctx_t* ctx)
         return;
     }
     char* msg = goc_sprintf("%d", n + 1);
-    goc_http_post(g_pp_addr_b, "text/plain", msg, goc_http_request_opts());
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(g_pp_addr_b, "text/plain", msg, opts);
 }
 
 /* Server B: receive counter, respond, then forward to A. */
@@ -1267,7 +1282,9 @@ static void pp_handler_b(goc_http_ctx_t* ctx)
     int n = atoi(goc_http_server_body_str(ctx));
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
     char* msg = goc_sprintf("%d", n + 1);
-    goc_http_post(g_pp_addr_a, "text/plain", msg, goc_http_request_opts());
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(g_pp_addr_a, "text/plain", msg, opts);
 }
 
 static void fiber_p11_26(void* arg)
@@ -1290,7 +1307,9 @@ static void fiber_p11_26(void* arg)
     goc_take(ready_b);
 
     /* Fire the first request; the two handlers bounce it back and forth. */
-    goc_http_post(g_pp_addr_a, "text/plain", "0", goc_http_request_opts());
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(g_pp_addr_a, "text/plain", "0", opts);
 
     /* Wait until server A closes pp_done (counter reached ROUNDS). */
     goc_take(a->pp_done);
@@ -1302,7 +1321,7 @@ static void fiber_p11_26(void* arg)
 
 static void test_p11_26(void)
 {
-    TEST_BEGIN("P11.26 Ping-pong: 500 round trips between two servers");
+    TEST_BEGIN("P11.26 Ping-pong: 500 round trips between two servers (keep-alive)");
     p11_pingpong_t args = {
         goc_chan_make(1),   /* test_done */
         next_port(),        /* port_a */
@@ -1316,13 +1335,218 @@ done:;
 }
 
 /* =========================================================================
+ * P11.27 — Keep-alive sequential requests on one persistent connection
+ * ====================================================================== */
+
+typedef struct {
+    goc_chan* done;
+    int       port;
+    int       status1;
+    int       status2;
+} p11_keepalive_t;
+
+static void fiber_p11_27(void* arg)
+{
+    p11_keepalive_t* a = (p11_keepalive_t*)arg;
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "GET", "/ping", handler_ping);
+    goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+
+    goc_http_response_t* r1 = (goc_http_response_t*)goc_take(
+        goc_http_get(local_url("/ping", a->port), opts))->val;
+    a->status1 = r1 ? r1->status : -1;
+
+    goc_http_response_t* r2 = (goc_http_response_t*)goc_take(
+        goc_http_get(local_url("/ping", a->port), opts))->val;
+    a->status2 = r2 ? r2->status : -1;
+
+    goc_take(goc_http_server_close(srv));
+    goc_put(a->done, goc_box_int(1));
+}
+
+static void test_p11_27(void)
+{
+    TEST_BEGIN("P11.27 Keep-alive: sequential requests succeed with persistent connection");
+    p11_keepalive_t args;
+    memset(&args, 0, sizeof(args));
+    args.done = goc_chan_make(1);
+    args.port = next_port();
+    goc_go(fiber_p11_27, &args);
+    goc_take_sync(args.done);
+    ASSERT(args.status1 == 200);
+    ASSERT(args.status2 == 200);
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P11.28 — Regression: fire-and-forget ping-pong + immediate teardown
+ *
+ * Replays the original fire-and-forget forwarding behavior (handlers post
+ * outbound relay requests without waiting on the result), then tears both
+ * servers down immediately when the target round count is reached.
+ *
+ * This historically exposed a libuv assertion in write callback processing
+ * under repeated runs. Keep this test as a stress guard for close/write races.
+ * ========================================================================= */
+
+#define P11_28_ITERS  8
+#define P11_28_ROUNDS 250
+
+typedef struct {
+    goc_chan* test_done;
+    int       ok;
+} p11_ff_reg_t;
+
+typedef struct {
+    goc_chan* done;
+    int       rounds;
+    char      url_a[64];
+    char      url_b[64];
+} p11_ff_ctx_t;
+
+static p11_ff_ctx_t* g_ff_ctx = NULL;
+
+static void ff_handler_a(goc_http_ctx_t* ctx)
+{
+    int n = atoi(goc_http_server_body_str(ctx));
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+    if (n >= g_ff_ctx->rounds) {
+        goc_close(g_ff_ctx->done);
+        return;
+    }
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(g_ff_ctx->url_b, "text/plain", goc_sprintf("%d", n + 1), opts);
+}
+
+static void ff_handler_b(goc_http_ctx_t* ctx)
+{
+    int n = atoi(goc_http_server_body_str(ctx));
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    goc_http_post(g_ff_ctx->url_a, "text/plain", goc_sprintf("%d", n + 1), opts);
+}
+
+static void fiber_p11_28(void* arg)
+{
+    p11_ff_reg_t* a = (p11_ff_reg_t*)arg;
+    a->ok = 1;
+
+    for (int i = 0; i < P11_28_ITERS; i++) {
+        int port_a = next_port();
+        int port_b = next_port();
+
+        p11_ff_ctx_t* ctx = (p11_ff_ctx_t*)goc_malloc(sizeof(p11_ff_ctx_t));
+        ctx->done   = goc_chan_make(0);
+        ctx->rounds = P11_28_ROUNDS;
+        snprintf(ctx->url_a, sizeof(ctx->url_a), "http://127.0.0.1:%d/ping", port_a);
+        snprintf(ctx->url_b, sizeof(ctx->url_b), "http://127.0.0.1:%d/ping", port_b);
+        g_ff_ctx = ctx;
+
+        goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
+        goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+        goc_http_server_route(srv_a, "POST", "/ping", ff_handler_a);
+        goc_http_server_route(srv_b, "POST", "/ping", ff_handler_b);
+
+        goc_take(goc_http_server_listen(srv_a, "127.0.0.1", port_a));
+        goc_take(goc_http_server_listen(srv_b, "127.0.0.1", port_b));
+
+        goc_http_request_opts_t* opts = goc_http_request_opts();
+        opts->keep_alive = 1;
+        goc_http_post(ctx->url_a, "text/plain", "0", opts);
+
+        goc_take(ctx->done);
+
+        /* Intentional immediate teardown: this is the race window we guard. */
+        goc_take(goc_http_server_close(srv_a));
+        goc_take(goc_http_server_close(srv_b));
+    }
+
+    goc_put(a->test_done, goc_box_int(1));
+}
+
+static void test_p11_28(void)
+{
+    TEST_BEGIN("P11.28 Regression: fire-and-forget ping-pong survives repeated teardown");
+    p11_ff_reg_t args;
+    memset(&args, 0, sizeof(args));
+    args.test_done = goc_chan_make(1);
+    goc_go(fiber_p11_28, &args);
+    goc_take_sync(args.test_done);
+    ASSERT(args.ok == 1);
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P11.29 — Regression: fire-and-forget connect churn + immediate teardown
+ *
+ * Stresses outbound connect/write callback lifetimes by launching many
+ * fire-and-forget requests, then tearing the server down quickly. The goal is
+ * to catch connect/write lifecycle regressions (including libuv req asserts).
+ * ========================================================================= */
+
+#define P11_29_ITERS     6
+#define P11_29_REQUESTS  600
+
+typedef struct {
+    goc_chan* done;
+    int       ok;
+} p11_ff_churn_t;
+
+static void fiber_p11_29(void* arg)
+{
+    p11_ff_churn_t* a = (p11_ff_churn_t*)arg;
+    a->ok = 1;
+
+    for (int iter = 0; iter < P11_29_ITERS; iter++) {
+        int port = next_port();
+        goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+        goc_http_server_route(srv, "POST", "/ok", handler_ping);
+        goc_take(goc_http_server_listen(srv, "127.0.0.1", port));
+
+        const char* url = local_url("/ok", port);
+        for (int i = 0; i < P11_29_REQUESTS; i++) {
+            goc_http_request_opts_t* opts = goc_http_request_opts();
+            opts->keep_alive = 0; /* force connect churn */
+            goc_http_post(url, "text/plain", "x", opts);
+        }
+
+        /* Keep this intentionally short to maximize overlap with in-flight IO.
+         */
+        goc_take(goc_timeout(15));
+        goc_take(goc_http_server_close(srv));
+    }
+
+    goc_put(a->done, goc_box_int(1));
+}
+
+static void test_p11_29(void)
+{
+    TEST_BEGIN("P11.29 Regression: fire-and-forget connect churn survives repeated teardown");
+    p11_ff_churn_t args;
+    memset(&args, 0, sizeof(args));
+    args.done = goc_chan_make(1);
+    goc_go(fiber_p11_29, &args);
+    goc_take_sync(args.done);
+    ASSERT(args.ok == 1);
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
 int main(void)
 {
     install_crash_handler();
-    goc_test_arm_watchdog(60);
+    goc_test_arm_watchdog(90);
 
     /* Keep HTTP stress deterministic in CI/local loops by capping pool
      * parallelism for this test process. High worker counts amplify scheduler
@@ -1363,6 +1587,9 @@ int main(void)
     test_p11_24();
     test_p11_25();
     test_p11_26();
+    test_p11_27();
+    test_p11_28();
+    test_p11_29();
 
 
     printf("\n%d/%d tests passed", g_tests_passed, g_tests_run);

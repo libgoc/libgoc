@@ -219,6 +219,9 @@ struct goc_spawn_req {
 void chan_register(goc_chan* ch);
 void chan_unregister(goc_chan* ch);
 
+/* channel.c → used by goc_io.c */
+int goc_chan_is_closing(goc_chan* ch);
+
 /* gc.c → called from goc_init (gc.c) */
 void live_uv_handles_init(void);
 
@@ -243,6 +246,7 @@ void* mco_get_suspended_sp(mco_coro* co);
 
 /* pool.c → used by fiber.c, channel.c */
 void post_to_run_queue(goc_pool* pool, goc_entry* entry);
+int  goc_pool_id(goc_pool* pool);
 void pool_submit_spawn(goc_pool* pool,
                        void (*fn)(void*),
                        void* arg,
@@ -276,8 +280,10 @@ static inline bool try_claim_wake(goc_entry* e) {
 /* loop.c → used by channel.c, alts.c, timeout.c, gc.c */
 void loop_init(void);
 void loop_shutdown(void);
+int  goc_loop_is_shutting_down(void);
 void post_callback(goc_entry* entry, void* value);
 void post_on_loop(void (*fn)(void*), void* arg);
+int  post_on_loop_checked(void (*fn)(void*), void* arg);
 
 /* gc.c → used by pool.c, loop.c */
 void live_channels_init(void);

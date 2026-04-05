@@ -42,6 +42,15 @@ static uv_async_t    *g_wakeup_raw     = NULL;  /* raw pointer behind g_wakeup *
 static uv_async_t    *g_shutdown_async = NULL;
 static uv_thread_t    g_loop_thread;
 static mpsc_queue_t   g_cb_queue;
+static uv_mutex_t     g_loop_submit_lock;
+
+typedef enum {
+    GOC_LOOP_STATE_STOPPED = 0,
+    GOC_LOOP_STATE_RUNNING = 1,
+    GOC_LOOP_STATE_SHUTTING_DOWN = 2,
+} goc_loop_state_t;
+
+static _Atomic int g_loop_state = GOC_LOOP_STATE_STOPPED;
 
 /* Loop-thread drain reentrancy guard.
  * on_wakeup may trigger callbacks that enqueue more work; avoid recursively
@@ -190,6 +199,44 @@ void post_on_loop(void (*fn)(void*), void* arg)
     post_callback(e, NULL);
 }
 
+int post_on_loop_checked(void (*fn)(void*), void* arg)
+{
+    int rc = 0;
+
+    uv_mutex_lock(&g_loop_submit_lock);
+    if (atomic_load_explicit(&g_loop_state, memory_order_acquire) !=
+        GOC_LOOP_STATE_RUNNING) {
+        rc = UV_ECANCELED;
+    } else {
+        goc_loop_task_t* task =
+            (goc_loop_task_t*)goc_malloc(sizeof(goc_loop_task_t));
+        task->fn  = fn;
+        task->arg = arg;
+
+        goc_entry* e = (goc_entry*)goc_malloc(sizeof(goc_entry));
+        *e = (goc_entry){ 0 };
+        e->kind = GOC_CALLBACK;
+        e->cb   = on_loop_task_cb;
+        e->ud   = task;
+        post_callback(e, NULL);
+    }
+    uv_mutex_unlock(&g_loop_submit_lock);
+
+    if (rc < 0) {
+        GOC_DBG("post_on_loop_checked: rejected fn=%p arg=%p state=%d rc=%d\n",
+                (void*)fn, arg,
+                atomic_load_explicit(&g_loop_state, memory_order_relaxed),
+                rc);
+    }
+    return rc;
+}
+
+int goc_loop_is_shutting_down(void)
+{
+    return atomic_load_explicit(&g_loop_state, memory_order_acquire) !=
+           GOC_LOOP_STATE_RUNNING;
+}
+
 /* --------------------------------------------------------------------------
  * goc_scheduler — public
  * -------------------------------------------------------------------------- */
@@ -267,6 +314,21 @@ static void loop_process_pending_put(goc_entry *e)
 
     GOC_DBG("loop_process_pending_put: ch=%p closed=%d item_count=%zu takers=%p val=%p\n",
             (void*)ch, ch->closed, ch->item_count, (void*)ch->takers, e->put_val);
+
+    /* Walk taker list to verify each entry is accessible before claim. */
+    {
+        goc_entry *_t = ch->takers;
+        int _i = 0;
+        while (_t) {
+            GOC_DBG("loop_process_pending_put: taker[%d]=%p cancelled=%d woken=%d kind=%d coro=%p\n",
+                    _i++, (void*)_t,
+                    (int)atomic_load_explicit(&_t->cancelled, memory_order_acquire),
+                    (int)atomic_load_explicit(&_t->woken, memory_order_acquire),
+                    (int)_t->kind,
+                    (_t->kind == GOC_FIBER ? (void*)_t->coro : NULL));
+            _t = _t->next;
+        }
+    }
 
     /* Closed: always fail (matches goc_put ordering). */
     if (ch->closed) {
@@ -364,6 +426,9 @@ static void loop_process_pending_take(goc_entry *e)
     }
 
     /* No match yet: park.  wake() → post_callback() will fire cb later. */
+    GOC_DBG("takers_append: ch=%p e=%p kind=%d coro=%p\n",
+            (void*)ch, (void*)e, (int)e->kind,
+            (e->kind == GOC_FIBER ? (void*)e->coro : NULL));
     chan_list_append(&ch->takers, &ch->takers_tail, e);
     uv_mutex_unlock(ch->lock);
 }
@@ -430,6 +495,11 @@ static void on_shutdown_signal(uv_async_t *h)
     (void)h;
     GOC_DBG("on_shutdown_signal: entered\n");
 
+    uv_mutex_lock(&g_loop_submit_lock);
+    atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_SHUTTING_DOWN,
+                          memory_order_release);
+    uv_mutex_unlock(&g_loop_submit_lock);
+
     /* Fire any remaining pending callbacks before closing. */
     GOC_DBG("on_shutdown_signal: before drain_cb_queue\n");
     drain_cb_queue_guarded();
@@ -483,6 +553,10 @@ static void loop_thread_fn(void *arg)
 
 void loop_init(void)
 {
+    uv_mutex_init(&g_loop_submit_lock);
+    atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_STOPPED,
+                          memory_order_relaxed);
+
     /* 1. Allocate and initialise the event loop. */
     g_loop = (uv_loop_t *)malloc(sizeof(uv_loop_t));
     assert(g_loop);
@@ -507,6 +581,9 @@ void loop_init(void)
     /* 5. Initialise the MPSC callback queue. */
     cb_queue_init();
 
+    atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_RUNNING,
+                          memory_order_release);
+
     /* 6. Spawn the loop thread (GC-registered on all platforms via
      *    goc_thread_create — see internal.h). */
     goc_thread_create(&g_loop_thread, loop_thread_fn, NULL);
@@ -514,7 +591,16 @@ void loop_init(void)
 
 void loop_shutdown(void)
 {
+    GOC_DBG("loop_shutdown: begin depth=%zu hwm=%zu state=%d\n",
+            atomic_load_explicit(&g_cb_queue_depth, memory_order_relaxed),
+            atomic_load_explicit(&g_cb_queue_hwm, memory_order_relaxed),
+            atomic_load_explicit(&g_loop_state, memory_order_relaxed));
     GOC_DBG("loop_shutdown: sending shutdown async\n");
+
+    uv_mutex_lock(&g_loop_submit_lock);
+    atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_SHUTTING_DOWN,
+                          memory_order_release);
+    uv_mutex_unlock(&g_loop_submit_lock);
 
     /* Signal the loop thread to drain, close handles, and exit. */
     int rcs = uv_async_send(g_shutdown_async);
@@ -523,10 +609,16 @@ void loop_shutdown(void)
     GOC_DBG("loop_shutdown: joining loop thread\n");
     /* Wait for the loop thread to finish. */
     goc_thread_join(&g_loop_thread);
-    GOC_DBG("loop_shutdown: done\n");
+        GOC_DBG("loop_shutdown: joined depth=%zu hwm=%zu\n",
+            atomic_load_explicit(&g_cb_queue_depth, memory_order_relaxed),
+            atomic_load_explicit(&g_cb_queue_hwm, memory_order_relaxed));
+        GOC_DBG("loop_shutdown: done\n");
 
     /* All handles are closed; the loop should be idle. */
     assert(uv_loop_close(g_loop) == 0);
+    uv_mutex_destroy(&g_loop_submit_lock);
+    atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_STOPPED,
+                          memory_order_release);
     free(g_loop);
     g_loop = NULL;
 }

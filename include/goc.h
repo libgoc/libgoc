@@ -196,7 +196,30 @@ char* goc_sprintf(const char* fmt, ...);
 bool goc_in_fiber(void);
 
 /**
- * goc_go() — Spawn a fiber on the default thread pool.
+ * goc_current_pool() — Return the current fiber's pool, or NULL outside fibers.
+ */
+goc_pool* goc_current_pool(void);
+
+/**
+ * goc_current_or_default_pool() — Return current pool when in a fiber,
+ * otherwise return goc_default_pool().
+ */
+goc_pool* goc_current_or_default_pool(void);
+
+/**
+ * goc_current_thread() — Return the current OS thread id (libuv thread type).
+ */
+uv_thread_t goc_current_thread(void);
+
+/**
+ * goc_current_fiber() — Return the currently running fiber handle, or NULL
+ * outside fibers. The returned pointer is runtime-internal and opaque.
+ */
+void* goc_current_fiber(void);
+
+/**
+ * goc_go() — Spawn a fiber on the current pool when in fiber context,
+ * otherwise on the default thread pool.
  *
  * fn    : fiber entry point; receives arg.
  * arg   : arbitrary user data passed to fn.

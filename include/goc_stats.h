@@ -57,16 +57,16 @@ typedef struct goc_stats_event {
     goc_stats_event_type_t type;
     uint64_t timestamp;
     union {
-        struct { void* id; int status; int thread_count; } pool;
+        struct { int id; int status; int thread_count; } pool;
         struct {
             int      id;
-            void*    pool_id;
+            int      pool_id;
             int      status;
             int      pending_jobs;
             uint64_t steal_attempts;   /* lifetime steal attempts (only meaningful at STOPPED) */
             uint64_t steal_successes;  /* lifetime steal successes (only meaningful at STOPPED) */
         } worker;
-        struct { int id; int last_worker_id; int status; } fiber;
+        struct { int id; int last_worker_id; int last_pool_id; int status; } fiber;
         struct {
             int      id;
             int      status;
@@ -114,10 +114,10 @@ void goc_stats_flush(void);
  * ---------------------------------------------------------------------- */
 
 #ifdef GOC_ENABLE_STATS
-void goc_stats_submit_event_pool(void* id, int status, int thread_count);
-void goc_stats_submit_event_worker(int id, void* pool_id, int status, int pending_jobs,
+void goc_stats_submit_event_pool(int id, int status, int thread_count);
+void goc_stats_submit_event_worker(int id, int pool_id, int status, int pending_jobs,
                                    uint64_t steal_attempts, uint64_t steal_successes);
-void goc_stats_submit_event_fiber(int id, int last_worker_id, int status);
+void goc_stats_submit_event_fiber(int id, int last_worker_id, int last_pool_id, int status);
 void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count,
                                     uint64_t taker_scans, uint64_t putter_scans,
                                     uint64_t compaction_runs, uint64_t entries_removed);
@@ -152,14 +152,14 @@ void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
     goc_stats_submit_event_pool((id), (status), (thread_count))
 #  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, steal_suc) \
     goc_stats_submit_event_worker((id), (pool_id), (status), (pending_jobs), (steal_att), (steal_suc))
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status) \
-    goc_stats_submit_event_fiber((id), (last_worker_id), (status))
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, last_pool_id, status) \
+    goc_stats_submit_event_fiber((id), (last_worker_id), (last_pool_id), (status))
 #  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) \
     goc_stats_submit_event_channel((id), (status), (buf_size), (item_count), (ts), (ps), (cr), (er))
 #else
 #  define GOC_STATS_POOL_STATUS(id, status, thread_count)                            ((void)0)
 #  define GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, suc) ((void)0)
-#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, status)                         ((void)0)
+#  define GOC_STATS_FIBER_STATUS(id, last_worker_id, last_pool_id, status)           ((void)0)
 #  define GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er) ((void)0)
 #endif
 

@@ -31,6 +31,27 @@ bool goc_in_fiber(void) {
     return mco_running() != NULL;
 }
 
+goc_pool* goc_current_pool(void) {
+    mco_coro* co = mco_running();
+    if (!co)
+        return NULL;
+    goc_entry* entry = (goc_entry*)mco_get_user_data(co);
+    return entry ? entry->pool : NULL;
+}
+
+goc_pool* goc_current_or_default_pool(void) {
+    goc_pool* pool = goc_current_pool();
+    return pool ? pool : g_default_pool;
+}
+
+uv_thread_t goc_current_thread(void) {
+    return uv_thread_self();
+}
+
+void* goc_current_fiber(void) {
+    return (void*)mco_running();
+}
+
 /* ---------------------------------------------------------------------------
  * fiber_trampoline
  *
@@ -43,7 +64,7 @@ static void fiber_trampoline(mco_coro* co) {
     goc_entry* entry = (goc_entry*)mco_get_user_data(co);
     entry->fn(entry->fn_arg);
     /* Telemetry: fiber finished */
-    GOC_STATS_FIBER_STATUS(entry->id, 0, GOC_FIBER_COMPLETED);
+    GOC_STATS_FIBER_STATUS(entry->id, 0, goc_pool_id(entry->pool), GOC_FIBER_COMPLETED);
     goc_close(entry->join_ch);
 }
 
@@ -84,6 +105,10 @@ goc_entry* goc_fiber_entry_create(goc_pool* pool,
      *    Unregistered in pool.c before mco_destroy when the fiber reaches
      *    MCO_DEAD. */
     void* fiber_stack_top    = (char*)entry->coro->stack_base + entry->coro->stack_size;
+    GOC_DBG("fiber_create: entry=%p coro=%p stack_base=%p stack_top=%p stack_size=%zu\n",
+            (void*)entry, (void*)entry->coro,
+            (void*)entry->coro->stack_base, fiber_stack_top,
+            entry->coro->stack_size);
     entry->fiber_root_handle = goc_fiber_root_register(entry->coro, fiber_stack_top, entry);
 
     /* 6. Record the canary pointer (lowest word of the fiber stack). */
@@ -93,7 +118,7 @@ goc_entry* goc_fiber_entry_create(goc_pool* pool,
     goc_stack_canary_set(entry->stack_canary_ptr);
 
     /* Telemetry: fiber created; -1 = not yet scheduled on any worker */
-    GOC_STATS_FIBER_STATUS(entry->id, -1, GOC_FIBER_CREATED);
+    GOC_STATS_FIBER_STATUS(entry->id, -1, goc_pool_id(entry->pool), GOC_FIBER_CREATED);
 
     return entry;
 }
@@ -120,7 +145,7 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
  * --------------------------------------------------------------------------- */
 
 goc_chan* goc_go(void (*fn)(void*), void* arg) {
-    return goc_go_on(g_default_pool, fn, arg);
+    return goc_go_on(goc_current_or_default_pool(), fn, arg);
 }
 
 /* ---------------------------------------------------------------------------

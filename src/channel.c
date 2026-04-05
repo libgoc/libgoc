@@ -165,6 +165,9 @@ void compact_dead_entries(goc_chan* ch)
     while (*pp) {
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
+            GOC_DBG("compact_dead_entries: unlinking taker e=%p ch=%p kind=%d coro=%p\n",
+                    (void*)e, (void*)ch, (int)e->kind,
+                    (e->kind == GOC_FIBER ? (void*)e->coro : NULL));
             *pp = e->next;   /* unlink */
 #ifdef GOC_ENABLE_STATS
             removed++;
@@ -253,6 +256,12 @@ void chan_set_on_close(goc_chan* ch, void (*on_close)(void*), void* ud)
  * Idempotent. CAS on close_guard ensures exactly one caller proceeds.
  * Does NOT destroy the mutex — ownership transfers to goc_shutdown (gc.c).
  * -------------------------------------------------------------------------- */
+
+int goc_chan_is_closing(goc_chan* ch)
+{
+    return atomic_load_explicit(&ch->close_guard, memory_order_acquire);
+}
+
 void goc_close(goc_chan* ch)
 {
     void (*on_close)(void*) = NULL;
@@ -430,6 +439,8 @@ goc_val_t* goc_take(goc_chan* ch)
     GOC_DBG("goc_take: parking coro=%p on ch=%p\n", (void*)mco_running(), (void*)ch);
 
     /* Append to takers list */
+    GOC_DBG("takers_append: ch=%p e=%p kind=%d coro=%p\n",
+            (void*)ch, (void*)e, (int)e->kind, (void*)e->coro);
     chan_list_append(&ch->takers, &ch->takers_tail, e);
 
     /* Set parked = 0 on the fiber's initial entry while ch->lock is still held.
@@ -574,6 +585,8 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     goc_sync_init(&e.sync_obj);
     e.sync_sem_ptr = &e.sync_obj;
 
+    GOC_DBG("takers_append: ch=%p e=%p kind=%d coro=%p\n",
+            (void*)ch, (void*)&e, (int)e.kind, NULL);
     chan_list_append(&ch->takers, &ch->takers_tail, &e);
 
     uv_mutex_unlock(ch->lock);

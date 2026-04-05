@@ -472,7 +472,7 @@ goc_chan* goc_go(void (*fn)(void*), void* arg);
 goc_chan* goc_go_on(goc_pool*, void (*fn)(void*), void* arg);
 ```
 
-`goc_go` posts to the default pool. `goc_go_on` posts to a specific pool. Both return a join channel — see [Join Channel](#join-channel) below. Multiple pools allow priority separation or affinity pinning.
+`goc_go` posts to the current pool when called from a fiber, and falls back to the default pool outside fiber context. `goc_go_on` posts to a specific pool. Both return a join channel — see [Join Channel](#join-channel) below. Multiple pools allow priority separation or affinity pinning.
 
 ### Launch (`goc_go`)
 

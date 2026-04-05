@@ -154,24 +154,25 @@ static void goc_stats_default_callback(const goc_stats_event_t *ev, void *ud) {
     printf("[goc_stats] %s @ %llu: ", type, (unsigned long long)ev->timestamp);
     switch (ev->type) {
         case GOC_STATS_EVENT_POOL_STATUS:
-            printf("pool=%p status=%d threads=%d\n",
+            printf("pool=%d status=%d threads=%d\n",
                    ev->data.pool.id, ev->data.pool.status, ev->data.pool.thread_count);
             break;
         case GOC_STATS_EVENT_WORKER_STATUS:
             if (ev->data.worker.status == GOC_WORKER_STOPPED)
-                printf("id=%d pool=%p status=%d pending=%d steals=%llu/%llu\n",
+                printf("id=%d pool=%d status=%d pending=%d steals=%llu/%llu\n",
                        ev->data.worker.id, ev->data.worker.pool_id,
                        ev->data.worker.status, ev->data.worker.pending_jobs,
                        (unsigned long long)ev->data.worker.steal_successes,
                        (unsigned long long)ev->data.worker.steal_attempts);
             else
-                printf("id=%d pool=%p status=%d pending=%d\n",
+                printf("id=%d pool=%d status=%d pending=%d\n",
                        ev->data.worker.id, ev->data.worker.pool_id,
                        ev->data.worker.status, ev->data.worker.pending_jobs);
             break;
         case GOC_STATS_EVENT_FIBER_STATUS:
-            printf("id=%d last_worker=%d status=%d\n",
-                   ev->data.fiber.id, ev->data.fiber.last_worker_id, ev->data.fiber.status);
+             printf("id=%d last_worker=%d last_pool=%d status=%d\n",
+                 ev->data.fiber.id, ev->data.fiber.last_worker_id,
+                 ev->data.fiber.last_pool_id, ev->data.fiber.status);
             break;
         case GOC_STATS_EVENT_CHANNEL_STATUS:
             if (ev->data.channel.status == 0)
@@ -291,7 +292,7 @@ static void goc_stats_dispatch(const goc_stats_event_t *ev) {
     uv_async_send(g_stats_async);
 }
 
-void goc_stats_submit_event_pool(void *id, int status, int thread_count) {
+void goc_stats_submit_event_pool(int id, int status, int thread_count) {
     goc_stats_event_t ev;
     ev.type                   = GOC_STATS_EVENT_POOL_STATUS;
     ev.timestamp              = goc_stats_now();
@@ -301,7 +302,7 @@ void goc_stats_submit_event_pool(void *id, int status, int thread_count) {
     goc_stats_dispatch(&ev);
 }
 
-void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pending_jobs,
+void goc_stats_submit_event_worker(int id, int pool_id, int status, int pending_jobs,
                                    uint64_t steal_attempts, uint64_t steal_successes) {
     goc_stats_event_t ev;
     ev.type                       = GOC_STATS_EVENT_WORKER_STATUS;
@@ -315,12 +316,13 @@ void goc_stats_submit_event_worker(int id, void *pool_id, int status, int pendin
     goc_stats_dispatch(&ev);
 }
 
-void goc_stats_submit_event_fiber(int id, int last_worker_id, int status) {
+void goc_stats_submit_event_fiber(int id, int last_worker_id, int last_pool_id, int status) {
     goc_stats_event_t ev;
     ev.type                      = GOC_STATS_EVENT_FIBER_STATUS;
     ev.timestamp                 = goc_stats_now();
     ev.data.fiber.id             = id;
     ev.data.fiber.last_worker_id = last_worker_id;
+    ev.data.fiber.last_pool_id   = last_pool_id;
     ev.data.fiber.status         = status;
     goc_stats_dispatch(&ev);
 }

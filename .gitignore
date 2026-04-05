@@ -81,3 +81,6 @@ bench/libgoc/bench-vmem-old
 fix.md
 meta/*
 test.log
+
+# Clojure cache files
+bench/clojure/.cpcache/

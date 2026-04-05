@@ -50,12 +50,14 @@ static _Atomic uint64_t g_steal_attempts  = 0;
 static _Atomic uint64_t g_steal_successes = 0;
 static _Atomic uint64_t g_steal_misses    = 0;
 static _Atomic uint64_t g_idle_wakeups    = 0;
+static _Atomic int      g_pool_id_counter = 0;
 
 /* -------------------------------------------------------------------------
  * goc_pool — full definition (opaque outside pool.c)
  * ---------------------------------------------------------------------- */
 
 struct goc_pool {
+    int                id;
     goc_worker*        workers;
     size_t             thread_count;
     size_t             max_live_fibers;
@@ -116,9 +118,14 @@ void pool_registry_destroy_all(void) {
     g_pool_registry_len = 0;
     uv_mutex_unlock(&g_pool_registry_mutex);
 
+    GOC_DBG("pool_registry_destroy_all: destroying %zu pools\n", len);
+
     for (size_t i = 0; i < len; i++) {
+        GOC_DBG("pool_registry_destroy_all: destroy[%zu/%zu] pool=%p id=%d\n",
+                i + 1, len, (void*)snap[i], snap[i] ? snap[i]->id : -1);
         goc_pool_destroy(snap[i]);
     }
+    GOC_DBG("pool_registry_destroy_all: all pools destroyed\n");
     free(snap);
 
     uv_mutex_destroy(&g_pool_registry_mutex);
@@ -209,6 +216,13 @@ static void pool_enqueue_spawn_locked(goc_pool* pool, goc_spawn_req* req) {
     pool->pending_spawn_tail = req;
 }
 
+static size_t pool_pending_spawn_count_locked(const goc_pool* pool) {
+    size_t n = 0;
+    for (const goc_spawn_req* p = pool->pending_spawn_head; p != NULL; p = p->next)
+        n++;
+    return n;
+}
+
 static goc_spawn_req* pool_collect_admitted_spawns_locked(goc_pool* pool) {
     goc_spawn_req* admitted_head = NULL;
     goc_spawn_req* admitted_tail = NULL;
@@ -277,7 +291,7 @@ void pool_submit_spawn(goc_pool* pool,
         GOC_STATS_WORKER_STATUS(
             (int)atomic_load_explicit(&pool->next_push_idx, memory_order_relaxed)
                  % (int)pool->thread_count,
-            pool, GOC_WORKER_RUNNING, (int)live, 0, 0);
+            pool->id, GOC_WORKER_RUNNING, (int)live, 0, 0);
         post_to_run_queue(pool, entry);
         return;
     }
@@ -404,14 +418,14 @@ static void pool_worker_fn(void* arg) {
             goto run;
         }
 
-        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_IDLE, (int)pool->live_count, 0, 0);
+        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_IDLE, (int)pool->live_count, 0, 0);
         uv_sem_wait(&tl_worker->idle_sem);
 #ifdef GOC_ENABLE_STATS
         atomic_fetch_add_explicit(&tl_worker->idle_wakeups, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(&g_idle_wakeups,           1, memory_order_relaxed);
 #endif
         atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
-        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
+        GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
         continue;   /* re-check shutdown and try again */
 
 run:
@@ -427,6 +441,13 @@ run:
          * stable handle (`coro`) across the call; the mco_coro object remains
          * valid until mco_destroy. */
         mco_coro* coro = entry->coro;
+
+        GOC_DBG("pool_worker_fn: pre-resume coro=%p status=%d\n",
+                (void*)coro,
+                coro ? (int)mco_status(coro) : -1);
+        GOC_DBG("pool_worker_fn: pre-resume stack_base=%p stack_size=%zu\n",
+                coro ? (void*)coro->stack_base : NULL,
+                coro ? coro->stack_size : 0);
 
         /* Redirect GC stack scan to the fiber's stack for the duration of
          * mco_resume (see DESIGN.md §GC Stack Bottom Redirect). */
@@ -488,12 +509,12 @@ run:
             uv_cond_broadcast(&pool->drain_cond);
             uv_mutex_unlock(&pool->drain_mutex);
 
-            GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
+            GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
             pool_dispatch_spawn_list(pool, admitted);
         }
     }
 
-    GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool, GOC_WORKER_STOPPED, 0,
+    GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_STOPPED, 0,
                             atomic_load_explicit(&tl_worker->steal_attempts,  memory_order_relaxed),
                             atomic_load_explicit(&tl_worker->steal_successes, memory_order_relaxed));
     tl_worker = NULL;
@@ -577,6 +598,7 @@ goc_pool* goc_pool_make(size_t threads) {
     goc_pool* pool = malloc(sizeof(goc_pool));
     memset(pool, 0, sizeof(goc_pool));
 
+    pool->id           = atomic_fetch_add_explicit(&g_pool_id_counter, 1, memory_order_relaxed);
     pool->thread_count = threads;
     pool->max_live_fibers = pool_default_max_live_fibers();
     pool->workers      = malloc(threads * sizeof(goc_worker));
@@ -612,10 +634,10 @@ goc_pool* goc_pool_make(size_t threads) {
                     i + 1, threads, rc);
             abort();
         }
-        GOC_STATS_WORKER_STATUS((int)i, pool, GOC_WORKER_CREATED, 0, 0, 0);
+        GOC_STATS_WORKER_STATUS((int)i, pool->id, GOC_WORKER_CREATED, 0, 0, 0);
     }
 
-    GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_CREATED, (int)threads);
+    GOC_STATS_POOL_STATUS(pool->id, GOC_POOL_CREATED, (int)threads);
     registry_add(pool);
     return pool;
 }
@@ -626,15 +648,41 @@ goc_pool* goc_pool_make(size_t threads) {
 
 void goc_pool_destroy(goc_pool* pool) {
     pool_abort_if_called_from_worker(pool, "goc_pool_destroy");
-    GOC_STATS_POOL_STATUS(goc_box_int(pool), GOC_POOL_DESTROYED, (int)pool->thread_count);
+    GOC_STATS_POOL_STATUS(pool->id, GOC_POOL_DESTROYED, (int)pool->thread_count);
 
     /* 1. Wait for all live fibers to exit (live_count reaches zero). */
     uv_mutex_lock(&pool->drain_mutex);
-    GOC_DBG("goc_pool_destroy: waiting for live_count=%zu\n", pool->live_count);
+    GOC_DBG("goc_pool_destroy: begin drain pool=%p id=%d live=%zu resident=%zu pending_spawn=%zu idle=%zu\n",
+            (void*)pool,
+            pool->id,
+            pool->live_count,
+            pool->resident_count,
+            pool_pending_spawn_count_locked(pool),
+            atomic_load_explicit(&pool->idle_count, memory_order_relaxed));
     while (pool->live_count > 0) {
-        uv_cond_wait(&pool->drain_cond, &pool->drain_mutex);
-        GOC_DBG("goc_pool_destroy: cond_wait returned live_count=%zu\n", pool->live_count);
+        int rc = uv_cond_timedwait(&pool->drain_cond,
+                                   &pool->drain_mutex,
+                                   1000000000ULL /* 1s heartbeat */);
+        if (rc == UV_ETIMEDOUT) {
+            GOC_DBG("goc_pool_destroy: still draining pool=%p id=%d live=%zu resident=%zu pending_spawn=%zu idle=%zu shutdown=%d\n",
+                    (void*)pool,
+                    pool->id,
+                    pool->live_count,
+                    pool->resident_count,
+                    pool_pending_spawn_count_locked(pool),
+                    atomic_load_explicit(&pool->idle_count, memory_order_relaxed),
+                    atomic_load_explicit(&pool->shutdown, memory_order_relaxed));
+        } else {
+            GOC_DBG("goc_pool_destroy: drain wake pool=%p id=%d live=%zu resident=%zu pending_spawn=%zu rc=%d\n",
+                    (void*)pool,
+                    pool->id,
+                    pool->live_count,
+                    pool->resident_count,
+                    pool_pending_spawn_count_locked(pool),
+                    rc);
+        }
     }
+    GOC_DBG("goc_pool_destroy: drain complete pool=%p id=%d\n", (void*)pool, pool->id);
     uv_mutex_unlock(&pool->drain_mutex);
 
     /* 2. Signal workers to exit. */
@@ -750,4 +798,8 @@ void goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
 void pool_wait_all_idle(goc_pool* pool, size_t n) {
     while (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) < n)
         uv_sleep(0);
+}
+
+int goc_pool_id(goc_pool* pool) {
+    return pool ? pool->id : -1;
 }

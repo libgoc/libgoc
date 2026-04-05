@@ -145,7 +145,8 @@ int main(void) {
 
 - `goc_chan_make(0)` — unbuffered channels enforce a synchronous rendezvous:
   each `goc_put` blocks until the other fiber calls `goc_take`, and vice versa.
-- `goc_go` — spawns both player fibers on the default pool and returns a join
+- `goc_go` — spawns both player fibers on the current pool (or default pool
+    when called outside fiber context) and returns a join
   channel that is closed automatically when the fiber returns.
 - `goc_close` — when the round limit is reached the active fiber closes the
   forward channel, causing the partner's next `goc_take` to return
@@ -398,6 +399,10 @@ goc_close(ch);
 | Function | Signature | Description |
 |---|---|---|
 | `goc_in_fiber` | `bool goc_in_fiber(void)` | Returns `true` if the caller is executing inside a fiber, `false` otherwise. Safe to call from any context after `goc_init` returns. |
+| `goc_current_pool` | `goc_pool* goc_current_pool(void)` | Return the current fiber's pool, or `NULL` when called outside fiber context. |
+| `goc_current_or_default_pool` | `goc_pool* goc_current_or_default_pool(void)` | Return current pool when in fiber context, otherwise return the default pool. |
+| `goc_current_thread` | `uv_thread_t goc_current_thread(void)` | Return the current OS thread id (libuv thread type). |
+| `goc_current_fiber` | `void* goc_current_fiber(void)` | Return the current runtime fiber handle, or `NULL` outside fiber context. |
 
 ---
 
@@ -405,7 +410,7 @@ goc_close(ch);
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the default pool. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
+| `goc_go` | `goc_chan* goc_go(void (*fn)(void*), void* arg)` | Spawn a fiber on the current pool when called from a fiber; otherwise on the default pool. Returns a **join channel** that is closed automatically when the fiber returns. Pass the join channel as an arm to `goc_alts` or call `goc_take`/`goc_take_sync` on it to await fiber completion. The join channel may be ignored if no join is needed. |
 | `goc_go_on` | `goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg)` | Spawn on a specific pool. Returns a join channel with the same semantics as `goc_go`. |
 
 ```c

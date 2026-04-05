@@ -1,7 +1,7 @@
 # Clojure core.async Benchmarks
 
 Standalone CSP benchmarks implemented in Clojure using
-[`core.async`](https://github.com/clojure/core.async).  All five benchmarks
+[`core.async`](https://github.com/clojure/core.async).  All seven benchmarks
 mirror those in `bench/go/main.go` and `bench/libgoc/bench.c` for a direct
 three-way performance comparison.
 
@@ -35,6 +35,8 @@ The `POOL_SIZE` variable sets the JVM system property
 | 3 | **Selective receive / fan-out / fan-in** | Producer → N workers → `alts!` collector |
 | 4 | **Spawn idle tasks** | Spawn N go-blocks that park immediately, then wake them |
 | 5 | **Prime sieve** | Concurrent Eratosthenes pipeline |
+| 6 | **HTTP ping-pong** | Two HTTP/1.1 servers bounce a counter between each other |
+| 7 | **HTTP server throughput** | One server serves plaintext while concurrent keep-alive clients load it |
 
 ## Output Format
 

@@ -55,6 +55,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <assert.h>
+#include <stdatomic.h>
 #include <uv.h>
 #include <gc.h>
 #include "../include/goc_io.h"
@@ -385,30 +386,104 @@ goc_chan* goc_io_fs_sendfile(uv_file out_fd, uv_file in_fd,
 typedef struct {
     uv_getaddrinfo_t req;   /* MUST be first member */
     goc_chan*        ch;
+    long             submit_seq;
 } goc_getaddrinfo_ctx_t;
+
+/* Bounded DNS trace for root-cause diagnostics (enabled unconditionally).
+ * Keeps output finite while still exposing submit/callback imbalance. */
+static _Atomic long g_dns_submit_count = 0;
+static _Atomic long g_dns_cb_count = 0;
+static _Atomic long g_dns_inflight = 0;
+
+#define GOC_DNS_TRACE_LIMIT 512L
+#define GOC_DNS_TRACE_SPARSE_INTERVAL 64L
+
+static int dns_trace_should_log(long seq, long inflight)
+{
+    return (seq <= GOC_DNS_TRACE_LIMIT) ||
+           (inflight >= 32 && ((seq % GOC_DNS_TRACE_SPARSE_INTERVAL) == 0));
+}
+
+static void dns_trace_submit(goc_getaddrinfo_ctx_t* ctx,
+                             const char* node,
+                             const char* service)
+{
+    long s = atomic_fetch_add_explicit(&g_dns_submit_count, 1, memory_order_relaxed) + 1;
+    long in = atomic_fetch_add_explicit(&g_dns_inflight, 1, memory_order_relaxed) + 1;
+    ctx->submit_seq = s;
+    if (dns_trace_should_log(s, in)) {
+        fprintf(stderr,
+                "[DNS_TRACE] submit#%ld req=%p ctx=%p ch=%p node=%s service=%s loop=%p shutdown=%d inflight=%ld\n",
+                s,
+                (void*)&ctx->req,
+                (void*)ctx,
+                (void*)ctx->ch,
+                node ? node : "<null>",
+                service ? service : "<null>",
+                (void*)g_loop,
+                goc_loop_is_shutting_down(),
+                in);
+        fflush(stderr);
+    }
+}
+
+static void dns_trace_submit_fail(goc_getaddrinfo_ctx_t* ctx, int rc)
+{
+    /* Submit was already counted; back out inflight to avoid negative drift. */
+    long in = atomic_fetch_sub_explicit(&g_dns_inflight, 1, memory_order_relaxed) - 1;
+    if (dns_trace_should_log(ctx->submit_seq, in)) {
+        fprintf(stderr,
+                "[DNS_TRACE] submit-fail#%ld req=%p ctx=%p ch=%p rc=%d loop=%p shutdown=%d inflight=%ld\n",
+                ctx->submit_seq,
+                (void*)&ctx->req,
+                (void*)ctx,
+                (void*)ctx->ch,
+                rc,
+                (void*)g_loop,
+                goc_loop_is_shutting_down(),
+                in);
+        fflush(stderr);
+    }
+}
+
+static void dns_trace_callback(goc_getaddrinfo_ctx_t* ctx, int status)
+{
+    long c = atomic_fetch_add_explicit(&g_dns_cb_count, 1, memory_order_relaxed) + 1;
+    long in = atomic_fetch_sub_explicit(&g_dns_inflight, 1, memory_order_relaxed) - 1;
+    if (dns_trace_should_log(ctx->submit_seq ? ctx->submit_seq : c, in)) {
+        fprintf(stderr,
+                "[DNS_TRACE] cb#%ld submit#=%ld req=%p ctx=%p ch=%p status=%d loop=%p shutdown=%d inflight=%ld\n",
+                c,
+                ctx->submit_seq,
+                (void*)&ctx->req,
+                (void*)ctx,
+                (void*)ctx->ch,
+                status,
+                ctx->req.loop ? (void*)ctx->req.loop : (void*)g_loop,
+                goc_loop_is_shutting_down(),
+                in);
+        fflush(stderr);
+    }
+}
 
 static void on_getaddrinfo(uv_getaddrinfo_t* req, int status,
                            struct addrinfo* res)
 {
     goc_getaddrinfo_ctx_t* ctx = (goc_getaddrinfo_ctx_t*)req;
+    dns_trace_callback(ctx, status);
     goc_io_getaddrinfo_t*  r   = (goc_io_getaddrinfo_t*)goc_malloc(
                                      sizeof(goc_io_getaddrinfo_t));
     r->ok  = (status == 0) ? GOC_IO_OK : GOC_IO_ERR;
     r->res = res;
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, r, close_on_put, ctx->ch);
+    free(ctx);
 }
 
 goc_chan* goc_io_getaddrinfo(const char* node, const char* service,
                                 const struct addrinfo* hints)
 {
     goc_chan*              ch  = goc_chan_make(1);
-    goc_getaddrinfo_ctx_t* ctx = (goc_getaddrinfo_ctx_t*)goc_malloc(
-                                     sizeof(goc_getaddrinfo_ctx_t));
-    ctx->ch = ch;
-    int rc = uv_getaddrinfo(g_loop, &ctx->req, on_getaddrinfo,
-                            node, service, hints);
-    if (rc < 0) {
+    if (goc_loop_is_shutting_down()) {
         goc_io_getaddrinfo_t* r = (goc_io_getaddrinfo_t*)goc_malloc(
                                    sizeof(goc_io_getaddrinfo_t));
         r->ok  = GOC_IO_ERR;
@@ -416,7 +491,33 @@ goc_chan* goc_io_getaddrinfo(const char* node, const char* service,
         goc_put_cb(ch, r, close_on_put, ch);
         return ch;
     }
-    gc_handle_register(ctx);
+    goc_getaddrinfo_ctx_t* ctx = (goc_getaddrinfo_ctx_t*)malloc(
+                                     sizeof(goc_getaddrinfo_ctx_t));
+    if (!ctx) {
+        goc_io_getaddrinfo_t* r = (goc_io_getaddrinfo_t*)goc_malloc(
+                                   sizeof(goc_io_getaddrinfo_t));
+        r->ok  = GOC_IO_ERR;
+        r->res = NULL;
+        goc_put_cb(ch, r, close_on_put, ch);
+        return ch;
+    }
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->ch = ch;
+    /* Trace submit before calling into libuv to avoid a race where callback
+     * runs and frees ctx before post-call tracing executes on another thread. */
+    dns_trace_submit(ctx, node, service);
+    int rc = uv_getaddrinfo(g_loop, &ctx->req, on_getaddrinfo,
+                            node, service, hints);
+    if (rc < 0) {
+        dns_trace_submit_fail(ctx, rc);
+        free(ctx);
+        goc_io_getaddrinfo_t* r = (goc_io_getaddrinfo_t*)goc_malloc(
+                                   sizeof(goc_io_getaddrinfo_t));
+        r->ok  = GOC_IO_ERR;
+        r->res = NULL;
+        goc_put_cb(ch, r, close_on_put, ch);
+        return ch;
+    }
     return ch;
 }
 
@@ -447,18 +548,16 @@ static void on_getnameinfo(uv_getnameinfo_t* req, int status,
         r->service[0] = '\0';
     r->hostname[sizeof(r->hostname) - 1] = '\0';
     r->service[sizeof(r->service)  - 1] = '\0';
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, r, close_on_put, ctx->ch);
+    free(ctx);
 }
 
 goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags)
 {
     goc_chan*              ch  = goc_chan_make(1);
-    goc_getnameinfo_ctx_t* ctx = (goc_getnameinfo_ctx_t*)goc_malloc(
+    goc_getnameinfo_ctx_t* ctx = (goc_getnameinfo_ctx_t*)malloc(
                                      sizeof(goc_getnameinfo_ctx_t));
-    ctx->ch = ch;
-    int rc = uv_getnameinfo(g_loop, &ctx->req, on_getnameinfo, addr, flags);
-    if (rc < 0) {
+    if (!ctx) {
         goc_io_getnameinfo_t* r = (goc_io_getnameinfo_t*)goc_malloc(
                                    sizeof(goc_io_getnameinfo_t));
         r->ok         = GOC_IO_ERR;
@@ -467,7 +566,18 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags)
         goc_put_cb(ch, r, close_on_put, ch);
         return ch;
     }
-    gc_handle_register(ctx);
+    ctx->ch = ch;
+    int rc = uv_getnameinfo(g_loop, &ctx->req, on_getnameinfo, addr, flags);
+    if (rc < 0) {
+        free(ctx);
+        goc_io_getnameinfo_t* r = (goc_io_getnameinfo_t*)goc_malloc(
+                                   sizeof(goc_io_getnameinfo_t));
+        r->ok         = GOC_IO_ERR;
+        r->hostname[0] = '\0';
+        r->service[0]  = '\0';
+        goc_put_cb(ch, r, close_on_put, ch);
+        return ch;
+    }
     return ch;
 }
 
@@ -646,14 +756,26 @@ int goc_io_read_stop(uv_stream_t* stream)
 typedef struct {
     uv_write_t  req;    /* MUST be first member */
     goc_chan*   ch;
+    uv_buf_t*   bufs_copy;
+    unsigned    nbufs;
 } goc_write_ctx_t;
+
+static void free_owned_bufs(uv_buf_t* bufs, unsigned nbufs)
+{
+    if (!bufs)
+        return;
+    for (unsigned i = 0; i < nbufs; i++)
+        free(bufs[i].base);
+    free(bufs);
+}
 
 static void on_write_cb(uv_write_t* req, int status)
 {
     goc_write_ctx_t* ctx = (goc_write_ctx_t*)req;
     GOC_DBG("on_write_cb: status=%d ch=%p\n", status, (void*)ctx->ch);
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
+    free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+    free(ctx);
 }
 
 typedef struct {
@@ -667,14 +789,57 @@ static void on_write_dispatch(void* arg)
 {
     goc_write_dispatch_t* d   = (goc_write_dispatch_t*)arg;
     GOC_DBG("on_write_dispatch: handle=%p nbufs=%u ch=%p\n", (void*)d->handle, d->nbufs, (void*)d->ch);
-    goc_write_ctx_t*      ctx = (goc_write_ctx_t*)goc_malloc(sizeof(goc_write_ctx_t));
+    /* Preflight: if the handle is NULL/closing or the loop is shutting down,
+     * reject the write immediately.  A write submitted to a dying stream can
+     * become the sole active libuv request on the loop, which trips libuv's
+     * internal assertion uv__has_active_reqs(stream->loop) in
+     * uv__write_callbacks after the req is unregistered. */
+    if (!d->handle ||
+        uv_is_closing((uv_handle_t*)d->handle) ||
+        goc_loop_is_shutting_down()) {
+        GOC_DBG("on_write_dispatch: preflight-reject handle=%p closing=%d shutdown=%d\n",
+                (void*)d->handle,
+                d->handle ? uv_is_closing((uv_handle_t*)d->handle) : -1,
+                goc_loop_is_shutting_down());
+        goc_put_cb(d->ch, SCALAR(UV_ECANCELED), close_on_put, d->ch);
+        return;
+    }
+    goc_write_ctx_t*      ctx = (goc_write_ctx_t*)malloc(sizeof(goc_write_ctx_t));
+    if (!ctx) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        return;
+    }
     ctx->ch = d->ch;
-    int rc = uv_write(&ctx->req, d->handle, d->bufs, d->nbufs, on_write_cb);
+    ctx->nbufs = d->nbufs;
+    ctx->bufs_copy = (uv_buf_t*)calloc(d->nbufs, sizeof(uv_buf_t));
+    if (!ctx->bufs_copy) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        free(ctx);
+        return;
+    }
+
+    for (unsigned i = 0; i < d->nbufs; i++) {
+        size_t len = d->bufs[i].len;
+        char* mem = NULL;
+        if (len > 0) {
+            mem = (char*)malloc(len);
+            if (!mem) {
+                goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+                free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+                free(ctx);
+                return;
+            }
+            memcpy(mem, d->bufs[i].base, len);
+        }
+        ctx->bufs_copy[i] = uv_buf_init(mem, (unsigned int)len);
+    }
+
+    int rc = uv_write(&ctx->req, d->handle, ctx->bufs_copy, d->nbufs, on_write_cb);
     GOC_DBG("on_write_dispatch: uv_write rc=%d\n", rc);
     if (rc < 0) {
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
-    } else {
-        gc_handle_register(ctx);
+        free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+        free(ctx);
     }
 }
 
@@ -707,14 +872,17 @@ goc_chan* goc_io_write(uv_stream_t* handle,
 typedef struct {
     uv_write_t   req;         /* MUST be first member */
     goc_chan*    ch;
+    uv_buf_t*    bufs_copy;
+    unsigned     nbufs;
 } goc_write2_ctx_t;
 
 /* Reuse on_write_cb for write2 (same signature, same semantics). */
 static void on_write2_cb(uv_write_t* req, int status)
 {
     goc_write2_ctx_t* ctx = (goc_write2_ctx_t*)req;
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
+    free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+    free(ctx);
 }
 
 typedef struct {
@@ -728,15 +896,49 @@ typedef struct {
 static void on_write2_dispatch(void* arg)
 {
     goc_write2_dispatch_t* d   = (goc_write2_dispatch_t*)arg;
-    goc_write2_ctx_t*      ctx = (goc_write2_ctx_t*)goc_malloc(
+    if (!d->handle ||
+        uv_is_closing((uv_handle_t*)d->handle) ||
+        goc_loop_is_shutting_down()) {
+        goc_put_cb(d->ch, SCALAR(UV_ECANCELED), close_on_put, d->ch);
+        return;
+    }
+    goc_write2_ctx_t*      ctx = (goc_write2_ctx_t*)malloc(
                                      sizeof(goc_write2_ctx_t));
+    if (!ctx) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        return;
+    }
     ctx->ch = d->ch;
-    int rc = uv_write2(&ctx->req, d->handle, d->bufs, d->nbufs,
+    ctx->nbufs = d->nbufs;
+    ctx->bufs_copy = (uv_buf_t*)calloc(d->nbufs, sizeof(uv_buf_t));
+    if (!ctx->bufs_copy) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        free(ctx);
+        return;
+    }
+
+    for (unsigned i = 0; i < d->nbufs; i++) {
+        size_t len = d->bufs[i].len;
+        char* mem = NULL;
+        if (len > 0) {
+            mem = (char*)malloc(len);
+            if (!mem) {
+                goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+                free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+                free(ctx);
+                return;
+            }
+            memcpy(mem, d->bufs[i].base, len);
+        }
+        ctx->bufs_copy[i] = uv_buf_init(mem, (unsigned int)len);
+    }
+
+    int rc = uv_write2(&ctx->req, d->handle, ctx->bufs_copy, d->nbufs,
                        d->send_handle, on_write2_cb);
     if (rc < 0) {
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
-    } else {
-        gc_handle_register(ctx);
+        free_owned_bufs(ctx->bufs_copy, ctx->nbufs);
+        free(ctx);
     }
 }
 
@@ -772,8 +974,8 @@ typedef struct {
 static void on_shutdown_cb(uv_shutdown_t* req, int status)
 {
     goc_shutdown_ctx_t* ctx = (goc_shutdown_ctx_t*)req;
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
+    free(ctx);
 }
 
 typedef struct {
@@ -784,14 +986,17 @@ typedef struct {
 static void on_shutdown_dispatch(void* arg)
 {
     goc_shutdown_dispatch_t* d   = (goc_shutdown_dispatch_t*)arg;
-    goc_shutdown_ctx_t*      ctx = (goc_shutdown_ctx_t*)goc_malloc(
+    goc_shutdown_ctx_t*      ctx = (goc_shutdown_ctx_t*)malloc(
                                        sizeof(goc_shutdown_ctx_t));
+    if (!ctx) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        return;
+    }
     ctx->ch = d->ch;
     int rc = uv_shutdown(&ctx->req, d->handle, on_shutdown_cb);
     if (rc < 0) {
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
-    } else {
-        gc_handle_register(ctx);
+        free(ctx);
     }
 }
 
@@ -814,14 +1019,32 @@ goc_chan* goc_io_shutdown_stream(uv_stream_t* handle)
 typedef struct {
     uv_connect_t req;   /* MUST be first member */
     goc_chan*    ch;
+    int          inflight_tracked;
 } goc_connect_ctx_t;
+
+/* Soft guardrail: avoid feeding unbounded connect bursts into libuv under
+ * teardown/churn stress. Above this threshold, new connect submits fail-fast
+ * with UV_EBUSY so callers receive a normal error instead of destabilizing
+ * the loop's internal request accounting. */
+#define GOC_CONN_INFLIGHT_SOFT_MAX 128L
+
+static _Atomic long g_tcp_connect_inflight = 0;
 
 static void on_connect_cb(uv_connect_t* req, int status)
 {
     goc_connect_ctx_t* ctx = (goc_connect_ctx_t*)req;
+    if (ctx->inflight_tracked) {
+        long prev = atomic_fetch_sub_explicit(&g_tcp_connect_inflight,
+                                              1,
+                                              memory_order_acq_rel);
+        if (prev <= 0)
+            atomic_store_explicit(&g_tcp_connect_inflight,
+                                  0,
+                                  memory_order_release);
+    }
     GOC_DBG("on_connect_cb: status=%d ch=%p\n", status, (void*)ctx->ch);
-    gc_handle_unregister(ctx);
     goc_put_cb(ctx->ch, SCALAR(status), close_on_put, ctx->ch);
+    free(ctx);
 }
 
 typedef struct {
@@ -830,21 +1053,76 @@ typedef struct {
     goc_chan*           ch;
 } goc_tcp_connect_dispatch_t;
 
+static int connect_dispatch_preflight(uv_handle_t* handle)
+{
+    if (!handle)
+        return UV_EINVAL;
+    if (handle->type != UV_TCP)
+        return UV_EINVAL;
+    if (handle->loop == NULL)
+        return UV_EINVAL;
+    if (handle->loop != g_loop)
+        return UV_EINVAL;
+    if (goc_loop_is_shutting_down())
+        return UV_ECANCELED;
+    if (uv_is_closing(handle))
+        return UV_ECANCELED;
+    return 0;
+}
+
+static int connect_dispatch_overloaded(void)
+{
+    long in = atomic_load_explicit(&g_tcp_connect_inflight, memory_order_relaxed);
+    return (in >= GOC_CONN_INFLIGHT_SOFT_MAX);
+}
+
 static void on_tcp_connect_dispatch(void* arg)
 {
     goc_tcp_connect_dispatch_t* d   = (goc_tcp_connect_dispatch_t*)arg;
-    GOC_DBG("on_tcp_connect_dispatch: handle=%p ch=%p\n", (void*)d->handle, (void*)d->ch);
-    goc_connect_ctx_t*          ctx = (goc_connect_ctx_t*)goc_malloc(
+    GOC_DBG("on_tcp_connect_dispatch: handle=%p ch=%p loop=%p closing=%d active=%d\n",
+            (void*)d->handle, (void*)d->ch,
+            d->handle ? (void*)d->handle->loop : NULL,
+            d->handle ? uv_is_closing((uv_handle_t*)d->handle) : -1,
+            d->handle ? uv_is_active((uv_handle_t*)d->handle) : -1);
+    int preflight_rc = connect_dispatch_preflight((uv_handle_t*)d->handle);
+    if (preflight_rc < 0) {
+        GOC_DBG("on_tcp_connect_dispatch: rejecting connect handle=%p rc=%d shutdown=%d\n",
+                (void*)d->handle, preflight_rc, goc_loop_is_shutting_down());
+        goc_put_cb(d->ch, SCALAR(preflight_rc), close_on_put, d->ch);
+        return;
+    }
+    if (connect_dispatch_overloaded()) {
+        GOC_DBG("on_tcp_connect_dispatch: rejecting connect handle=%p rc=%d inflight=%ld max=%ld\n",
+                (void*)d->handle,
+                UV_EBUSY,
+                atomic_load_explicit(&g_tcp_connect_inflight, memory_order_relaxed),
+                GOC_CONN_INFLIGHT_SOFT_MAX);
+        goc_put_cb(d->ch, SCALAR(UV_EBUSY), close_on_put, d->ch);
+        return;
+    }
+    goc_connect_ctx_t*          ctx = (goc_connect_ctx_t*)malloc(
                                           sizeof(goc_connect_ctx_t));
+    if (!ctx) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        return;
+    }
+    memset(ctx, 0, sizeof(*ctx));
     ctx->ch = d->ch;
+    ctx->inflight_tracked = 0;
     int rc = uv_tcp_connect(&ctx->req, d->handle,
                             (const struct sockaddr*)&d->addr,
                             on_connect_cb);
+    if (rc == 0) {
+        ctx->inflight_tracked = 1;
+        atomic_fetch_add_explicit(&g_tcp_connect_inflight,
+                                  1,
+                                  memory_order_acq_rel);
+    }
     GOC_DBG("on_tcp_connect_dispatch: uv_tcp_connect rc=%d\n", rc);
     if (rc < 0) {
+        ctx->inflight_tracked = 0;
         goc_put_cb(ctx->ch, SCALAR(rc), close_on_put, ctx->ch);
-    } else {
-        gc_handle_register(ctx);
+        free(ctx);
     }
 }
 
@@ -862,7 +1140,9 @@ goc_chan* goc_io_tcp_connect(uv_tcp_t* handle, const struct sockaddr* addr)
                ? sizeof(struct sockaddr_in6)
                : sizeof(struct sockaddr_in));
     d->ch = ch;
-    post_on_loop(on_tcp_connect_dispatch, d);
+    int rc = post_on_loop_checked(on_tcp_connect_dispatch, d);
+    if (rc < 0)
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
     return ch;
 }
 
@@ -882,11 +1162,22 @@ typedef struct {
 static void on_pipe_connect_dispatch(void* arg)
 {
     goc_pipe_connect_dispatch_t* d   = (goc_pipe_connect_dispatch_t*)arg;
-    goc_connect_ctx_t*           ctx = (goc_connect_ctx_t*)goc_malloc(
+    int preflight_rc = connect_dispatch_preflight((uv_handle_t*)d->handle);
+    if (preflight_rc < 0) {
+        GOC_DBG("on_pipe_connect_dispatch: rejecting connect handle=%p rc=%d shutdown=%d\n",
+                (void*)d->handle, preflight_rc, goc_loop_is_shutting_down());
+        goc_put_cb(d->ch, SCALAR(preflight_rc), close_on_put, d->ch);
+        return;
+    }
+    goc_connect_ctx_t*           ctx = (goc_connect_ctx_t*)malloc(
                                            sizeof(goc_connect_ctx_t));
+    if (!ctx) {
+        goc_put_cb(d->ch, SCALAR(UV_ENOMEM), close_on_put, d->ch);
+        return;
+    }
+    memset(ctx, 0, sizeof(*ctx));
     ctx->ch = d->ch;
     uv_pipe_connect(&ctx->req, d->handle, d->name, on_connect_cb);
-    gc_handle_register(ctx);
 }
 
 goc_chan* goc_io_pipe_connect(uv_pipe_t* handle, const char* name)
@@ -899,7 +1190,9 @@ goc_chan* goc_io_pipe_connect(uv_pipe_t* handle, const char* name)
     d->name   = (char*)goc_malloc(name_len + 1);   /* copied so the caller's string can be freed */
     strcpy(d->name, name);
     d->ch = ch;
-    post_on_loop(on_pipe_connect_dispatch, d);
+    int rc = post_on_loop_checked(on_pipe_connect_dispatch, d);
+    if (rc < 0)
+        goc_put_cb(ch, SCALAR(rc), close_on_put, ch);
     return ch;
 }
 
@@ -1257,17 +1550,49 @@ void goc_io_handle_unregister(uv_handle_t* handle)
     gc_handle_unregister(handle);
 }
 
-typedef struct {
-    uv_close_cb user_cb;
-} goc_handle_close_ctx_t;
+typedef struct goc_handle_close_reg {
+    uv_handle_t* handle;
+    uv_close_cb  user_cb;
+    struct goc_handle_close_reg* next;
+} goc_handle_close_reg_t;
+
+/* Accessed only on the libuv loop thread (on_handle_close_dispatch and
+ * on_goc_handle_close both run there), so no extra synchronization needed. */
+static goc_handle_close_reg_t* g_handle_close_regs = NULL;
+
+static void register_handle_close_cb(uv_handle_t* handle, uv_close_cb user_cb)
+{
+    goc_handle_close_reg_t* n =
+        (goc_handle_close_reg_t*)goc_malloc(sizeof(goc_handle_close_reg_t));
+    n->handle  = handle;
+    n->user_cb = user_cb;
+    n->next    = g_handle_close_regs;
+    g_handle_close_regs = n;
+}
+
+static uv_close_cb take_handle_close_cb(uv_handle_t* handle)
+{
+    goc_handle_close_reg_t* prev = NULL;
+    goc_handle_close_reg_t* cur  = g_handle_close_regs;
+    while (cur) {
+        if (cur->handle == handle) {
+            uv_close_cb cb = cur->user_cb;
+            if (prev)
+                prev->next = cur->next;
+            else
+                g_handle_close_regs = cur->next;
+            return cb;
+        }
+        prev = cur;
+        cur  = cur->next;
+    }
+    return NULL;
+}
 
 static void on_goc_handle_close(uv_handle_t* handle)
 {
     GOC_DBG("on_goc_handle_close: handle=%p\n", (void*)handle);
-    goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)handle->data;
-    uv_close_cb user_cb = ctx ? ctx->user_cb : NULL;
-    handle->data = NULL;
-    gc_handle_unregister(ctx);
+    uv_close_cb user_cb = take_handle_close_cb(handle);
     gc_handle_unregister(handle);
     if (user_cb)
         user_cb(handle);
@@ -1282,17 +1607,36 @@ typedef struct {
 static void on_handle_close_dispatch(void* arg)
 {
     goc_handle_close_dispatch_t* d = (goc_handle_close_dispatch_t*)arg;
-    GOC_DBG("on_handle_close_dispatch: target=%p\n", (void*)d->target);
-    goc_handle_close_ctx_t* ctx = (goc_handle_close_ctx_t*)goc_malloc(
-                                      sizeof(goc_handle_close_ctx_t));
-    ctx->user_cb    = d->user_cb;
-    gc_handle_register(ctx);
-    d->target->data = ctx;
+    GOC_DBG("on_handle_close_dispatch: target=%p loop=%p type=%s active=%d has_ref=%d closing=%d\n",
+            (void*)d->target,
+            d->target ? (void*)d->target->loop : NULL,
+            d->target ? uv_handle_type_name(uv_handle_get_type(d->target)) : "<null>",
+            d->target ? uv_is_active(d->target) : -1,
+            d->target ? uv_has_ref(d->target) : -1,
+            (!d->target) ? -1 : uv_is_closing(d->target));
+    if (!d->target || uv_is_closing(d->target)) {
+        GOC_DBG("on_handle_close_dispatch: target already closing (or NULL), skipping uv_close\n");
+        return;
+    }
+    /* Extra hardening: reject handles that were never properly initialized.
+     * type==UV_UNKNOWN_HANDLE or loop==NULL means uv_tcp_init was never called
+     * (or the handle was zeroed/freed), and passing such a handle to uv_close
+     * would violate libuv's uv__has_active_reqs invariant. */
+    if (d->target->type == UV_UNKNOWN_HANDLE || d->target->loop == NULL) {
+        GOC_DBG("on_handle_close_dispatch: invalid/uninitialized target=%p type=%d loop=%p, skipping uv_close\n",
+            (void*)d->target, (int)d->target->type, (void*)d->target->loop);
+        return;
+    }
+    register_handle_close_cb(d->target, d->user_cb);
     uv_close(d->target, on_goc_handle_close);
 }
 
 void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb)
 {
+    if (!handle) {
+        GOC_DBG("goc_io_handle_close: called with NULL handle – ignoring\n");
+        return;
+    }
     goc_handle_close_dispatch_t* d = (goc_handle_close_dispatch_t*)goc_malloc(
                                          sizeof(goc_handle_close_dispatch_t));
     d->target  = handle;
@@ -1507,6 +1851,31 @@ typedef struct {
     int       is_tcp; /* 1=tcp 0=pipe */
 } goc_server_ctx_t;
 
+/* Called by loop_process_pending_put when an accepted-connection put is
+ * dropped because the accept channel was closed (server shutting down).
+ * Closes the server-side handle so the client receives FIN/RST instead of
+ * hanging indefinitely waiting for data that will never arrive. */
+
+// Cleanup callback for accepted TCP connection
+static void on_accepted_tcp_dropped(goc_status_t ok, void* ud)
+{
+    if (ok != GOC_OK) {
+        uv_tcp_t* conn = (uv_tcp_t*)ud;
+        gc_handle_unregister(conn);
+        uv_close((uv_handle_t*)conn, NULL);
+    }
+}
+
+// Cleanup callback for accepted pipe connection
+static void on_accepted_pipe_dropped(goc_status_t ok, void* ud)
+{
+    if (ok != GOC_OK) {
+        uv_pipe_t* conn = (uv_pipe_t*)ud;
+        gc_handle_unregister(conn);
+        uv_close((uv_handle_t*)conn, NULL);
+    }
+}
+
 static void on_server_connection(uv_stream_t* server, int status)
 {
     GOC_DBG("on_server_connection: server=%p status=%d\n", (void*)server, status);
@@ -1533,7 +1902,12 @@ static void on_server_connection(uv_stream_t* server, int status)
             uv_close((uv_handle_t*)client, NULL);
             return;
         }
-        goc_put_cb(ctx->ch, client, NULL, NULL);
+        if (goc_chan_is_closing(ctx->ch)) {
+            gc_handle_unregister(client);
+            uv_close((uv_handle_t*)client, NULL);
+            return;
+        }
+        goc_put_cb(ctx->ch, client, on_accepted_tcp_dropped, client);
     } else {
         uv_pipe_t* client = (uv_pipe_t*)goc_malloc(sizeof(uv_pipe_t));
         int rc = uv_pipe_init(g_loop, client, 0);
@@ -1549,7 +1923,12 @@ static void on_server_connection(uv_stream_t* server, int status)
             uv_close((uv_handle_t*)client, NULL);
             return;
         }
-        goc_put_cb(ctx->ch, client, NULL, NULL);
+        if (goc_chan_is_closing(ctx->ch)) {
+            gc_handle_unregister(client);
+            uv_close((uv_handle_t*)client, NULL);
+            return;
+        }
+        goc_put_cb(ctx->ch, client, on_accepted_pipe_dropped, client);
     }
 }
 
