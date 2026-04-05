@@ -368,7 +368,10 @@ char* goc_sprintf(const char* fmt, ...) {
     va_start(ap, fmt);
     int len = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
-    if (len < 0) abort();
+    if (len < 0) {
+        fprintf(stderr, "libgoc: goc_sprintf: vsnprintf failed (len=%d)\n", len);
+        abort();
+    }
 
     char* buf = (char*)GC_malloc((size_t)len + 1);
     /* GC_malloc aborts on failure, so buf is always non-NULL here. */
@@ -580,10 +583,16 @@ void goc_init(void) {
  * Intended to be called once at the end of main().
  *
  * Sequence:
- *   B.1  pool_registry_destroy_all()  — drains (blocks) and destroys every pool
- *   B.2  Destroy all channel mutexes; free live_channels; destroy g_live_mutex
- *   B.3  loop_shutdown()              — signals loop thread, joins, frees g_loop
- *   B.3a Tear down live_uv_handles registry (live_uv_handles + g_live_uv_mutex)
+ *   B.1   pool_registry_destroy_all()  — drains (blocks) and destroys every pool
+ *   B.2   loop_shutdown()              — signals loop thread, joins, frees g_loop
+ *   B.2a  Tear down live_uv_handles registry (live_uv_handles + g_live_uv_mutex)
+ *   B.3   Destroy all channel mutexes; free live_channels; destroy g_live_mutex
+ *   B.3.1 mutex_registry_destroy_all() — destroy all RW-mutex internal locks
+ *
+ * B.2 must precede B.3: the loop thread's drain callbacks may still call
+ * goc_close() on timeout channels (locking channel mutexes) after all pool
+ * fibers have returned.  Joining the loop thread first (B.2) ensures no
+ * callback is in flight before those mutexes are destroyed (B.3).
  * ---------------------------------------------------------------------------*/
 
 void goc_shutdown(void) {
@@ -595,12 +604,32 @@ void goc_shutdown(void) {
     pool_registry_destroy_all();
     GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all done\n");
 
-    /* B.2 — Destroy channel mutexes and tear down the live-channels registry.
+    /* B.2 — Shut down the event loop and join the loop thread.
      *
-     * No lock is needed here: pool_registry_destroy_all() (B.1) blocks until
-     * every pool has drained — all fibers have run to completion before we
-     * reach this point. No other thread will call chan_register / chan_unregister
-     * after that drain completes.
+     * Must happen before channel/mutex teardown (old B.2): the loop thread's
+     * drain_cb_queue_guarded() may still invoke timer-expiry callbacks that
+     * call goc_close() on timeout channels, which lock channel mutexes.
+     * Destroying those mutexes first would cause UB.
+     *
+     * Keep g_live_uv_mutex alive until loop shutdown completes: close
+     * callbacks that run on the loop thread call gc_handle_unregister(). */
+    GOC_DBG("goc_shutdown: B.2 loop_shutdown begin\n");
+    loop_shutdown();
+    GOC_DBG("goc_shutdown: B.2 loop_shutdown done\n");
+
+    /* B.2a — Tear down the live UV handle roots registry. */
+    live_uv_handles     = NULL;
+    live_uv_handles_len = 0;
+    live_uv_handles_cap = 0;
+    uv_mutex_destroy(&g_live_uv_mutex);
+    GOC_DBG("goc_shutdown: B.2a live_uv teardown done\n");
+
+    /* B.3 — Destroy channel mutexes and tear down the live-channels registry.
+     *
+     * Safe now: loop_shutdown() (B.2) has joined the loop thread, so no
+     * callbacks referencing channel locks are in flight.
+     * No other thread will call chan_register / chan_unregister either:
+     * pool_registry_destroy_all() (B.1) drained all pools before we got here.
      */
     for (size_t i = 0; i < live_channels_len; i++) {
         goc_chan* ch = live_channels[i];
@@ -613,27 +642,12 @@ void goc_shutdown(void) {
     live_channels_cap = 0;
 
     uv_mutex_destroy(&g_live_mutex);
-    GOC_DBG("goc_shutdown: B.2 channels/mutex teardown done\n");
+    GOC_DBG("goc_shutdown: B.3 channels/mutex teardown done\n");
 
-    /* B.2.1 — Destroy all RW mutex internal locks. */
-    GOC_DBG("goc_shutdown: B.2.1 mutex_registry_destroy_all begin\n");
+    /* B.3.1 — Destroy all RW mutex internal locks. */
+    GOC_DBG("goc_shutdown: B.3.1 mutex_registry_destroy_all begin\n");
     mutex_registry_destroy_all();
-    GOC_DBG("goc_shutdown: B.2.1 mutex_registry_destroy_all done\n");
-
-    /* B.3 — Shut down the event loop and join the loop thread.
-     *
-     * Keep g_live_uv_mutex alive until loop shutdown completes: close
-     * callbacks that run on the loop thread call gc_handle_unregister(). */
-    GOC_DBG("goc_shutdown: B.3 loop_shutdown begin\n");
-    loop_shutdown();
-    GOC_DBG("goc_shutdown: B.3 loop_shutdown done\n");
-
-    /* B.3a — Tear down the live UV handle roots registry. */
-    live_uv_handles     = NULL;
-    live_uv_handles_len = 0;
-    live_uv_handles_cap = 0;
-    uv_mutex_destroy(&g_live_uv_mutex);
-    GOC_DBG("goc_shutdown: B.3a live_uv teardown done\n");
+    GOC_DBG("goc_shutdown: B.3.1 mutex_registry_destroy_all done\n");
 
     /* B.4 — Free all fiber root chunks accumulated during this lifecycle.
      *

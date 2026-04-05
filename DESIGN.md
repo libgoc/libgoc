@@ -342,13 +342,13 @@ struct goc_chan {
 };
 ```
 
-`lock` is a `uv_mutex_t*` allocated with `malloc` in `goc_chan_make` and initialised with `uv_mutex_init`. **Mutex teardown is deferred — it is not performed inside `goc_close`.** The mutex is destroyed and freed by `goc_shutdown` in Step 2b, after all pool threads have been joined and no code path can ever call `uv_mutex_lock(ch->lock)` again. See [Shutdown Sequence](#shutdown-sequence).
+`lock` is a `uv_mutex_t*` allocated with `malloc` in `goc_chan_make` and initialised with `uv_mutex_init`. **Mutex teardown is deferred — it is not performed inside `goc_close`.** The mutex is destroyed and freed by `goc_shutdown` in Step 3, after all pool threads and the event loop thread have been joined so no code path can ever call `uv_mutex_lock(ch->lock)` again. See [Shutdown Sequence](#shutdown-sequence).
 
 **`goc_close` uses an atomic CAS on `close_guard` to serialise concurrent closers:**
 
 1. **CAS:** attempt to flip `close_guard` from `0` to `1` with `acq_rel` ordering.
 2. **Loser path:** if the CAS fails, another caller already owns teardown — return immediately. No pointer is read, no lock is attempted.
-3. **Winner path:** acquire `ch->lock`, set `ch->closed = 1`, collect all fiber entries to wake, release the lock, spin+post each collected entry, call `chan_unregister`. **The mutex is left valid and intact** — ownership of `ch->lock` passes to the shutdown sweep in Step 2b.
+3. **Winner path:** acquire `ch->lock`, set `ch->closed = 1`, collect all fiber entries to wake, release the lock, spin+post each collected entry, call `chan_unregister`. **The mutex is left valid and intact** — ownership of `ch->lock` passes to the shutdown sweep in Step 3.
 
    `goc_close` uses a **collect-then-dispatch** protocol to avoid holding `ch->lock` during the spin on `fe->parked`. Under the lock it walks both `takers` and `putters`, calling `try_claim_wake` on each non-cancelled entry and collecting the `goc_entry*` (obtained via `mco_get_user_data(e->coro)`) for every `GOC_FIBER` entry into a heap-allocated `to_post` array. Non-fiber entries (`GOC_CALLBACK`, `GOC_SYNC`) are dispatched inline while the lock is still held, as their dispatch paths do not spin. After all entries are claimed, the lock is released, and the collected fiber entries are spun on and posted to the run queue one by one.
 
@@ -1404,9 +1404,9 @@ When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STA
 
 ## Shutdown Sequence
 
-`goc_shutdown` performs orderly teardown in five steps. It must be called from outside any fiber or pool thread (e.g. the application's main thread). It must not be called concurrently with any other `libgoc` function. It will block until all fibers have completed naturally — if any fiber is waiting on a channel event that will never arrive, `goc_shutdown` will hang. After it returns, the runtime is fully torn down and further `libgoc` calls — including a second `goc_init` — are outside the supported contract.
+`goc_shutdown` performs orderly teardown in four steps. It must be called from outside any fiber or pool thread (e.g. the application's main thread). It must not be called concurrently with any other `libgoc` function. It will block until all fibers have completed naturally — if any fiber is waiting on a channel event that will never arrive, `goc_shutdown` will hang. After it returns, the runtime is fully torn down and further `libgoc` calls — including a second `goc_init` — are outside the supported contract.
 
-> **Post-shutdown API boundary:** Once `goc_shutdown` returns, calling any `libgoc` function is **undefined behaviour**. Step 2 destroys and frees all channel mutexes; any subsequent call that reaches `uv_mutex_lock(ch->lock)` — including `goc_close`, `goc_take_try`, `goc_chan_make`, or any other channel API — accesses freed memory. Do not retain `goc_chan*` pointers across `goc_shutdown` with the intent to use them after the call returns.
+> **Post-shutdown API boundary:** Once `goc_shutdown` returns, calling any `libgoc` function is **undefined behaviour**. Step 3 destroys and frees all channel mutexes; any subsequent call that reaches `uv_mutex_lock(ch->lock)` — including `goc_close`, `goc_take_try`, `goc_chan_make`, or any other channel API — accesses freed memory. Do not retain `goc_chan*` pointers across `goc_shutdown` with the intent to use them after the call returns.
 
 **Step 1 — Drain all in-flight fibers.**
 
@@ -1419,33 +1419,29 @@ Once the drain-wait completes, `goc_pool_destroy`:
 4. Joins every worker thread.
 5. Destroys the semaphore and drain primitives, drains and frees the run queue, and frees the pool.
 
-Because all fibers have returned before `goc_pool_destroy` returns, no code path will ever call `uv_mutex_lock` on a channel lock again. Channel mutexes may therefore be destroyed immediately after this point without deferral.
+After Step 1, no fiber or pool thread will ever call `uv_mutex_lock` on a channel lock again. However, the event loop thread may still be running timer-expiry callbacks (e.g. from `goc_timeout`) that call `goc_close()`, which also locks channel mutexes. Channel mutexes must therefore **not** be destroyed until the loop thread has been fully joined (Step 2).
 
-**Step 2 — Destroy channel and RW-mutex internal locks.**
+**Step 2 — Shut down the event loop and join the loop thread.**
 
-After `goc_pool_destroy` returns, iterate the `live_channels` list, calling `uv_mutex_destroy` and `free` on each channel's `lock` pointer, then free the list itself. Then iterate the RW-mutex registry and destroy/free each `goc_mutex` internal lock.
+`loop_shutdown()` signals the loop thread to close both `uv_async_t` handles and then joins it. Specifically:
 
-**Step 3 — Signal the loop thread to close both `uv_async_t` handles.**
+- `goc_shutdown` calls `uv_async_send(g_shutdown_async)` from the main thread. `uv_async_send` is the only libuv call documented as safe to call from any thread.
+- The loop-thread callback `on_shutdown_signal` first drains `g_cb_queue` completely before calling `uv_close` on either handle. Although the pool is gone by this point, any entries pushed to `g_cb_queue` before the pool was destroyed and not yet flushed by a prior `on_wakeup` invocation are drained here. After draining, `on_shutdown_signal` calls `uv_close` on `g_wakeup` (with `on_wakeup_closed`) and on `g_shutdown_async` itself (with `free_handle_cb`). Both closes are performed from the loop thread, which is the only correct context: `uv_close` is not thread-safe and races against the loop's internal handle-list traversal if called from another thread.
+- Once both close callbacks have fired, the loop has no remaining active handles and `loop_thread_fn` exits. The loop thread runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime — both during normal operation and during shutdown drain. `UV_RUN_ONCE` is used rather than `UV_RUN_DEFAULT` because `UV_RUN_DEFAULT` returns as soon as there are no pending callbacks in one iteration, which may be before all `uv_close` callbacks have completed; the `UV_RUN_ONCE` spin correctly drains all remaining callbacks before returning zero.
+- `goc_thread_join(&g_loop_thread)` blocks until `loop_thread_fn` exits. After this: all `on_wakeup` and `on_shutdown_signal` deliveries are guaranteed complete, no libuv callback will ever fire again, and `g_loop` is safe to close and free.
+- `uv_loop_close(g_loop)` is called and its return value is asserted to be `0`. Because the loop thread has exited and all handles were closed, `uv_loop_close` must succeed; a non-zero return indicates a handle was left open and is treated as a programming error. The loop is then freed and `g_loop` set to `NULL`.
 
-With the pool fully destroyed, no fiber or pool thread will ever call `post_callback` again. `goc_shutdown` calls `uv_async_send(g_shutdown_async)` from the main thread. `uv_async_send` is the only libuv call documented as safe to call from any thread.
-
-The loop-thread callback `on_shutdown_signal` first drains `g_cb_queue` completely before calling `uv_close` on either handle. Although the pool is gone by this point, any entries pushed to `g_cb_queue` before the pool was destroyed and not yet flushed by a prior `on_wakeup` invocation are drained here. After draining, `on_shutdown_signal` calls `uv_close` on `g_wakeup` (with `on_wakeup_closed`) and on `g_shutdown_async` itself (with `free_handle_cb`). Both closes are performed from the loop thread, which is the only correct context: `uv_close` is not thread-safe and races against the loop's internal handle-list traversal if called from another thread.
-
-Once both close callbacks have fired, the loop has no remaining active handles and `loop_thread_fn` exits. The loop thread runs `while (uv_run(g_loop, UV_RUN_ONCE)) {}` for its entire lifetime — both during normal operation and during shutdown drain. `UV_RUN_ONCE` is used rather than `UV_RUN_DEFAULT` because `UV_RUN_DEFAULT` returns as soon as there are no pending callbacks in one iteration, which may be before all `uv_close` callbacks have completed; the `UV_RUN_ONCE` spin correctly drains all remaining callbacks before returning zero.
+Following `loop_shutdown()`, the live UV handle roots registry (`live_uv_handles`, `g_live_uv_mutex`) is torn down.
 
 > **Why not call `uv_run` from the main thread?** libuv explicitly forbids running the same loop from two threads simultaneously — doing so causes data races on the loop's internal timer heap, handle lists, and pending queue. The correct approach is to let the loop thread's own `uv_run` drain naturally (which happens once all handles are closed), then join the thread.
 
-**Step 4 — Join the loop thread.**
+**Step 3 — Destroy channel and RW-mutex internal locks.**
 
-`goc_thread_join(&g_loop_thread)` blocks until `loop_thread_fn` exits. After this point:
+Safe now: the loop thread has been joined (Step 2), so no callbacks referencing channel locks are in flight. Iterate the `live_channels` list, calling `uv_mutex_destroy` and `free` on each channel's `lock` pointer, then free the list itself. Then iterate the RW-mutex registry and destroy/free each `goc_mutex` internal lock.
 
-- All `on_wakeup` and `on_shutdown_signal` deliveries are guaranteed to have completed.
-- No libuv callback will ever fire again.
-- `g_loop` is safe to close and free.
+**Step 4 — Free fiber root chunks.**
 
-**Step 5 — Close and free the uv loop.**
-
-`uv_loop_close(g_loop)` is called and its return value is asserted to be `0`. Because the loop thread has already exited (Step 4) and all handles were closed inside Step 3, `uv_loop_close` must succeed; a non-zero return indicates a handle was left open and is treated as a programming error. The loop is then freed and `g_loop` set to `NULL`.
+All pools have been drained (Step 1), so no fiber holds a live slot. Iterate and free all fiber root chunk arrays, zero the bitmap, reset `fiber_root_num_chunks` to zero, and destroy `fiber_root_mutex`. This ensures a subsequent `goc_init`/`goc_shutdown` cycle starts clean.
 
 ---
 
