@@ -43,6 +43,7 @@ typedef struct {
     _Atomic uint64_t steal_misses;    /* wsdq_steal_top returned NULL */
     _Atomic uint64_t idle_wakeups;    /* uv_sem_wait returned (each sleep/wake cycle) */
     size_t           last_steal_victim; /* victim hint for next steal, SIZE_MAX = unset */
+    uint32_t         miss_streak;       /* consecutive steal misses; resets on any successful dequeue */
 } goc_worker;
 
 /* Global lifetime steal totals across all pools/workers — read via accessor */
@@ -325,6 +326,7 @@ static void pool_worker_fn(void* arg) {
     tl_worker     = (goc_worker*)arg;
     goc_pool* pool = tl_worker->pool;
     tl_worker->last_steal_victim = SIZE_MAX;
+    tl_worker->miss_streak = 0;
 
     /* Per-worker PRNG seed for randomised steal order (anti-thundering-herd).
      * Combines index with the worker pointer for uniqueness. */
@@ -336,14 +338,21 @@ static void pool_worker_fn(void* arg) {
 
         /* 1. Pop from own deque (LIFO, cache-warm). */
         entry = wsdq_pop_bottom(&tl_worker->deque);
-        if (entry != NULL) goto run;
+        if (entry != NULL) { tl_worker->miss_streak = 0; goto run; }
 
         /* 2. Drain own injector (entries posted by external callers). */
         entry = injector_pop(&tl_worker->injector);
-        if (entry != NULL) goto run;
+        if (entry != NULL) { tl_worker->miss_streak = 0; goto run; }
 
-        /* 3. Steal phase: victim hinting, then randomized scan. */
-        if (pool->thread_count > 1) {
+        /* 3. Steal phase: victim hinting, then randomized scan.
+         *
+         * Skip entirely when miss_streak has reached STEAL_BACKOFF_THRESHOLD —
+         * this suppresses hot spinning on IO-bound workloads (e.g. HTTP) where
+         * runnable fibers are woken via uv_async and never appear on a deque at
+         * probe time, producing 90–95% miss rates. The worker falls through to
+         * the idle path and parks until posted by post_to_run_queue. */
+        if (pool->thread_count > 1 &&
+            tl_worker->miss_streak < STEAL_BACKOFF_THRESHOLD) {
             size_t victim_hint = tl_worker->last_steal_victim;
             if (victim_hint != SIZE_MAX && victim_hint != tl_worker->index) {
 #ifdef GOC_ENABLE_STATS
@@ -357,12 +366,14 @@ static void pool_worker_fn(void* arg) {
                     atomic_fetch_add_explicit(&g_steal_successes,           1, memory_order_relaxed);
 #endif
                     tl_worker->last_steal_victim = victim_hint;
+                    tl_worker->miss_streak = 0;
                     goto run;
                 }
 #ifdef GOC_ENABLE_STATS
                 atomic_fetch_add_explicit(&tl_worker->steal_misses, 1, memory_order_relaxed);
                 atomic_fetch_add_explicit(&g_steal_misses,           1, memory_order_relaxed);
 #endif
+                tl_worker->miss_streak++;
             }
             /* Fallback: randomized scan as before */
             seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
@@ -381,12 +392,14 @@ static void pool_worker_fn(void* arg) {
                     atomic_fetch_add_explicit(&g_steal_successes,           1, memory_order_relaxed);
 #endif
                     tl_worker->last_steal_victim = victim;
+                    tl_worker->miss_streak = 0;
                     goto run;
                 }
 #ifdef GOC_ENABLE_STATS
                 atomic_fetch_add_explicit(&tl_worker->steal_misses, 1, memory_order_relaxed);
                 atomic_fetch_add_explicit(&g_steal_misses,           1, memory_order_relaxed);
 #endif
+                tl_worker->miss_streak++;
             }
             /* If all fail, clear the hint for next round */
             tl_worker->last_steal_victim = SIZE_MAX;
@@ -425,6 +438,7 @@ static void pool_worker_fn(void* arg) {
         atomic_fetch_add_explicit(&g_idle_wakeups,           1, memory_order_relaxed);
 #endif
         atomic_fetch_sub_explicit(&pool->idle_count, 1, memory_order_relaxed);
+        tl_worker->miss_streak = 0;  /* fresh steal budget after wakeup */
         GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_RUNNING, (int)pool->live_count, 0, 0);
         continue;   /* re-check shutdown and try again */
 

@@ -32,8 +32,8 @@ A prioritized roadmap for improving throughput, tail latency, memory efficiency,
 
 Based on `bench/libgoc/README.md` results (canary mode, pool=1–8), including HTTP benchmarks:
 
-- **HTTP server throughput does not scale with pool size** — libgoc plateaus at ~7–8k req/s regardless of pool count, while Go scales linearly to 77k req/s at pool=8. Steal miss rate at pool=8 is 95% (3.4M attempts, 162k successes, 3.26M misses), indicating the steal loop is spinning endlessly on an IO-bound workload where runnable fibers are never on the deque at probe time. This is the top regression to fix.
-- **HTTP ping-pong degrades with pool size** — 2968 rtt/s at pool=1 falling to 2265 at pool=8. Steal miss rate climbs from 0% to 72% at pool=8 (424k attempts, 118k successes). At pool=1–2 libgoc beats Go (1.59×/1.31×), confirming the HTTP layer is efficient; the degradation is purely a scheduler contention artifact.
+- **HTTP server throughput does not scale with pool size (pre-fix baseline)** — libgoc plateaus at ~7–8k req/s regardless of pool count, while Go scales linearly to 77k req/s at pool=8. Steal miss rate at pool=8 is 95% (3.4M attempts, 162k successes, 3.26M misses), indicating the steal loop was spinning endlessly on an IO-bound workload where runnable fibers are never on the deque at probe time. Fixed by Phase 1.2 (`miss_streak` backoff).
+- **HTTP ping-pong degrades with pool size (pre-fix baseline)** — 2968 rtt/s at pool=1 falling to 2265 at pool=8. Steal miss rate climbs from 0% to 72% at pool=8 (424k attempts, 118k successes). At pool=1–2 libgoc beats Go (1.59×/1.31×), confirming the HTTP layer is efficient; the degradation was a scheduler contention artifact. Fixed by Phase 1.2.
 - **Spawn idle steal thrashing persists** — pool≥2 shows 112k–119k steal successes during spawn idle (≈99% success rate, but the volume causes thrashing). Tasks/s: 70k (pool=1), 49k (pool=2), 31k (pool=4), 50k (pool=8) — non-monotonic and well below Go parity.
 - **Ring** peaks at 972k hops/s (pool=4, ~0.42× Go). Pool=1 regressed vs Phase 1.1 (772k vs 939k). Still a weak spot.
 - **Fan-out/fan-in** canary: 162k–198k msg/s. pool=8 dropped to 162k (lowest), indicating cross-worker contention worsens at high pool sizes.
@@ -284,18 +284,20 @@ HTTP server throughput: 36624 requests in 5000ms (7325 req/s, 0 errors, concurre
 - **cb-queue hwm confirmed non-zero**: hwm 44–113 for HTTP throughput, hwm 4–6 for HTTP ping-pong. Callback queue observability is now measurable and callback coalescing (Phase 2 item #6) can be evaluated.
 - **Non-HTTP benchmarks stable**: ping-pong, ring, fan-out, sieve results are broadly consistent with Phase 1.1 with no major regressions.
 
-### 2) IO-aware steal suppression — Phase 1.2 (Next)
+### 2) IO-aware steal suppression — Phase 1.2 (Completed)
 
-**Root cause**: the current steal loop probes victim deques unconditionally regardless of whether the victim's work is IO-bound or CPU-bound. For IO-heavy workloads (HTTP), runnable fibers are woken via `uv_async` from the loop thread — they appear on a deque only after wakeup. An idle worker probing before the wakeup always misses, producing the observed 90–95% miss rates and causing the worker to spin rather than sleep.
+**Root cause**: the steal loop was probing victim deques unconditionally regardless of whether the victim's work was IO-bound or CPU-bound. For IO-heavy workloads (HTTP), runnable fibers are woken via `uv_async` from the loop thread — they appear on a deque only after wakeup. An idle worker probing before the wakeup always missed, producing the observed 90–95% miss rates and causing the worker to spin rather than sleep.
 
-**Proposed fix**: suppress steal attempts (or increase backoff) when a worker's deque probe fails repeatedly without success. Options:
-- **Exponential backoff on consecutive miss streaks** before re-entering the steal loop. Low-risk; has the most precedent in scheduler literature. Does not fix the root cause but reduces CPU waste dramatically.
-- **IO-aware idle**: after N consecutive miss streaks, transition the worker to a true idle state (cond-wait / semaphore) and rely on the existing idle-wakeup path (`g_idle_wakeups`) to signal it. This is a deeper change but would collapse the 228k–448k idle wakeup count and eliminate the spin.
-- **Deque depth hint in steal probe**: skip stealing from a victim whose deque depth has been 0 for the last K probes. Lightweight but coarse.
+**Implemented fix**: `miss_streak` backoff — a per-worker consecutive-miss counter that gates the steal scan. When `miss_streak >= STEAL_BACKOFF_THRESHOLD` (default: 8, tuneable in `src/config.h`), the worker skips Stage 3 entirely and falls through to Stage 4 (park on `idle_sem`). The streak resets to 0 on any successful dequeue (own-deque pop, injector drain, or steal hit) and after every `uv_sem_wait` wakeup, so the worker gets a fresh steal budget each time it is signalled.
 
-**Why this is P1**: HTTP throughput showing 0× scaling across pool sizes (0.09× Go geomean) with a 95% steal miss rate is a regression that makes the scheduler actively harmful for IO workloads at high pool counts.
+**Changes**:
+- `src/config.h`: added `STEAL_BACKOFF_THRESHOLD 8`
+- `src/pool.c` (`goc_worker`): added `uint32_t miss_streak` field
+- `src/pool.c` (`pool_worker_fn`): initialize `miss_streak = 0`; reset on own-deque/injector hit and after wakeup; increment on steal miss (hint path and scan path); guard Stage 3 with `miss_streak < STEAL_BACKOFF_THRESHOLD`
 
-**Success metric**: HTTP throughput steal miss rate ≤ 20% at pool=8; throughput shows measurable improvement vs. flat plateau.
+**Why this approach**: lowest risk and most precedent in scheduler literature. Does not require distinguishing IO-bound vs CPU-bound work; the miss streak naturally emerges for any workload where deques are empty at probe time. Workers on CPU-bound workloads (steal succeeds frequently) never accumulate a streak and are unaffected.
+
+**Expected impact**: eliminates the hot spin on IO workloads; workers park after ≤8 consecutive empty probes and wait for `post_to_run_queue` to signal them. The 228k–448k idle wakeup count for HTTP throughput should drop toward the actual number of fiber wakeups.
 
 ### 3) Spawn steal thrashing — Phase 1.3
 
@@ -396,7 +398,7 @@ Evaluate separating fiber/callback/sync wait queues or kind-grouping to reduce b
 |---|---|---|---|
 | Phase 0 instrumentation | High (enabler) | Low | P0 ✅ |
 | Scheduler scaling (handoff/steal) — Phase 1.1 | High | Low-Med | P1 ✅ |
-| IO-aware steal suppression — Phase 1.2 | High (HTTP 0× scaling) | Low-Med | P1 🔴 |
+| IO-aware steal suppression — Phase 1.2 | High (HTTP 0× scaling) | Low-Med | P1 ✅ |
 | Spawn steal thrashing fix | Med-High | Medium | P1 🔴 |
 | Timeout batching | Med-High | Medium | P1 🔴 (unblocked) |
 | Callback queue coalescing | Medium | Low-Med | P1 🔴 (unblocked) |

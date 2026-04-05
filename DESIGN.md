@@ -725,6 +725,7 @@ typedef struct {
     goc_pool*        pool;            /* back-pointer to owning pool */
     _Atomic uint64_t steal_attempts;  /* total steal attempts from this worker's deque */
     _Atomic uint64_t steal_successes; /* successful steals from this worker's deque */
+    uint32_t         miss_streak;     /* consecutive steal misses; resets on any successful dequeue or wakeup */
 } goc_worker;
 
 /* Pool-wide steal aggregates (file-scope globals in pool.c): */
@@ -790,16 +791,21 @@ while not shutdown:
     entry = injector_pop(worker.injector)
     if entry != NULL: goto run
 
-    /* Stage 3: steal phase — victim hinting, then randomised scan */
-    if thread_count > 1:
+    /* Stage 3: steal phase — victim hinting, then randomised scan.
+     * Skipped entirely when miss_streak >= STEAL_BACKOFF_THRESHOLD (default 8):
+     * the worker falls through to Stage 4 and parks rather than spinning on
+     * empty deques (IO-bound workloads where fibers are woken via uv_async). */
+    if thread_count > 1 and worker.miss_streak < STEAL_BACKOFF_THRESHOLD:
         /* 3a. Victim hint: probe the last productive victim first */
         if worker.last_steal_victim != UNSET and != self:
             steal_attempts++
             entry = wsdq_steal_top(workers[last_steal_victim].deque)
             if entry != NULL:
                 steal_successes++
+                worker.miss_streak = 0
                 goto run
             steal_misses++
+            worker.miss_streak++
         /* 3b. Fallback: randomised scan over all other workers */
         xorshift32(seed)
         offset = 1 + (seed % (thread_count - 1))
@@ -811,8 +817,10 @@ while not shutdown:
             if entry != NULL:
                 steal_successes++
                 worker.last_steal_victim = victim
+                worker.miss_streak = 0
                 goto run
             steal_misses++
+            worker.miss_streak++
         worker.last_steal_victim = UNSET   /* all failed; clear hint */
 
     /* Stage 4: go idle — sleep-miss race closure */
@@ -831,6 +839,7 @@ while not shutdown:
     uv_sem_wait(worker.idle_sem)               /* sleep until posted by post_to_run_queue */
     idle_wakeups++
     atomic_fetch_sub(idle_count, 1, relaxed)
+    worker.miss_streak = 0  /* fresh steal budget after wakeup */
     continue
 
 run:
@@ -881,6 +890,8 @@ run:
 > **Sleep-miss race closure.** A poster calling `post_to_run_queue` must not miss a sleeping worker. Protocol: (1) worker increments `idle_count` with `seq_cst` *before* its double-check; (2) poster completes its write (deque push or injector mutex-unlock, both full-barrier), then reads `idle_count` with `seq_cst`. The C11 total order on seq_cst operations guarantees that if the poster sees `idle_count == 0`, the worker's double-check will see the posted entry; if the poster sees `idle_count > 0`, it posts `idle_sem` to wake the worker.
 
 > **Victim hinting.** Each worker maintains `last_steal_victim` (initialised to `SIZE_MAX` = unset). When a steal succeeds, the victim's index is stored there. On the next steal phase, that index is tried first (before the randomised scan), because a recently productive victim is likely still busy. If the hint steal fails or the index is unset, the worker falls back to the randomised xorshift scan. The hint is cleared when all steal attempts in a round fail. This reduces the average number of probes needed to find work in sustained high-throughput workloads.
+
+> **IO-aware steal backoff (`miss_streak`).** Each worker maintains a `uint32_t miss_streak` counter that increments on every `wsdq_steal_top` miss (both hint-path and randomised-scan) and resets to 0 on any successful dequeue (own-deque pop, injector drain, or steal hit) and after every `uv_sem_wait` wakeup. When `miss_streak >= STEAL_BACKOFF_THRESHOLD` (default: 8, defined in `src/config.h`), the worker skips Stage 3 entirely and parks immediately at Stage 4. This suppresses hot spinning on IO-bound workloads (e.g. HTTP) where runnable fibers are woken via `uv_async` and never appear on a deque at probe time — the observed 90–95% steal miss rates in HTTP benchmarks are collapsed to zero wasted probes per wakeup cycle. CPU-bound workloads (steal frequently succeeds) never accumulate a streak and are unaffected.
 
 > **Steal and idle counters.** `steal_attempts`, `steal_successes`, and `steal_misses` are per-worker relaxed atomics accumulated on every `wsdq_steal_top` call (both hint-path and randomised-scan). `idle_wakeups` is incremented once per `uv_sem_wait` return. All four are mirrored to global aggregates (`g_steal_*`, `g_idle_wakeups` in `pool.c`) and exposed via `goc_pool_get_steal_stats`. Per-worker totals are also reported in the `GOC_WORKER_STOPPED` telemetry event (attempts and successes only). A high `misses`-to-`attempts` ratio indicates contention on steal targets; a high `idle_wakeups`-to-`successes` ratio indicates steal thrashing or spurious wakeups.
 

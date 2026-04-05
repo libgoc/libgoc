@@ -23,4 +23,12 @@
  */
 #define GOC_DEFAULT_LIVE_FIBER_MEMORY_FACTOR 0.6
 
+/*
+ * Consecutive steal-miss threshold after which a worker skips the steal scan
+ * entirely and parks immediately. Suppresses hot spinning on IO-bound workloads
+ * where runnable fibers are woken via uv_async and never appear on a deque at
+ * probe time (observed 90–95% miss rates in HTTP benchmarks).
+ */
+#define STEAL_BACKOFF_THRESHOLD 8
+
 #endif /* GOC_CONFIG_H */
