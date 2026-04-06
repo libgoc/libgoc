@@ -210,7 +210,7 @@ libuv owns **one thing**: the event loop thread.
 |---|---|
 | `uv_loop_t` | single event loop, runs on its own thread |
 | `uv_async_t` | wake the loop from other threads so it can drain callback/shutdown work |
-| `uv_timer_t` | `goc_timeout` implementation |
+| `uv_timer_t` | `goc_timeout` central timer manager (one per loop) |
 
 **All libuv handles and internal context structs must be GC-allocated (`goc_malloc`) and pinned in the `live_uv_handles` root array** before being handed to libuv. libuv holds internal references to handles until `uv_close` completes; those references are not visible to the GC. Without pinning the GC would collect the object prematurely, causing use-after-free inside the event loop. Internal code uses `gc_handle_register`/`gc_handle_unregister` directly; user code uses the public wrappers `goc_io_handle_register` / `goc_io_handle_unregister` / `goc_io_handle_close`.
 
@@ -1047,32 +1047,44 @@ void cb_queue_init(void) {
 
 ---
 
-## `goc_timeout` — libuv Timer
+## `goc_timeout` — Central Timer Manager
 
-`goc_timeout_req` and `goc_timeout_timer_ctx` are GC-allocated and registered via `gc_handle_register` — see [libuv Role](#libuv-role). `goc_timeout_timer_ctx` is unregistered in its `uv_close` callback via `gc_handle_unregister`, after which the GC may collect it.
+`goc_timeout` no longer allocates a `uv_timer_t` per call.  Instead a single long-lived `uv_timer_t` (the *central timer manager*, owned by `loop.c`) drives all pending timeouts via a GC-allocated min-heap.
 
-`uv_timer_init` and `uv_timer_start` are **not thread-safe**; they must be called from the loop thread. Because `goc_timeout` may be called from any thread (fiber, pool worker, main thread), the timer initialisation is marshalled onto the loop thread via `post_on_loop()`:
+### Key types
 
 ```c
+/* goc_timeout_timer_ctx — defined in internal.h (shared with loop.c) */
+typedef struct goc_timeout_timer_ctx {
+    goc_chan*   ch;
+    _Atomic int start_state;      /* 0=not-started, 1=started, 2=closed */
+    _Atomic int cancel_requested;
+    size_t      heap_idx;         /* index in the central timer heap; SIZE_MAX if not in heap */
+} goc_timeout_timer_ctx;
+
 typedef struct {
     struct goc_timeout_timer_ctx* timer_ctx;
     uint64_t    ms;
     uint64_t    deadline_ns; /* uv_hrtime() snapshot taken at goc_timeout() call time */
 } goc_timeout_req;
+```
 
-typedef struct goc_timeout_timer_ctx {
-    uv_timer_t timer;        /* MUST be first */
-    goc_chan*  ch;
-} goc_timeout_timer_ctx;
+### Lifetime / GC
 
+`goc_timeout_timer_ctx` is `goc_malloc`-allocated.  The central manager's heap array is also `goc_malloc`-allocated, so the GC can trace the `goc_timeout_timer_ctx*` pointers inside and keep each ctx alive while it is pending.  **No `gc_handle_register` / `gc_handle_unregister` call is needed per timeout**; `gc_handle_register` is called exactly once for the manager's backing `uv_timer_t` handle during `loop_init`.
+
+### Flow
+
+```c
 goc_chan* goc_timeout(uint64_t ms) {
     goc_chan* ch = goc_chan_make(0);
     goc_timeout_req*       req  = goc_malloc(sizeof(goc_timeout_req));
     goc_timeout_timer_ctx* tctx = goc_malloc(sizeof(goc_timeout_timer_ctx));
-    tctx->ch = ch;
-    req->timer_ctx = tctx; req->ms = ms;
+    tctx->ch = ch;  tctx->heap_idx = SIZE_MAX;
+    req->timer_ctx = tctx;  req->ms = ms;
     req->deadline_ns = uv_hrtime();
-    gc_handle_register(tctx);  /* pin while libuv holds &tctx->timer */
+    /* No gc_handle_register: the GC-allocated heap keeps tctx alive. */
+    chan_set_on_close(ch, on_timeout_channel_closed, tctx);
     post_on_loop(on_start_timer, req);
     return ch;
 }
@@ -1080,33 +1092,25 @@ goc_chan* goc_timeout(uint64_t ms) {
 /* runs on the loop thread */
 static void on_start_timer(void* arg) {
     goc_timeout_req* req = (goc_timeout_req*)arg;
-    /* Subtract async dispatch latency so the timer fires at the wall-clock
-     * deadline recorded above, not req->ms after this callback happens to run.
-     * Clamp to zero if the deadline has already passed — fire next iteration. */
     uint64_t now_ns     = uv_hrtime();
     uint64_t elapsed_ms = (now_ns > req->deadline_ns)
                         ? (now_ns - req->deadline_ns) / 1000000ULL : 0;
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
-    uv_timer_init(g_loop, &req->timer_ctx->timer);
-    uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);
-}
-
-static void on_timeout(uv_timer_t* t) {
-    goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
-    goc_close(tctx->ch);        /* wake any parked takers with ok==GOC_CLOSED */
-    uv_close((uv_handle_t*)t, unregister_handle_cb);
-    /* goc_close is safe to call concurrently with goc_shutdown's Step 1 close
-       loop because it is serialised by a close_guard CAS: exactly one caller
-       flips close_guard from 0→1 and proceeds with teardown; the other sees 1
-       and returns immediately — no double-free, no segfault. */
-}
-
-static void unregister_handle_cb(uv_handle_t* h) {
-    gc_handle_unregister(h);   /* remove from live_uv_handles; GC may now collect */
+    /* ... cancel-requested checks (state transitions) ... */
+    uint64_t fire_at_ns = now_ns + remaining * 1000000ULL;
+    goc_timer_manager_insert(req->timer_ctx, fire_at_ns);
 }
 ```
 
-> **Dispatch-latency correction.** `uv_timer_start` is called from `on_start_timer`, which runs on the loop thread some time *after* `goc_timeout()` returned to the caller. Without correction, the observable latency from `goc_timeout()` to channel-close would be `async_dispatch_delay + ms`, not `ms`. On a loaded system the dispatch delay can be hundreds of milliseconds — large enough to exceed any reasonable upper-bound assertion in tests. The fix is to snapshot `uv_hrtime()` at call time, compute how many milliseconds of the budget were consumed by the dispatch, and pass the reduced `remaining` duration to `uv_timer_start`. If the budget is already exhausted (`remaining == 0`), libuv fires the timer on the very next loop iteration, which is the correct expired-deadline behaviour.
+The manager's single `uv_timer_t` fires at the earliest pending deadline.  When it fires, all expired entries are popped from the heap and `goc_timeout_ctx_expire` is called for each, which increments the expiration counter and calls `goc_close(ch)`.
+
+Cancellation (`on_cancel_timer`, triggered via `on_timeout_channel_closed`) calls `goc_timer_manager_remove(tctx)`, which removes the entry from the heap by `heap_idx` and re-arms the backing timer to the new earliest deadline.
+
+> **Dispatch-latency correction.** The absolute fire deadline is computed from the `uv_hrtime()` snapshot taken in `goc_timeout()` on the calling thread.  By the time `on_start_timer` runs on the loop thread, some dispatch latency has elapsed.  `remaining` subtracts that latency so the timer fires at the original wall-clock deadline, not `ms` after dispatch.  If the budget is already exhausted (`remaining == 0`), `fire_at_ns` is set to `now_ns` and the manager fires on the next loop iteration — the correct expired-deadline behaviour.
+
+### Shutdown
+
+During `on_shutdown_signal`, after draining the callback queue, `goc_timer_manager_shutdown()` is called.  It stops the backing `uv_timer_t`, calls `goc_close` on every channel still in the heap (setting `start_state = 2` first so any in-flight `on_cancel_timer` callbacks are no-ops), then closes the backing `uv_timer_t` with `free_handle_cb`.  This happens before `uv_walk` closes remaining handles and preserves the existing B.2 → B.3 shutdown ordering (channel mutexes are not destroyed until the loop thread has been joined).
 
 Runs entirely on the uv loop thread (after the async dispatch). Composes with `goc_alts` for deadline semantics:
 
@@ -1409,7 +1413,7 @@ When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STA
 2. **`gc.c`** — Register the `push_fiber_roots` callback via `goc_fiber_roots_init()` / `GC_set_push_other_roots`.
 3. **`gc.c`** — Call `GC_allow_register_threads()`.
 4. **`gc.c`** — Initialise the `live_channels` list: a `malloc`-allocated, dynamically grown `goc_chan**` array protected by a `uv_mutex_t` (`g_live_mutex`).
-5. **`gc.c`** — Call `live_uv_handles_init()`: initialise the `live_uv_handles` array that tracks GC-visible `goc_chan*` pointers held by in-flight async I/O (`timeout.c`, `goc_io.c`). This must happen before any `goc_timeout` or `goc_io_*` call.
+5. **`gc.c`** — Call `live_uv_handles_init()`: initialise the `live_uv_handles` array that tracks GC-visible pointers held by in-flight async I/O (`goc_io.c`) and the central timer manager's backing `uv_timer_t`. This must happen before any `goc_timeout` or `goc_io_*` call.
 6. **`pool.c`** — Initialise the global pool registry.
 7. **`mutex.c`** — Initialise the global RW-mutex registry.
 8. **`loop.c`** — Call `loop_init()`: allocate/init `g_loop`, `g_wakeup`, and `g_shutdown_async`; initialise the callback queue; then spawn the loop thread.

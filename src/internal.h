@@ -212,6 +212,22 @@ struct goc_spawn_req {
 #endif
 
 /* ---------------------------------------------------------------------------
+ * goc_timeout_timer_ctx
+ *
+ * Defined here (rather than in timeout.c) so that loop.c's central timer
+ * manager can access the struct fields directly without an extra header.
+ * The embedded uv_timer_t has been removed; lifetime is now managed by the
+ * GC-allocated min-heap inside the central timer manager.
+ * --------------------------------------------------------------------------- */
+
+typedef struct goc_timeout_timer_ctx {
+    goc_chan*   ch;
+    _Atomic int start_state;      /* 0=not-started, 1=started, 2=closed */
+    _Atomic int cancel_requested;
+    size_t      heap_idx;         /* index in the central timer heap; SIZE_MAX if not in heap */
+} goc_timeout_timer_ctx;
+
+/* ---------------------------------------------------------------------------
  * Internal Function Declarations (cross-module)
  * --------------------------------------------------------------------------- */
 
@@ -284,6 +300,13 @@ int  goc_loop_is_shutting_down(void);
 void post_callback(goc_entry* entry, void* value);
 void post_on_loop(void (*fn)(void*), void* arg);
 int  post_on_loop_checked(void (*fn)(void*), void* arg);
+
+/* loop.c central timer manager → called from timeout.c */
+void goc_timer_manager_insert(goc_timeout_timer_ctx* ctx, uint64_t deadline_ns);
+void goc_timer_manager_remove(goc_timeout_timer_ctx* ctx);
+
+/* timeout.c → called from loop.c timer manager */
+void goc_timeout_ctx_expire(goc_timeout_timer_ctx* tctx);
 
 /* gc.c → used by pool.c, loop.c */
 void live_channels_init(void);
