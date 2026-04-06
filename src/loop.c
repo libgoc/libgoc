@@ -242,6 +242,215 @@ int goc_loop_is_shutting_down(void)
            GOC_LOOP_STATE_RUNNING;
 }
 
+static void free_handle_cb(uv_handle_t *h);  /* defined in loop-thread callbacks section below */
+
+/* --------------------------------------------------------------------------
+ * Central timer manager
+ *
+ * Replaces per-timeout uv_timer_t allocation with a single long-lived
+ * uv_timer_t driven by a GC-allocated min-heap of pending timeouts.
+ *
+ * The heap array is goc_malloc'd so the GC can trace goc_timeout_timer_ctx*
+ * pointers inside and keep ctx objects alive while they are pending — no
+ * per-timeout gc_handle_register call is needed.
+ *
+ * All operations run on the loop thread (no extra lock required).
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    uint64_t               deadline_ns;
+    goc_timeout_timer_ctx* ctx;
+} timer_heap_entry_t;
+
+#define TIMER_HEAP_INIT_CAP 64
+
+static timer_heap_entry_t* g_timer_heap     = NULL;  /* goc_malloc'd */
+static size_t               g_timer_heap_len = 0;
+static size_t               g_timer_heap_cap = 0;
+static uv_timer_t*          g_timer_mgr      = NULL;  /* malloc'd; one per loop */
+
+static void on_timer_mgr_fire(uv_timer_t* h);  /* forward declaration */
+
+static void timer_heap_swap(size_t a, size_t b)
+{
+    timer_heap_entry_t tmp = g_timer_heap[a];
+    g_timer_heap[a]        = g_timer_heap[b];
+    g_timer_heap[b]        = tmp;
+    g_timer_heap[a].ctx->heap_idx = a;
+    g_timer_heap[b].ctx->heap_idx = b;
+}
+
+static void timer_heap_sift_up(size_t i)
+{
+    while (i > 0) {
+        size_t parent = (i - 1) / 2;
+        if (g_timer_heap[parent].deadline_ns <= g_timer_heap[i].deadline_ns)
+            break;
+        timer_heap_swap(parent, i);
+        i = parent;
+    }
+}
+
+static void timer_heap_sift_down(size_t i)
+{
+    for (;;) {
+        size_t smallest = i;
+        size_t left  = 2 * i + 1;
+        size_t right = 2 * i + 2;
+        if (left  < g_timer_heap_len &&
+            g_timer_heap[left].deadline_ns  < g_timer_heap[smallest].deadline_ns)
+            smallest = left;
+        if (right < g_timer_heap_len &&
+            g_timer_heap[right].deadline_ns < g_timer_heap[smallest].deadline_ns)
+            smallest = right;
+        if (smallest == i)
+            break;
+        timer_heap_swap(i, smallest);
+        i = smallest;
+    }
+}
+
+/* Re-arm the backing uv_timer_t to fire at the earliest pending deadline,
+ * or stop it if the heap is empty. */
+static void timer_mgr_rearm(void)
+{
+    if (g_timer_heap_len == 0) {
+        uv_timer_stop(g_timer_mgr);
+        return;
+    }
+    uint64_t now_ns   = uv_hrtime();
+    uint64_t next_ns  = g_timer_heap[0].deadline_ns;
+    uint64_t delay_ms = (next_ns > now_ns)
+                      ? ((next_ns - now_ns + 999999ULL) / 1000000ULL)
+                      : 0;
+    uv_timer_start(g_timer_mgr, on_timer_mgr_fire, delay_ms, 0);
+}
+
+/* Loop-thread callback: fires all expired entries and re-arms. */
+static void on_timer_mgr_fire(uv_timer_t* h)
+{
+    (void)h;
+    uint64_t now_ns = uv_hrtime();
+    GOC_DBG("on_timer_mgr_fire: now_ns=%llu heap_len=%zu\n",
+            (unsigned long long)now_ns, g_timer_heap_len);
+
+    while (g_timer_heap_len > 0 && g_timer_heap[0].deadline_ns <= now_ns) {
+        goc_timeout_timer_ctx* ctx = g_timer_heap[0].ctx;
+        GOC_DBG("on_timer_mgr_fire: expiring tctx=%p ch=%p deadline=%llu\n",
+                (void*)ctx, (void*)ctx->ch,
+                (unsigned long long)g_timer_heap[0].deadline_ns);
+
+        /* Remove root from heap (swap with last element, then sift down). */
+        ctx->heap_idx = SIZE_MAX;
+        size_t last = --g_timer_heap_len;
+        if (last > 0) {
+            g_timer_heap[0] = g_timer_heap[last];
+            g_timer_heap[0].ctx->heap_idx = 0;
+            timer_heap_sift_down(0);
+        }
+
+        /* Mark closed before firing so on_cancel_timer (if posted) is a no-op. */
+        atomic_store_explicit(&ctx->start_state, 2, memory_order_release);
+        goc_timeout_ctx_expire(ctx);
+    }
+
+    timer_mgr_rearm();
+}
+
+/* Public: insert ctx into the heap; re-arm the backing timer if needed.
+ * Called from on_start_timer (loop thread only). */
+void goc_timer_manager_insert(goc_timeout_timer_ctx* ctx, uint64_t deadline_ns)
+{
+    /* Grow the GC-managed heap array if full. */
+    if (g_timer_heap_len == g_timer_heap_cap) {
+        size_t new_cap = g_timer_heap_cap ? g_timer_heap_cap * 2 : TIMER_HEAP_INIT_CAP;
+        g_timer_heap = (timer_heap_entry_t*)goc_realloc(
+                            g_timer_heap, new_cap * sizeof(timer_heap_entry_t));
+        g_timer_heap_cap = new_cap;
+    }
+
+    size_t i = g_timer_heap_len++;
+    g_timer_heap[i].deadline_ns = deadline_ns;
+    g_timer_heap[i].ctx         = ctx;
+    ctx->heap_idx               = i;
+    timer_heap_sift_up(i);
+
+    /* Re-arm only when the new entry became the new earliest deadline. */
+    if (ctx->heap_idx == 0)
+        timer_mgr_rearm();
+}
+
+/* Public: remove ctx from the heap (cancel path).
+ * Called from on_cancel_timer (loop thread only). */
+void goc_timer_manager_remove(goc_timeout_timer_ctx* ctx)
+{
+    size_t i = ctx->heap_idx;
+    if (i == SIZE_MAX || i >= g_timer_heap_len)
+        return;
+
+    ctx->heap_idx = SIZE_MAX;
+
+    size_t last = --g_timer_heap_len;
+    if (i == last) {
+        /* Was the last element; just shrink. Re-arm (may stop if heap now empty). */
+        timer_mgr_rearm();
+        return;
+    }
+
+    /* Replace hole with the last element and restore heap property. */
+    goc_timeout_timer_ctx* moved = g_timer_heap[last].ctx;
+    g_timer_heap[i] = g_timer_heap[last];
+    moved->heap_idx = i;
+
+    timer_heap_sift_up(i);
+    /* After sift_up, moved may have risen; find its current position via heap_idx. */
+    timer_heap_sift_down(moved->heap_idx);
+
+    /* The root may have changed; re-arm unconditionally. */
+    timer_mgr_rearm();
+}
+
+/* Initialise the timer manager; called from loop_init after uv_loop_init. */
+static void goc_timer_manager_init(void)
+{
+    g_timer_heap     = (timer_heap_entry_t*)goc_malloc(
+                            TIMER_HEAP_INIT_CAP * sizeof(timer_heap_entry_t));
+    g_timer_heap_cap = TIMER_HEAP_INIT_CAP;
+    g_timer_heap_len = 0;
+
+    g_timer_mgr = (uv_timer_t*)malloc(sizeof(uv_timer_t));
+    assert(g_timer_mgr != NULL);
+    int rc = uv_timer_init(g_loop, g_timer_mgr);
+    GOC_DBG("goc_timer_manager_init: uv_timer_init timer=%p rc=%d\n",
+            (void*)g_timer_mgr, rc);
+    (void)rc;
+    /* Do not start the timer yet; it will be armed on the first insert. */
+}
+
+/* Drain and close the timer manager; called from on_shutdown_signal (loop thread).
+ * Closes all pending timeout channels, then closes the backing uv_timer_t. */
+static void goc_timer_manager_shutdown(void)
+{
+    GOC_DBG("goc_timer_manager_shutdown: draining %zu pending timeouts\n",
+            g_timer_heap_len);
+
+    uv_timer_stop(g_timer_mgr);
+
+    for (size_t i = 0; i < g_timer_heap_len; i++) {
+        goc_timeout_timer_ctx* ctx = g_timer_heap[i].ctx;
+        /* Set state=2 so any in-flight on_cancel_timer callbacks are no-ops. */
+        atomic_store_explicit(&ctx->start_state, 2, memory_order_release);
+        ctx->heap_idx = SIZE_MAX;
+        GOC_DBG("goc_timer_manager_shutdown: closing tctx=%p ch=%p\n",
+                (void*)ctx, (void*)ctx->ch);
+        goc_close(ctx->ch);
+    }
+    g_timer_heap_len = 0;
+
+    uv_close((uv_handle_t*)g_timer_mgr, free_handle_cb);
+    g_timer_mgr = NULL;
+}
+
 /* --------------------------------------------------------------------------
  * goc_scheduler — public
  * -------------------------------------------------------------------------- */
@@ -510,6 +719,11 @@ static void on_shutdown_signal(uv_async_t *h)
     drain_cb_queue_guarded();
     GOC_DBG("on_shutdown_signal: after drain_cb_queue\n");
 
+    /* Shut down the central timer manager: close remaining timeout channels
+     * and close the backing uv_timer_t before uv_walk sweeps up other handles. */
+    GOC_DBG("on_shutdown_signal: timer manager shutdown\n");
+    goc_timer_manager_shutdown();
+
     /* Close wakeup handle; on_wakeup_closed will NULL g_wakeup and free. */
     GOC_DBG("on_shutdown_signal: closing wakeup handle=%p\n", (void*)g_wakeup_raw);
     uv_close((uv_handle_t *)g_wakeup_raw, on_wakeup_closed);
@@ -586,10 +800,13 @@ void loop_init(void)
     /* 5. Initialise the MPSC callback queue. */
     cb_queue_init();
 
+    /* 6. Initialise the central timer manager (one uv_timer_t for all timeouts). */
+    goc_timer_manager_init();
+
     atomic_store_explicit(&g_loop_state, GOC_LOOP_STATE_RUNNING,
                           memory_order_release);
 
-    /* 6. Spawn the loop thread (GC-registered on all platforms via
+    /* 7. Spawn the loop thread (GC-registered on all platforms via
      *    goc_thread_create — see internal.h). */
     goc_thread_create(&g_loop_thread, loop_thread_fn, NULL);
 }

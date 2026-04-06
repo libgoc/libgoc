@@ -1,14 +1,14 @@
 /*
- * src/timeout.c — Timeout channels via libuv timers
+ * src/timeout.c — Timeout channels via the central timer manager
  *
  * Implements: goc_timeout
- * All timer context structs are GC-allocated and registered via
- * gc_handle_register so the collector keeps them alive while libuv holds
- * references to them.
+ * Each goc_timeout call allocates a GC-managed goc_timeout_timer_ctx and
+ * inserts it into the central min-heap timer manager (loop.c).  No per-timeout
+ * uv_timer_t handle is allocated; the manager owns a single long-lived
+ * uv_timer_t for the entire loop.
  *
- * Thread safety: goc_timeout may be called from any thread.  Timer
- * initialisation (uv_timer_init / uv_timer_start) is dispatched to the loop
- * thread via post_on_loop().
+ * Thread safety: goc_timeout may be called from any thread.  Timer insertion
+ * (goc_timer_manager_insert) is dispatched to the loop thread via post_on_loop().
  */
 
 #include <stdlib.h>
@@ -35,61 +35,49 @@ typedef struct {
     uint64_t    deadline_ns;  /* uv_hrtime() snapshot taken at goc_timeout() call time */
 } goc_timeout_req;
 
-typedef struct goc_timeout_timer_ctx {
-    uv_timer_t timer;         /* MUST be first member — freed from uv_close callback */
-    goc_chan*  ch;
-    _Atomic int start_state;  /* 0=not-started, 1=started, 2=closed */
-    _Atomic int cancel_requested;
-} goc_timeout_timer_ctx;
-
-static void unregister_handle_cb(uv_handle_t* h);
+/* goc_timeout_timer_ctx is defined in internal.h */
 
 static void on_cancel_timer(void* arg)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)arg;
     int state = atomic_load_explicit(&tctx->start_state, memory_order_acquire);
 
-    GOC_DBG("on_cancel_timer: tctx=%p timer=%p ch=%p state=%d cancel=%d\n",
-            (void*)tctx, (void*)&tctx->timer, (void*)tctx->ch, state,
+    GOC_DBG("on_cancel_timer: tctx=%p ch=%p state=%d cancel=%d\n",
+            (void*)tctx, (void*)tctx->ch, state,
             atomic_load_explicit(&tctx->cancel_requested, memory_order_acquire));
 
     if (state != 1)
         return;
 
-    if (uv_is_closing((uv_handle_t*)&tctx->timer))
-        return;
-
-    uv_timer_stop(&tctx->timer);
     atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
-    uv_close((uv_handle_t*)&tctx->timer, unregister_handle_cb);
+    goc_timer_manager_remove(tctx);
 }
 
 static void on_timeout_channel_closed(void* ud)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)ud;
     atomic_store_explicit(&tctx->cancel_requested, 1, memory_order_release);
-    GOC_DBG("on_timeout_channel_closed: tctx=%p timer=%p ch=%p state=%d\n",
-            (void*)tctx, (void*)&tctx->timer, (void*)tctx->ch,
+    GOC_DBG("on_timeout_channel_closed: tctx=%p ch=%p state=%d\n",
+            (void*)tctx, (void*)tctx->ch,
             atomic_load_explicit(&tctx->start_state, memory_order_acquire));
     post_on_loop(on_cancel_timer, tctx);
 }
 
 /* -------------------------------------------------------------------------
- * Static callbacks (loop thread)
+ * goc_timeout_ctx_expire — called by the central timer manager (loop thread)
  * ---------------------------------------------------------------------- */
 
-static void unregister_handle_cb(uv_handle_t* h) { gc_handle_unregister(h); }
-
-static void on_timeout(uv_timer_t* t)
+void goc_timeout_ctx_expire(goc_timeout_timer_ctx* tctx)
 {
-    goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)t;
-    goc_chan* ch = tctx->ch;
-    GOC_DBG("on_timeout: timer=%p ch=%p\n", (void*)t, (void*)ch);
+    GOC_DBG("goc_timeout_ctx_expire: tctx=%p ch=%p\n", (void*)tctx, (void*)tctx->ch);
     atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
-    goc_close(ch);
-    atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
-    uv_close((uv_handle_t*)t, unregister_handle_cb);
+    goc_close(tctx->ch);
+    /* start_state is set to 2 by the caller (manager) before invoking this. */
 }
+
+/* -------------------------------------------------------------------------
+ * on_start_timer — loop thread; inserts tctx into the central timer manager
+ * ---------------------------------------------------------------------- */
 
 static void on_start_timer(void* arg)
 {
@@ -109,38 +97,25 @@ static void on_start_timer(void* arg)
     uint64_t remaining  = (elapsed_ms < req->ms) ? (req->ms - elapsed_ms) : 0;
 
     if (atomic_load_explicit(&req->timer_ctx->cancel_requested, memory_order_acquire)) {
-        GOC_DBG("on_start_timer: cancel requested before init req=%p tctx=%p ch=%p\n",
+        GOC_DBG("on_start_timer: cancel requested before insert req=%p tctx=%p ch=%p\n",
                 (void*)req, (void*)req->timer_ctx, (void*)req->timer_ctx->ch);
-        gc_handle_unregister(req->timer_ctx);
-        return;
-    }
-
-    int rc = uv_timer_init(g_loop, &req->timer_ctx->timer);
-    GOC_DBG("on_start_timer: uv_timer_init timer=%p rc=%d remaining=%llu\n",
-            (void*)&req->timer_ctx->timer, rc, (unsigned long long)remaining);
-    if (rc < 0) {
-        goc_close(req->timer_ctx->ch);
-        gc_handle_unregister(req->timer_ctx);
-        return;
+        return;  /* nothing registered yet; GC will collect tctx */
     }
 
     atomic_store_explicit(&req->timer_ctx->start_state, 1, memory_order_release);
 
     if (atomic_load_explicit(&req->timer_ctx->cancel_requested, memory_order_acquire)) {
-        GOC_DBG("on_start_timer: cancel requested after init req=%p tctx=%p timer=%p\n",
-                (void*)req, (void*)req->timer_ctx, (void*)&req->timer_ctx->timer);
+        GOC_DBG("on_start_timer: cancel requested after state=1 req=%p tctx=%p\n",
+                (void*)req, (void*)req->timer_ctx);
         atomic_store_explicit(&req->timer_ctx->start_state, 2, memory_order_release);
-        uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
-        return;
+        return;  /* haven't inserted into manager yet; nothing to remove */
     }
 
-    rc = uv_timer_start(&req->timer_ctx->timer, on_timeout, remaining, 0);  /* one-shot */
-    GOC_DBG("on_start_timer: uv_timer_start rc=%d\n", rc);
-    if (rc < 0) {
-        goc_close(req->timer_ctx->ch);
-        atomic_store_explicit(&req->timer_ctx->start_state, 2, memory_order_release);
-        uv_close((uv_handle_t*)&req->timer_ctx->timer, unregister_handle_cb);
-    }
+    uint64_t fire_at_ns = now_ns + remaining * 1000000ULL;
+    GOC_DBG("on_start_timer: inserting into manager tctx=%p fire_at_ns=%llu remaining=%llu\n",
+            (void*)req->timer_ctx, (unsigned long long)fire_at_ns,
+            (unsigned long long)remaining);
+    goc_timer_manager_insert(req->timer_ctx, fire_at_ns);
 }
 
 /* -------------------------------------------------------------------------
@@ -156,15 +131,16 @@ goc_chan* goc_timeout(uint64_t ms)
             (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx);
 
     tctx->ch = ch;
-        atomic_store_explicit(&tctx->start_state, 0, memory_order_relaxed);
-        atomic_store_explicit(&tctx->cancel_requested, 0, memory_order_relaxed);
+    atomic_store_explicit(&tctx->start_state, 0, memory_order_relaxed);
+    atomic_store_explicit(&tctx->cancel_requested, 0, memory_order_relaxed);
+    tctx->heap_idx = SIZE_MAX;
 
     req->timer_ctx   = tctx;
     req->ms          = ms;
     req->deadline_ns = uv_hrtime();  /* snapshot call time for dispatch-latency correction */
 
-    /* Register tctx: it holds the timer handle and the channel pointer. */
-    gc_handle_register(tctx);
+    /* tctx lifetime is managed by the GC-allocated timer heap inside the
+     * central manager.  No gc_handle_register call is needed here. */
     chan_set_on_close(ch, on_timeout_channel_closed, tctx);
 
     atomic_fetch_add_explicit(&g_timeout_allocations, 1, memory_order_relaxed);
