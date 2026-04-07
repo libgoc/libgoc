@@ -199,6 +199,10 @@ static void goc_stats_default_callback(const goc_stats_event_t *ev, void *ud) {
  * -------------------------------------------------------------------------- */
 
 void goc_stats_set_callback(goc_stats_callback cb, void *ud) {
+    GOC_DBG("goc_stats_set_callback: cb=%p ud=%p mutex_addr=%p mutex_inited=%d stats_enabled=%d\n",
+            (void*)(uintptr_t)cb, ud, (void*)&g_cb_mutex,
+            atomic_load_explicit(&mutex_inited, memory_order_acquire),
+            atomic_load_explicit(&stats_enabled, memory_order_acquire));
     uv_mutex_lock(&g_cb_mutex);
     atomic_store_explicit(&g_cb_ud, ud, memory_order_relaxed);
     atomic_store_explicit(&g_cb,    cb, memory_order_release);
@@ -210,9 +214,13 @@ void goc_stats_init(void) {
 
     /* Initialise mutexes/condvar exactly once across init/shutdown cycles. */
     int expected = 0;
+    GOC_DBG("goc_stats_init: attempting CAS mutex_inited=%d mutex_addr=%p\n",
+            atomic_load_explicit(&mutex_inited, memory_order_acquire),
+            (void*)&g_cb_mutex);
     if (atomic_compare_exchange_strong_explicit(
             &mutex_inited, &expected, 1,
             memory_order_acq_rel, memory_order_acquire)) {
+        GOC_DBG("goc_stats_init: CAS won — calling uv_mutex_init mutex_addr=%p\n", (void*)&g_cb_mutex);
         uv_mutex_init(&g_cb_mutex);
         uv_mutex_init(&g_close_mutex);
         uv_cond_init(&g_close_cond);
@@ -240,6 +248,10 @@ void goc_stats_init(void) {
 }
 
 void goc_stats_shutdown(void) {
+    GOC_DBG("goc_stats_shutdown: stats_enabled=%d mutex_inited=%d mutex_addr=%p\n",
+            atomic_load_explicit(&stats_enabled, memory_order_acquire),
+            atomic_load_explicit(&mutex_inited, memory_order_acquire),
+            (void*)&g_cb_mutex);
     if (!atomic_load_explicit(&stats_enabled, memory_order_acquire)) return;
 
     // (1) Double-check event loop state: only proceed if async handle is valid

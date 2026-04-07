@@ -35,13 +35,14 @@ typedef struct {
     uv_thread_t      thread;
     goc_wsdq         deque;
     goc_injector     injector;        /* MPSC queue: external callers push here */
-    uv_sem_t         idle_sem;
+    uv_loop_t        loop;
+    uv_async_t*      wakeup;          /* interrupts UV_RUN_ONCE when work is posted */
     size_t           index;
     goc_pool*        pool;
     _Atomic uint64_t steal_attempts;  /* relaxed counter; read at STOPPED event */
     _Atomic uint64_t steal_successes;
     _Atomic uint64_t steal_misses;    /* wsdq_steal_top returned NULL */
-    _Atomic uint64_t idle_wakeups;    /* uv_sem_wait returned (each sleep/wake cycle) */
+    _Atomic uint64_t idle_wakeups;    /* worker woke from loop wait cycle */
     size_t           last_steal_victim; /* victim hint for next steal, SIZE_MAX = unset */
     uint32_t         miss_streak;       /* consecutive steal misses; resets on any successful dequeue */
 } goc_worker;
@@ -82,6 +83,18 @@ struct goc_pool {
  * ---------------------------------------------------------------------- */
 
 static _Thread_local goc_worker* tl_worker = NULL;
+
+static void worker_wakeup_cb(uv_async_t* h) {
+    (void)h;
+}
+
+uv_loop_t* goc_current_worker_loop(void) {
+    return tl_worker ? &tl_worker->loop : NULL;
+}
+
+int goc_current_worker_id(void) {
+    return tl_worker ? (int)tl_worker->index : -1;
+}
 
 /* Wake exactly one sleeping worker (optionally excluding one index). */
 /* -------------------------------------------------------------------------
@@ -417,7 +430,8 @@ static void pool_worker_fn(void* arg) {
             size_t idle = atomic_load_explicit(&pool->idle_count, memory_order_seq_cst);
             if (depth > 0 && idle > 0) {
                 size_t idx = (tl_worker->index + 1) % pool->thread_count;
-                uv_sem_post(&pool->workers[idx].idle_sem);
+                if (pool->workers[idx].wakeup)
+                    uv_async_send(pool->workers[idx].wakeup);
             }
         }
 
@@ -432,7 +446,7 @@ static void pool_worker_fn(void* arg) {
         }
 
         GOC_STATS_WORKER_STATUS((int)tl_worker->index, pool->id, GOC_WORKER_IDLE, (int)pool->live_count, 0, 0);
-        uv_sem_wait(&tl_worker->idle_sem);
+        uv_run(&tl_worker->loop, UV_RUN_ONCE);
 #ifdef GOC_ENABLE_STATS
         atomic_fetch_add_explicit(&tl_worker->idle_wakeups, 1, memory_order_relaxed);
         atomic_fetch_add_explicit(&g_idle_wakeups,           1, memory_order_relaxed);
@@ -475,8 +489,14 @@ run:
 
         GC_set_stackbottom(NULL, &orig_sb);
 
+        /* Safe point: fiber has yielded, no channel locks held, no fiber
+         * stack active on this thread.  Drive incremental GC collection. */
+        GC_collect_a_little();
+
         goc_entry* fe = (goc_entry*)mco_get_user_data(coro);
         mco_state st = mco_status(coro);
+        GOC_DBG("pool_worker_fn: post-resume coro=%p st=%d fn=%p\n",
+                (void*)coro, (int)st, (void*)(uintptr_t)(fe ? fe->fn : NULL));
 
         /* Update cached fiber SP so the next GC cycle scans only the used
          * portion of the stack instead of the full vmem allocation. */
@@ -496,7 +516,8 @@ run:
                 if (neighbor != tl_worker->index) {
                     /* Prevent compiler from optimizing away the depth calculation. */
                     __asm__ volatile("" ::: "memory");
-                    uv_sem_post(&pool->workers[neighbor].idle_sem);
+                    if (pool->workers[neighbor].wakeup)
+                        uv_async_send(pool->workers[neighbor].wakeup);
                 }
             }
         }
@@ -578,7 +599,8 @@ void post_to_run_queue(goc_pool* pool, goc_entry* entry) {
          * is a full memory barrier, providing the seq_cst effect needed for
          * the sleep-miss race closure. */
         if (atomic_load_explicit(&pool->idle_count, memory_order_seq_cst) > 0) {
-            uv_sem_post(&pool->workers[idx].idle_sem);
+            if (pool->workers[idx].wakeup)
+                uv_async_send(pool->workers[idx].wakeup);
         }
     }
 }
@@ -620,7 +642,9 @@ goc_pool* goc_pool_make(size_t threads) {
     for (size_t i = 0; i < threads; i++) {
         wsdq_init(&pool->workers[i].deque, 256);
         injector_init(&pool->workers[i].injector);
-        uv_sem_init(&pool->workers[i].idle_sem, 0);
+        uv_loop_init(&pool->workers[i].loop);
+        pool->workers[i].wakeup = (uv_async_t*)malloc(sizeof(uv_async_t));
+        uv_async_init(&pool->workers[i].loop, pool->workers[i].wakeup, worker_wakeup_cb);
         pool->workers[i].index = i;
         pool->workers[i].pool  = pool;
         atomic_store_explicit(&pool->workers[i].steal_attempts,  0, memory_order_relaxed);
@@ -703,9 +727,10 @@ void goc_pool_destroy(goc_pool* pool) {
     GOC_DBG("goc_pool_destroy: signaling workers shutdown\n");
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
 
-    /* 3. Unblock all waiting workers (one post per worker). */
+    /* 3. Unblock all waiting workers (one wakeup per worker). */
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_post(&pool->workers[i].idle_sem);
+        if (pool->workers[i].wakeup)
+            uv_async_send(pool->workers[i].wakeup);
     }
 
     /* 4. Reap worker threads. */
@@ -717,7 +742,12 @@ void goc_pool_destroy(goc_pool* pool) {
 
     /* 5. Destroy per-worker resources. */
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_destroy(&pool->workers[i].idle_sem);
+        if (pool->workers[i].wakeup && !uv_is_closing((uv_handle_t*)pool->workers[i].wakeup)) {
+            uv_close((uv_handle_t*)pool->workers[i].wakeup, NULL);
+            uv_run(&pool->workers[i].loop, UV_RUN_DEFAULT);
+        }
+        uv_loop_close(&pool->workers[i].loop);
+        free(pool->workers[i].wakeup);
         wsdq_destroy(&pool->workers[i].deque);
         injector_destroy(&pool->workers[i].injector);
     }
@@ -770,7 +800,8 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     atomic_store_explicit(&pool->shutdown, 1, memory_order_release);
 
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_post(&pool->workers[i].idle_sem);
+        if (pool->workers[i].wakeup)
+            uv_async_send(pool->workers[i].wakeup);
     }
 
     for (size_t i = 0; i < pool->thread_count; i++) {
@@ -778,7 +809,12 @@ goc_drain_result_t goc_pool_destroy_timeout(goc_pool* pool, uint64_t ms) {
     }
 
     for (size_t i = 0; i < pool->thread_count; i++) {
-        uv_sem_destroy(&pool->workers[i].idle_sem);
+        if (pool->workers[i].wakeup && !uv_is_closing((uv_handle_t*)pool->workers[i].wakeup)) {
+            uv_close((uv_handle_t*)pool->workers[i].wakeup, NULL);
+            uv_run(&pool->workers[i].loop, UV_RUN_DEFAULT);
+        }
+        uv_loop_close(&pool->workers[i].loop);
+        free(pool->workers[i].wakeup);
         wsdq_destroy(&pool->workers[i].deque);
         injector_destroy(&pool->workers[i].injector);
     }

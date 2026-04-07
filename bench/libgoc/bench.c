@@ -780,7 +780,7 @@ static void http_tp_worker(void* arg) {
     uint64_t err  = 0;
 
     goc_http_request_opts_t* opts = goc_http_request_opts();
-    opts->keep_alive = 0;
+    opts->keep_alive = 1;
     opts->timeout_ms = 1000;
 
     for (;;) {

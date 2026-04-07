@@ -107,6 +107,8 @@
  *   P6.32  victim hint updated on successful steal: steal_successes > 0 (pool=2)
  *   P6.33  victim hint falls back to full scan on empty victim (pool=2, 2 rounds)
  *   P6.34  no steal attempts at pool=1 (steal phase skipped when thread_count==1)
+ *   P6.35  goc_pool_make(2) + goc_pool_destroy() without fibers; clean worker-loop teardown
+ *   P6.36  post one fiber to idle 2-worker pool; idle_wakeups increases (uv_async wake path)
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -2188,6 +2190,64 @@ static void test_p6_34(void) {
 done:;
 }
 
+/* ---- P6.35: pool make/destroy with no fibers ---- */
+
+static void test_p6_35(void) {
+    TEST_BEGIN("P6.35  pool make/destroy without fibers: clean worker-loop teardown");
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    /* No fibers posted. Destroy should complete without hang/crash. */
+    goc_pool_destroy(pool);
+
+    TEST_PASS();
+done:;
+}
+
+/* ---- P6.36: idle wakeup increments after external post ---- */
+
+typedef struct {
+    done_t* done;
+} p6_36_arg_t;
+
+static void p6_36_fiber_fn(void* arg) {
+    p6_36_arg_t* a = (p6_36_arg_t*)arg;
+    done_signal(a->done);
+}
+
+static void test_p6_36(void) {
+    TEST_BEGIN("P6.36  idle worker wakeup increments on external post (uv_async path)");
+
+    done_t done;
+    done_init(&done);
+
+    uint64_t att0=0, suc0=0, mis0=0, wak0=0;
+    uint64_t att1=0, suc1=0, mis1=0, wak1=0;
+    goc_pool_get_steal_stats(&att0, &suc0, &mis0, &wak0);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    /* Let workers settle into idle path. */
+    goc_nanosleep(2000000); /* 2 ms */
+
+    p6_36_arg_t args = { .done = &done };
+    goc_go_on(pool, p6_36_fiber_fn, &args);
+
+    bool ok = done_wait_timeout(&done, 2000);
+    ASSERT(ok);
+
+    goc_pool_destroy(pool);
+
+    goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
+    ASSERT(wak1 > wak0);
+
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
 /* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
 /*
  * Bug being tested (gc.c goc_fiber_root_register):
@@ -2317,6 +2377,8 @@ int main(void) {
     test_p6_32();
     test_p6_33();
     test_p6_34();
+    test_p6_35();
+    test_p6_36();
     printf("\n");
 
     if (!g_skip_shutdown) {

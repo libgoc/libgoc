@@ -1,614 +1,263 @@
-# `libgoc` Optimization Roadmap
+# HTTP Throughput Scaling — Optimization Plan
 
-A prioritized roadmap for improving throughput, tail latency, memory efficiency, and operational tuning in `libgoc`, based on the current runtime design (`DESIGN.md`).
+## Problem
 
----
+HTTP server throughput does not scale with pool size. It degrades slightly as
+more workers are added:
 
-## Objectives
+| Pool | libgoc (req/s) | Go (req/s) | ratio |
+|------|---------------|------------|-------|
+| 1    | 8,770         | 9,941      | 0.94× |
+| 2    | 7,999         | 20,062     | 0.40× |
+| 4    | 7,461         | 43,812     | 0.17× |
+| 8    | 7,022         | 78,136     | 0.09× |
 
-- Improve scheduler scaling under cross-worker handoff pressure.
-- Reduce spawn/materialization overhead and fiber stack memory pressure.
-- Improve hot-path performance for channel operations under contention.
-- Reduce GC mark overhead at high suspended-fiber counts.
-- Lower timer/callback overhead where benchmark evidence justifies it.
-- Keep cross-platform behavior consistent (Linux/macOS/Windows).
-- Preserve existing correctness guarantees and safety invariants.
+All other benchmarks that are purely fiber-scheduler-bound scale normally or
+are flat by design. The degradation is specific to I/O-bound workloads that
+go through stream/TCP handles.
 
----
+## Root Cause: Single-Loop I/O Bottleneck
 
-## Success Metrics (track before/after every phase)
-
-- **Throughput**: ops/s for representative benches (`spawn`, pipeline, fan-in/out).
-- **Tail latency**: P95/P99 for channel handoff and timeout firing.
-- **Scheduler efficiency**: steal success rate, failed steal probes, idle wakeups.
-- **GC cost**: mark/pause time, collections per second, memory retained.
-- **Timer overhead**: allocations/timeouts created, callback queue high-water mark.
-
-> Rule: no optimization lands without benchmark deltas and regression checks.
-
----
-
-## Benchmark Signals Driving Priority
-
-Based on `bench/libgoc/README.md` results (canary mode, pool=1–8), including HTTP benchmarks:
-
-- **HTTP server throughput does not scale with pool size (pre-fix baseline)** — libgoc plateaus at ~7–8k req/s regardless of pool count, while Go scales linearly to 77k req/s at pool=8. Steal miss rate at pool=8 is 95% (3.4M attempts, 162k successes, 3.26M misses), indicating the steal loop was spinning endlessly on an IO-bound workload where runnable fibers are never on the deque at probe time. Fixed by Phase 1.2 (`miss_streak` backoff).
-- **HTTP ping-pong degrades with pool size (pre-fix baseline)** — 2968 rtt/s at pool=1 falling to 2265 at pool=8. Steal miss rate climbs from 0% to 72% at pool=8 (424k attempts, 118k successes). At pool=1–2 libgoc beats Go (1.59×/1.31×), confirming the HTTP layer is efficient; the degradation was a scheduler contention artifact. Fixed by Phase 1.2.
-- **Spawn idle steal thrashing persists** — pool≥2 shows 112k–119k steal successes during spawn idle (≈99% success rate, but the volume causes thrashing). Tasks/s: 70k (pool=1), 49k (pool=2), 31k (pool=4), 50k (pool=8) — non-monotonic and well below Go parity.
-- **Ring** peaks at 972k hops/s (pool=4, ~0.42× Go). Pool=1 regressed vs Phase 1.1 (772k vs 939k). Still a weak spot.
-- **Fan-out/fan-in** canary: 162k–198k msg/s. pool=8 dropped to 162k (lowest), indicating cross-worker contention worsens at high pool sizes.
-- **Timeout and callback-queue subsystems now exercised** — HTTP throughput benchmark shows 47k timeout allocations and cb-queue hwm 44–113 across pool sizes. The "gated" blocker for callback/timeout optimizations is now lifted.
-- **vmem mode** behaves as a bounded-correctness/stress configuration: ring is 20–40× slower than canary due to TLB/page-fault pressure. Not a target for performance parity work.
-
-### Phase 0 telemetry baseline (canary, `GOC_ENABLE_STATS=1`, 2026-03-26)
-
-Raw `bench_print_stats()` output across pool sizes 1–8:
+Every stream and TCP handle operation (`uv_read_start`, `uv_write`,
+`uv_read_stop`, `uv_shutdown`, handle init/close, UDP send/recv, etc.) is
+dispatched to the **global loop thread** via `post_on_loop()`:
 
 ```
-=== Pool Size: 1 ===
-Channel ping-pong: 200000 round trips in 235ms (849952 round trips/s)
-  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 1325ms (377350 hops/s)
-  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1401ms (142754 msg/s)
-  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4240ms (47159 tasks/s)
-  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 821ms (2755 primes/s)
-  [stats] steal: 0 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 2 ===
-Channel ping-pong: 200000 round trips in 126ms (1587155 round trips/s)
-  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 670ms (745783 hops/s)
-  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1065ms (187682 msg/s)
-  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2712ms (73731 tasks/s)
-  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 936ms (2416 primes/s)
-  [stats] steal: 2 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 4 ===
-Channel ping-pong: 200000 round trips in 120ms (1653954 round trips/s)
-  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 776ms (643707 hops/s)
-  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 906ms (220541 msg/s)
-  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2966ms (67427 tasks/s)
-  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 811ms (2788 primes/s)
-  [stats] steal: 12 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 8 ===
-Channel ping-pong: 200000 round trips in 100ms (1992066 round trips/s)
-  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 514ms (972028 hops/s)
-  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 849ms (235570 msg/s)
-  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2919ms (68508 tasks/s)
-  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 818ms (2764 primes/s)
-  [stats] steal: 56 attempts / 0 successes  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
+fiber (worker N)
+  → post_on_loop(fn, arg)           [malloc dispatch struct, enqueue to g_cb_queue]
+  → loop thread: fn(arg)            [uv_write / uv_read_start / ...]
+  → libuv callback fires on g_loop  [on_write_cb / on_read_cb]
+  → wake(ch, entry, val)            [post_to_run_queue → uv_async_send(worker.wakeup)]
+  → fiber resumes on worker N
 ```
 
-**Key findings:**
+Each I/O operation on a TCP connection requires **two cross-thread hops**:
+1. Worker → loop thread (dispatch)
+2. Loop thread → worker (callback wakeup)
 
-- **Steal success rate is 0% across all pool sizes and all benchmarks.** Attempts scale with pool size (0 → 2 → 12 → 56 lifetime total across 5 benchmarks), but not a single steal ever succeeds. This confirms the scheduler is effectively push-based: when a fiber is woken, it is pushed directly onto the target worker's deque, so by the time an idle worker probes for work the deque is already drained. Work stealing is purely a fallback that never fires in practice.
-- **Timeouts: 0/0 everywhere.** No benchmark exercises the timeout subsystem. Timeout and callback-queue optimizations remain unvalidated by the current benchmark suite — per the coverage-gap rule above, those items stay gated until dedicated benchmarks exist.
-- **cb-queue hwm: 0 everywhere.** The callback queue never accumulates depth under any of these workloads, including the 200k-fiber mass-wakeup in spawn idle. This is consistent with the push-based wakeup path bypassing the callback queue for fiber resumes.
-- **Throughput numbers (updated baseline):** ping-pong 850k–1992k rtt/s; ring 377k–972k hops/s; fan-in 143k–236k msg/s; spawn 47k–74k tasks/s; sieve ~2.8k primes/s at pool=1/4/8.
+With a single loop thread, throughput is capped by how fast the loop thread can
+process `uv_write` + callback pairs. Adding more workers increases concurrency,
+which increases I/O dispatch rate, which saturates the single loop thread. The
+stats confirm this: `cb-queue hwm` reaches 58–79 at pool=8 with high miss and
+idle-wakeup counts indicating contention.
+
+Go uses per-goroutine netpoller integration (via the kernel's epoll/kqueue
+directly in the Go runtime), which naturally parallelises I/O across OS threads.
+
+## Solution: Per-Worker I/O Loops for Handle-Affine Operations
+
+Each worker already has a `uv_loop_t loop` (from the `better-throughput`
+branch). The goal is to make TCP connections owned by a worker have their
+handles initialized on that worker's loop, and to have handle-affine I/O ops
+execute directly on the owning worker thread — eliminating the cross-thread
+dispatch entirely for the common case.
 
 ---
 
-## Phase 0 — Instrumentation First (Highest ROI, Lowest Risk)
+## Implementation Plan
 
-### Already in place (`goc_stats` — see `TELEMETRY.md`)
+### Phase 1 — Service the worker loop after every fiber resume
 
-The `goc_stats` subsystem (enabled via `-DGOC_ENABLE_STATS=ON`) already covers:
+**What:** After each `mco_resume` (and GC safe point), call
+`uv_run(&worker.loop, UV_RUN_NOWAIT)` to drain any pending I/O callbacks
+queued on the worker's own loop. Currently, `uv_run` is only called when the
+worker is idle (`UV_RUN_ONCE` blocks). Adding a `UV_RUN_NOWAIT` pass after
+every resume ensures that I/O callbacks on worker-owned handles fire promptly
+without waiting for the worker to go idle.
 
-- Pool lifecycle (created/destroyed, thread count)
-- Worker status transitions (created, running, idle, stopped) + pending job count
-- Fiber lifecycle (created, completed, last worker ID)
-- Channel lifecycle (open/closed, buffer size, item count at event time)
+**Where:** `pool.c`, `pool_worker_fn`, after `GC_collect_a_little()`.
 
-### Phase 0 — Completed
+**Pseudocode change:**
+```
+    GC_set_stackbottom(NULL, &orig_sb)
+    GC_collect_a_little()
++   uv_run(&worker.loop, UV_RUN_NOWAIT)   /* drain worker-owned I/O callbacks */
 
-All Phase 0 instrumentation gaps have been filled:
+    fe = mco_get_user_data(coro)
+    ...
+```
 
-- **Channel alts scan counters**: `taker_scans` and `putter_scans` atomic counters on `goc_chan`, incremented in all three `alts` code paths (`alts_try_immediate`, `goc_alts`, `goc_alts_sync`). Reported in the channel close event.
-- **Compaction telemetry**: `compaction_runs` and `entries_removed` counters on `goc_chan`, updated in `compact_dead_entries` and in `goc_close` for entries removed at close time. Reported in the channel close event.
-- **Callback queue high-water mark**: `g_cb_queue_depth` / `g_cb_queue_hwm` atomics in `loop.c`; accessible via `goc_cb_queue_get_hwm()`.
-- **Timeout counters**: `g_timeout_allocations` / `g_timeout_expirations` atomics in `timeout.c`; accessible via `goc_timeout_get_stats()`.
-- **Per-worker steal counters**: `steal_attempts` / `steal_successes` / `steal_misses` on `goc_worker` and global aggregates `g_steal_attempts` / `g_steal_successes` / `g_steal_misses` / `g_idle_wakeups` in `pool.c`; per-worker attempt/success values reported on `STOPPED` events; all four global aggregates accessible via `goc_pool_get_steal_stats(attempts, successes, misses, idle_wakeups)`.
-- **`goc_stats_flush()`**: new synchronous flush API that blocks until the async delivery loop has drained all in-flight events; used in tests to avoid races.
-- **Benchmark stats output**: `bench_print_stats()` helper in `bench/libgoc/bench.c` prints a one-line summary of all three accessor values at the end of each benchmark.
-
-See `TELEMETRY.md` for the updated API reference.
-
-### Phase 0.1 — Channel hot-path lock-release optimization (Completed)
-
-Motivated by a flakiness fix (P6.22), the `goc_take` / `goc_put` hot paths and `goc_close` were refactored to release `ch->lock` **before** spinning on `fe->parked`:
-
-- **`wake_claim`** (`channel.c`): new helper that does everything `wake()` does for `GOC_FIBER` entries except the spin and post. Returns the fiber's `fe` pointer so the caller can unlock before spinning. Non-fiber entries (`GOC_CALLBACK`, `GOC_SYNC`) are dispatched inline as before.
-- **`goc_take` / `goc_put` fast paths** (`channel.c`): switched from `chan_take_from_putter` / `chan_put_to_taker` to `chan_take_from_putter_claim` / `chan_put_to_taker_claim` (defined in `channel_internal.h`), which use `wake_claim` and return the `fe` to spin+post after the unlock.
-- **`goc_close` collect-then-dispatch** (`channel.c`): replaced the previous lock-held spin loop with a two-phase approach. Under the lock, all non-cancelled entries are claimed and `GOC_FIBER` entries are collected into a heap-allocated `to_post` array (sized exactly to the waiter count — a fixed-size stack array was rejected because a cap silently drops wakeups for large closes). After the lock is released, each collected entry is spun on and posted. `GOC_CALLBACK` and `GOC_SYNC` entries are still dispatched inline under the lock.
-
-**Benchmark impact** (canary vs. prior baseline, geomean across pool sizes): ≈flat (−2% overall). vmem spawn idle improved 3.5× at pool=8, resolving a stall caused by a wakeup-drop bug introduced alongside the Phase B changes (fixed-size `to_post[512]` silently dropped wakeups for 200k-fiber closes).
+**Risk:** `UV_RUN_NOWAIT` returns immediately if there is nothing pending; the
+cost is one syscall (`epoll_wait` with timeout=0) per resume when the worker
+has no I/O. Benchmark canary to confirm overhead is acceptable on CPU-bound
+workloads (ping-pong, ring).
 
 ---
 
-## Phase 1 — Benchmark-Driven Near-Term Work
+### Phase 2 — Route handle init to the calling worker's loop
 
-### 1) Scheduler scaling: cross-worker handoff and steal efficiency — Phase 1.1 (Completed)
+**What:** When `goc_io_tcp_init`, `goc_io_pipe_init`, `goc_io_udp_init`, etc.
+are called from a pool-worker fiber, initialize the libuv handle on that
+worker's own `uv_loop_t` instead of dispatching to `g_loop`. The handle is
+then owned by the worker's loop and its callbacks fire on that worker's thread.
 
-Active work stealing with victim hinting is implemented. Workers probe recently productive victims before falling back to a full random scan. The post-yield wake condition used is `depth > dq capacity / 2` (rather than the originally planned `depth > 1`) to avoid missed-wake races when the deque is nearly empty.
+**Mechanism:**
+- `goc_io_handle_init_dispatch_t` currently hard-codes `g_loop` in the
+  `on_handle_init_dispatch` callback (`goc_io.c:1428`).
+- Add a `uv_loop_t* target_loop` field to `goc_handle_init_dispatch_t`.
+- In `goc_io_tcp_init` (and friends), set `target_loop =
+  goc_worker_or_default_loop()`.
+- If `target_loop != g_loop`: call `uv_tcp_init(target_loop, handle)` directly
+  from the fiber (no `post_on_loop` needed — the handle is being init'd on the
+  calling worker's loop, which is safe to call from the worker thread).
+- If `target_loop == g_loop` (called from outside a worker): dispatch via
+  `post_on_loop` as today.
 
-**Telemetry (canary, `GOC_ENABLE_STATS=1`, 2026-03-28):**
+**Handle data tag:** Add a `uv_loop_t* home_loop` pointer to each handle's
+associated context struct (or store it in `handle->data`). This is needed so
+that subsequent handle-affine operations can detect whether they are on the
+handle's home loop thread.
 
-```
-=== Pool Size: 1 ===
-Channel ping-pong: 200000 round trips in 122ms (1626194 round trips/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 532ms (939254 hops/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 989ms (202205 msg/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2809ms (71179 tasks/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 843ms (2680 primes/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 2 ===
-Channel ping-pong: 200000 round trips in 131ms (1521114 round trips/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 718ms (696198 hops/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1046ms (191135 msg/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 5276ms (37903 tasks/s)
-  [stats] steal: 104231 attempts / 104227 successes / 4 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 919ms (2459 primes/s)
-  [stats] steal: 104231 attempts / 104227 successes / 4 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 4 ===
-Channel ping-pong: 200000 round trips in 117ms (1698720 round trips/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 690ms (724363 hops/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1011ms (197775 msg/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 5310ms (37658 tasks/s)
-  [stats] steal: 106104 attempts / 106087 successes / 17 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 892ms (2534 primes/s)
-  [stats] steal: 106104 attempts / 106087 successes / 17 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-
-=== Pool Size: 8 ===
-Channel ping-pong: 200000 round trips in 106ms (1882440 round trips/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 540ms (924375 hops/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1011ms (197775 msg/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 5254ms (38063 tasks/s)
-  [stats] steal: 106786 attempts / 106713 successes / 73 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 869ms (2602 primes/s)
-  [stats] steal: 106786 attempts / 106713 successes / 73 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-```
-
-**Key findings vs. Phase 0 baseline:**
-
-- **Ring improved significantly at pool=1**: 939k vs 377k hops/s (2.5×). Pool=2/4/8 are mixed relative to Phase 0.
-- **Fan-out/fan-in improved at pool=1**: 202k vs 143k msg/s. Pool=2/4/8 slightly lower than Phase 0 peak (236k).
-- **Spawn idle severely regressed at pool≥2**: ~38k tasks/s vs ~74k in Phase 0 (≈2× slower). Steal stats confirm the cause: 104k–107k steal *successes* during spawn idle at pool≥2, indicating active steal thrashing. Each newly spawned idle fiber is being stolen and re-stolen continuously rather than completing in place.
-- **Push-based workloads (ping-pong, ring, fan-out) still show 0 steal successes** at pool≥2 for the non-spawn benchmarks, confirming stealing only fires in the spawn-idle pattern where many short-lived fibers are queued in bursts.
-- **Open issue**: spawn idle regressed ~2× at pool≥2 due to steal thrashing. Suppressing this (e.g., throttling steals when per-fiber time is very short, or biasing newly spawned fibers to stay on their origin worker's deque) is tracked as a follow-on item.
-
-### Phase 1.2 telemetry baseline (canary, `GOC_ENABLE_STATS=1`, 2026-04-06, branch: http-benchmarks)
-
-Includes HTTP benchmarks for the first time. Raw `bench_print_stats()` output:
-
-```
-=== Pool Size: 1 ===
-Channel ping-pong: 200000 round trips in 126ms (1577608 round trips/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 647ms (771869 hops/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1082ms (184689 msg/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2847ms (70238 tasks/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 873ms (2590 primes/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 0  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 673ms (2968 round trips/s, avg 305.6us p50 299.6us p95 329.6us p99 382.4us, warmup 200)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 31170  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 4
-HTTP server throughput: 38950 requests in 5000ms (7790 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 228146  |  timeouts: 47418 alloc / 0 fired  |  cb-queue hwm: 60
-
-=== Pool Size: 2 ===
-Channel ping-pong: 200000 round trips in 129ms (1542329 round trips/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 677ms (738131 hops/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1009ms (198144 msg/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4106ms (48703 tasks/s)
-  [stats] steal: 112476 attempts / 112473 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 885ms (2555 primes/s)
-  [stats] steal: 112476 attempts / 112473 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 767ms (2607 round trips/s, avg 349.0us p50 301.9us p95 436.0us p99 502.9us, warmup 200)
-  [stats] steal: 156529 attempts / 115327 successes / 41202 misses  |  idle wakeups: 38342  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 39159 requests in 5000ms (7832 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 542231 attempts / 131987 successes / 410244 misses  |  idle wakeups: 390652  |  timeouts: 47422 alloc / 0 fired  |  cb-queue hwm: 113
-
-=== Pool Size: 4 ===
-Channel ping-pong: 200000 round trips in 116ms (1718605 round trips/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 514ms (972427 hops/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1089ms (183538 msg/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 6412ms (31188 tasks/s)
-  [stats] steal: 119191 attempts / 119175 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 859ms (2632 primes/s)
-  [stats] steal: 119191 attempts / 119175 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 794ms (2518 round trips/s, avg 360.5us p50 387.2us p95 443.8us p99 496.8us, warmup 200)
-  [stats] steal: 246985 attempts / 122357 successes / 124628 misses  |  idle wakeups: 39418  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 38633 requests in 5000ms (7727 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 1590383 attempts / 163760 successes / 1426623 misses  |  idle wakeups: 447535  |  timeouts: 46423 alloc / 0 fired  |  cb-queue hwm: 44
-
-=== Pool Size: 8 ===
-Channel ping-pong: 200000 round trips in 102ms (1959812 round trips/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 525ms (951500 hops/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1235ms (161849 msg/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4017ms (49779 tasks/s)
-  [stats] steal: 114765 attempts / 114699 successes / 66 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 973ms (2324 primes/s)
-  [stats] steal: 114765 attempts / 114699 successes / 66 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 882ms (2265 round trips/s, avg 403.7us p50 415.6us p95 461.3us p99 499.7us, warmup 200)
-  [stats] steal: 423778 attempts / 117783 successes / 305995 misses  |  idle wakeups: 41927  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 36624 requests in 5000ms (7325 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 3418135 attempts / 162045 successes / 3256090 misses  |  idle wakeups: 439922  |  timeouts: 44433 alloc / 0 fired  |  cb-queue hwm: 86
-```
-
-**Key findings vs. Phase 1.1 baseline:**
-
-- **HTTP ping-pong steal miss rate climbs with pool size**: 0% at pool=1 (no steal needed), 26% at pool=2, 50% at pool=4, 72% at pool=8. Performance drops from 2968 to 2265 rtt/s. The steal loop is probing for runnable fibers that are blocked on IO, not on the deque, producing wasted probes.
-- **HTTP throughput steal miss rate is catastrophic at high pool sizes**: 76% at pool=2, 90% at pool=4, 95% at pool=8 — 3.4M steal attempts for only 162k successes at pool=8. Throughput is flat at 7.3–7.8k req/s despite adding workers; the workers spin on empty deques rather than yielding. Idle wakeups are also very high (228k–448k), confirming excessive OS context switching.
-- **Timeout allocations confirmed**: 44k–47k `uv_timer` allocs across pool sizes for HTTP throughput. Timeout batching (Phase 2 item #7) is now validated by real benchmark load and should be unblocked.
-- **cb-queue hwm confirmed non-zero**: hwm 44–113 for HTTP throughput, hwm 4–6 for HTTP ping-pong. Callback queue observability is now measurable and callback coalescing (Phase 2 item #6) can be evaluated.
-- **Non-HTTP benchmarks stable**: ping-pong, ring, fan-out, sieve results are broadly consistent with Phase 1.1 with no major regressions.
-
-### Step 8 telemetry baseline (canary, `GOC_ENABLE_STATS=1`, 2026-04-06, branch: coalesce-cb-qs)
-
-Callback queue coalescing: batched `uv_async_send` calls when the queue already has pending depth. Raw `bench_print_stats()` output:
-
-```
-=== Pool Size: 1 ===
-Channel ping-pong: 200000 round trips in 128ms (1557767 round trips/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 675ms (740404 hops/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1019ms (196118 msg/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2750ms (72723 tasks/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 865ms (2615 primes/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 689ms (2901 round trips/s, avg 311.8us p50 307.1us p95 350.1us p99 396.1us, warmup 200)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 31802  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 4
-HTTP server throughput: 41033 requests in 5000ms (8207 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 213412  |  timeouts: 49672 alloc / 0 fired  |  cb-queue hwm: 59
-
-=== Pool Size: 2 ===
-Channel ping-pong: 200000 round trips in 128ms (1562135 round trips/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 676ms (739258 hops/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1024ms (195172 msg/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 3967ms (50411 tasks/s)
-  [stats] steal: 112773 attempts / 112770 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 814ms (2776 primes/s)
-  [stats] steal: 112773 attempts / 112770 successes / 3 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 805ms (2484 round trips/s, avg 365.4us p50 320.7us p95 474.5us p99 529.1us, warmup 200)
-  [stats] steal: 157450 attempts / 115598 successes / 41852 misses  |  idle wakeups: 39021  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 39340 requests in 5000ms (7868 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 497260 attempts / 130635 successes / 366625 misses  |  idle wakeups: 347967  |  timeouts: 47516 alloc / 0 fired  |  cb-queue hwm: 61
-
-=== Pool Size: 4 ===
-Channel ping-pong: 200000 round trips in 113ms (1764665 round trips/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 486ms (1028759 hops/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1007ms (198523 msg/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 3959ms (50507 tasks/s)
-  [stats] steal: 113170 attempts / 113152 successes / 18 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 864ms (2617 primes/s)
-  [stats] steal: 113170 attempts / 113152 successes / 18 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 988ms (2024 round trips/s, avg 447.2us p50 442.5us p95 623.7us p99 665.7us, warmup 200)
-  [stats] steal: 238299 attempts / 115216 successes / 123083 misses  |  idle wakeups: 39650  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 36278 requests in 5000ms (7256 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 1477648 attempts / 155046 successes / 1322602 misses  |  idle wakeups: 414317  |  timeouts: 43821 alloc / 0 fired  |  cb-queue hwm: 57
-
-=== Pool Size: 8 ===
-Channel ping-pong: 200000 round trips in 102ms (1942858 round trips/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 520ms (961378 hops/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 928ms (215291 msg/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4136ms (48346 tasks/s)
-  [stats] steal: 118779 attempts / 118707 successes / 72 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 828ms (2731 primes/s)
-  [stats] steal: 118779 attempts / 118707 successes / 72 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 1192ms (1677 round trips/s, avg 538.9us p50 538.9us p95 693.1us p99 723.0us, warmup 200)
-  [stats] steal: 413240 attempts / 120308 successes / 292932 misses  |  idle wakeups: 40925  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 34781 requests in 5000ms (6956 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 3204168 attempts / 166830 successes / 3037338 misses  |  idle wakeups: 408328  |  timeouts: 41825 alloc / 0 fired  |  cb-queue hwm: 56
-```
-
-**Key findings vs. Phase 1.2 baseline:**
-
-- **HTTP throughput improved at pool=1**: 8207 vs 7790 req/s (+5%). Idle wakeups dropped from 228k to 213k (−7%). cb-queue hwm stable at 59 (vs 60 baseline).
-- **HTTP throughput broadly flat at pool=2–8**: 7868/7256/6956 req/s vs 7832/7727/7325. The coalescing fires when the queue already has depth, which primarily benefits the single-loop-thread case (pool=1) where callback dispatch is serialized. At pool≥2 steal contention dominates and the incremental wakeup reduction is masked.
-- **Idle wakeups reduced for HTTP throughput at all pool sizes**: 213k/348k/414k/408k vs 228k/391k/448k/440k baseline. The batching effect is real but modest (7–11%).
-- **HTTP ping-pong unaffected**: results are within noise of Phase 1.2 across all pool sizes. cb-queue hwm stays at 4–6 (queue depth never builds enough to trigger coalescing).
-- **Non-HTTP benchmarks stable**: all pool=1 non-HTTP results within ≤3% of Phase 1.2.
-- **Ring improved at pool=4**: 1028k vs 972k hops/s (+6%). Likely noise/variance.
-
-### Step 9 telemetry baseline (canary, `GOC_ENABLE_STATS=1`, 2026-04-06, branch: timeout-batching)
-
-Timeout batching: replaced per-timeout `uv_timer_t` allocation with a loop-thread min-heap timer manager backed by a single long-lived `uv_timer_t`. Raw `bench_print_stats()` output:
-
-```
-=== Pool Size: 1 ===
-Channel ping-pong: 200000 round trips in 136ms (1459956 round trips/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 672ms (743872 hops/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1017ms (196528 msg/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 2764ms (72334 tasks/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 924ms (2447 primes/s)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 683ms (2925 round trips/s, avg 310.1us p50 302.3us p95 351.6us p99 401.7us, warmup 200)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 31232  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 4
-HTTP server throughput: 41162 requests in 5000ms (8232 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 0 attempts / 0 successes / 0 misses  |  idle wakeups: 251635  |  timeouts: 49417 alloc / 0 fired  |  cb-queue hwm: 61
-
-=== Pool Size: 2 ===
-Channel ping-pong: 200000 round trips in 112ms (1782695 round trips/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 692ms (721837 hops/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 945ms (211622 msg/s)
-  [stats] steal: 2 attempts / 0 successes / 2 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4212ms (47482 tasks/s)
-  [stats] steal: 120267 attempts / 120263 successes / 4 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 949ms (2382 primes/s)
-  [stats] steal: 120267 attempts / 120263 successes / 4 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 734ms (2724 round trips/s, avg 332.6us p50 306.3us p95 432.3us p99 483.7us, warmup 200)
-  [stats] steal: 164728 attempts / 123253 successes / 41475 misses  |  idle wakeups: 38483  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 40301 requests in 5000ms (8060 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 544723 attempts / 138961 successes / 405762 misses  |  idle wakeups: 386746  |  timeouts: 48415 alloc / 0 fired  |  cb-queue hwm: 57
-
-=== Pool Size: 4 ===
-Channel ping-pong: 200000 round trips in 115ms (1733076 round trips/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 479ms (1042725 hops/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1000ms (199816 msg/s)
-  [stats] steal: 12 attempts / 0 successes / 12 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 3978ms (50270 tasks/s)
-  [stats] steal: 115505 attempts / 115489 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 932ms (2425 primes/s)
-  [stats] steal: 115505 attempts / 115489 successes / 16 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 842ms (2375 round trips/s, avg 384.6us p50 393.5us p95 441.9us p99 488.3us, warmup 200)
-  [stats] steal: 246761 attempts / 118880 successes / 127881 misses  |  idle wakeups: 40376  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 37757 requests in 5000ms (7551 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 1571159 attempts / 158166 successes / 1412993 misses  |  idle wakeups: 444379  |  timeouts: 45848 alloc / 0 fired  |  cb-queue hwm: 85
-
-=== Pool Size: 8 ===
-Channel ping-pong: 200000 round trips in 105ms (1902014 round trips/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Ring benchmark: 500000 hops across 128 tasks in 495ms (1008979 hops/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 1033ms (193535 msg/s)
-  [stats] steal: 56 attempts / 0 successes / 56 misses  |  idle wakeups: 1  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Spawn idle tasks: 200000 fibers in 4061ms (49243 tasks/s)
-  [stats] steal: 115436 attempts / 115361 successes / 75 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-Prime sieve: 2262 primes up to 20000 in 895ms (2525 primes/s)
-  [stats] steal: 115436 attempts / 115361 successes / 75 misses  |  idle wakeups: 2  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 0
-HTTP ping-pong: 2000 round trips in 851ms (2349 round trips/s, avg 388.2us p50 399.7us p95 454.3us p99 491.1us, warmup 200)
-  [stats] steal: 407335 attempts / 118087 successes / 289248 misses  |  idle wakeups: 39759  |  timeouts: 0 alloc / 0 fired  |  cb-queue hwm: 6
-HTTP server throughput: 37186 requests in 5000ms (7437 req/s, 0 errors, concurrency 32, warmup 1000ms)
-  [stats] steal: 3439329 attempts / 161814 successes / 3277515 misses  |  idle wakeups: 443384  |  timeouts: 45005 alloc / 0 fired  |  cb-queue hwm: 74
-```
-
-**Key findings vs. Step 8 (callback queue coalescing) baseline:**
-
-- **HTTP ping-pong improved significantly at pool≥2**: 2925/2724/2375/2349 rtt/s vs 2901/2484/2024/1677. Gains of +0.8%/+9.7%/+17.3%/+40.1% with pool scaling 1→2→4→8. The improvement at pool≥2 despite zero timeout allocations in ping-pong suggests the timeout heap reduces per-event-loop-poll overhead: eliminating ~45k–49k live `uv_timer_t` handles from the throughput benchmark leaves the loop thread with fewer handles to scan during UV polling, and this benefit persists across benchmarks run sequentially in the same process.
-- **HTTP server throughput improved at pool≥2**: 8232/8060/7551/7437 req/s vs 8207/7868/7256/6956. Gains of +0.3%/+2.4%/+4.1%/+6.9% — consistent but modest, consistent with the loop-poll-overhead hypothesis.
-- **Timeout alloc counter shows 45k–49k across pool sizes** (alloc counter now counts heap insertions, not `uv_timer_t` allocs). `0 fired` confirms all keep-alive timeouts are cancelled before expiry, consistent with HTTP keep-alive completing within the timeout window.
-- **Steal and idle wakeup stats broadly unchanged**: steal miss rates and idle wakeup counts are comparable to Step 8. The gains are loop-thread throughput, not scheduler efficiency.
-- **Non-HTTP benchmarks stable**: all results within noise across pool sizes.
-
-### 2) IO-aware steal suppression — Phase 1.2 (Completed)
-
-**Root cause**: the steal loop was probing victim deques unconditionally regardless of whether the victim's work was IO-bound or CPU-bound. For IO-heavy workloads (HTTP), runnable fibers are woken via `uv_async` from the loop thread — they appear on a deque only after wakeup. An idle worker probing before the wakeup always missed, producing the observed 90–95% miss rates and causing the worker to spin rather than sleep.
-
-**Implemented fix**: `miss_streak` backoff — a per-worker consecutive-miss counter that gates the steal scan. When `miss_streak >= STEAL_BACKOFF_THRESHOLD` (default: 8, tuneable in `src/config.h`), the worker skips Stage 3 entirely and falls through to Stage 4 (park on `idle_sem`). The streak resets to 0 on any successful dequeue (own-deque pop, injector drain, or steal hit) and after every `uv_sem_wait` wakeup, so the worker gets a fresh steal budget each time it is signalled.
-
-**Changes**:
-- `src/config.h`: added `STEAL_BACKOFF_THRESHOLD 8`
-- `src/pool.c` (`goc_worker`): added `uint32_t miss_streak` field
-- `src/pool.c` (`pool_worker_fn`): initialize `miss_streak = 0`; reset on own-deque/injector hit and after wakeup; increment on steal miss (hint path and scan path); guard Stage 3 with `miss_streak < STEAL_BACKOFF_THRESHOLD`
-
-**Why this approach**: lowest risk and most precedent in scheduler literature. Does not require distinguishing IO-bound vs CPU-bound work; the miss streak naturally emerges for any workload where deques are empty at probe time. Workers on CPU-bound workloads (steal succeeds frequently) never accumulate a streak and are unaffected.
-
-**Expected impact**: eliminates the hot spin on IO workloads; workers park after ≤8 consecutive empty probes and wait for `post_to_run_queue` to signal them. The 228k–448k idle wakeup count for HTTP throughput should drop toward the actual number of fiber wakeups.
-
-### 3) Spawn steal thrashing — Phase 1.3
-
-**Root cause** (identified in Phase 1.1): at pool≥2, idle workers steal newly spawned idle fibers from the origin worker's deque. Each stolen fiber immediately blocks on `goc_take`, gets re-queued, and gets stolen again — producing 112k–119k steal successes during spawn idle at pool=2–8 with non-monotonic throughput (70k→31k→50k tasks/s). The steal logic has no awareness that a fiber is about to park immediately.
-
-**Proposed approaches** (in order of invasiveness):
-- **Spawn-to-local bias**: when spawning, push the new fiber to the *back* of the current worker's deque (lowest priority for stealing). Idle workers prefer the front; a burst of local spawns will be consumed locally before becoming steal targets.
-- **Short-fiber steal suppression**: throttle steals from a victim whose recently-stolen fibers all completed in < T µs (e.g., T=5). Requires per-steal timing, which has overhead.
-- **Epoch-based steal window**: new fibers are un-stealable for one scheduler epoch (one pass of the event loop). Simple and low overhead.
-
-**Success metric**: spawn idle tasks/s at pool=4 matches or exceeds pool=1 result.
-
-### 5) Spawn/materialization and stack policy
-
-- optimize materialization path (fiber creation fast path)
-- evaluate stack-size policy defaults per benchmark profile
-- add detached spawn API (`goc_go_detached`) for true fire-and-forget paths
-
-- **Why**: further gains possible on the materialization fast path, but lower urgency than scheduler/IO scaling fixes.
-- **Impact**: medium for spawn-heavy workloads.
-- **Risk**: medium.
-
-### 6) Adaptive live-fiber admission cap
-
-Evolve from static cap to adaptive cap using GC pressure + queue depth + memory headroom.
-
-- **Why**: static cap is robust but not workload-aware at scale.
-- **Impact**: medium-high for mixed workloads.
-- **Risk**: medium (avoid oscillations; keep deterministic fallback).
-
-### 7) Expose tuning knobs in one place
-
-Create one canonical tuning surface (docs + env var reference + recommended presets) for:
-
-- `GOC_POOL_THREADS`
-- `GOC_MAX_LIVE_FIBERS`
-- stack size (`LIBGOC_STACK_SIZE`)
-- stack mode guidance (canary vs vmem)
-- any new scheduler/timeout tuning flags added in this roadmap
-
-- **Why**: users need repeatable, workload-specific tuning without digging through multiple docs/files.
-- **Impact**: medium (enables real-world gains quickly).
-- **Risk**: low.
+**Scope:** `goc_io_tcp_init`, `goc_io_pipe_init`, `goc_io_udp_init`,
+`goc_io_tty_init`, `goc_io_signal_init`.  
+`goc_io_fs_event_init` and `goc_io_fs_poll_init` can continue using `g_loop`
+for now — they are not on the HTTP critical path.
 
 ---
 
-## Phase 2 — Targeted Subsystem Optimizations
+### Phase 3 — Eliminate post_on_loop for same-worker handle ops
 
-### 8) Callback queue coalescing (Completed)
+**What:** For `goc_io_read_start`, `goc_io_read_stop`, `goc_io_write`,
+`goc_io_shutdown`, and `goc_io_write2`: if the calling fiber is running on the
+same worker that owns the handle (i.e., `tl_worker != NULL &&
+&tl_worker->loop == handle->loop`), invoke the libuv operation directly
+instead of going through `post_on_loop`.
 
-Coalesce `uv_async_send` calls when the callback queue already has pending depth, to avoid excessive wakeup churn.
+**Why it is safe:** The worker thread is the loop thread for its own
+`uv_loop_t`. Calling `uv_read_start`, `uv_write`, etc. from the worker thread
+that owns the loop is thread-safe per libuv's threading model. The subsequent
+`uv_run(UV_RUN_NOWAIT)` pass (Phase 1) will drain the resulting callbacks.
 
-- **Why**: HTTP throughput benchmark shows cb-queue hwm 44–113 and 228k–448k idle wakeups, confirming this path is hot.
-- **Impact**: modest but real — 5% HTTP throughput gain at pool=1, 7–11% idle wakeup reduction across all pool sizes. Scaling improvement is masked by steal contention at pool≥2.
-- **Risk**: low-medium (must preserve callback ordering guarantees).
-- **Changes**: `src/loop.c` — unified callback queue processed in batches; single `uv_async_send` per batch rather than one per callback. `DESIGN.md` updated.
+**Dispatch path after Phase 3 (happy path):**
+```
+fiber (worker N, handle owned by worker N)
+  → uv_write(...)                    [direct call — no malloc, no queue]
+  → uv_run(UV_RUN_NOWAIT) after resume
+  → on_write_cb fires on worker N
+  → wake(ch, entry, val)
+  → fiber resumes on worker N
+```
+This is one thread, zero cross-thread hops.
 
-### 9) Timeout batching (Completed)
+**Cross-worker / external path (unchanged):** If the calling worker is not the
+handle's owner (or the caller is not a worker thread at all), dispatch to the
+home loop. For handles on `g_loop`, continue using `post_on_loop`. For handles
+on a worker loop, introduce `post_on_worker_loop(worker_idx, fn, arg)`:
+- Enqueue the task on a per-worker MPSC task queue (separate from the fiber
+  run queue).
+- Call `uv_async_send(worker->wakeup)` to wake the worker's loop.
+- When the worker's loop runs (either `UV_RUN_NOWAIT` or `UV_RUN_ONCE`), drain
+  the task queue before returning to the fiber scheduler.
 
-Replaced per-timeout `uv_timer_t` allocation with a loop-thread min-heap timer manager backed by a single long-lived `uv_timer_t`. The heap is re-armed to the earliest deadline on each insertion and cancellation; expired entries are bulk-drained in one callback.
+**New data structure:**
+```c
+typedef struct goc_worker_task {
+    void (*fn)(void*);
+    void* arg;
+    struct goc_worker_task* next;   /* singly-linked; pushed/popped under lock */
+} goc_worker_task_t;
 
-- **Why**: HTTP throughput benchmark confirmed 44k–47k `uv_timer_t` alloc/free cycles per run. Eliminating these live handles reduces per-poll overhead in libuv's UV_RUN_DEFAULT loop, benefiting all IO workloads.
-- **Impact**: HTTP ping-pong improved up to +40% at pool=8; HTTP throughput +2–7% at pool≥2. Primary mechanism is reduced loop-thread poll overhead rather than scheduler efficiency.
-- **Risk**: medium (careful shutdown semantics and close ordering required).
-- **Changes**: `src/timeout.c` — replaced `uv_timer_t`-per-timeout with a `goc_heap`-backed timer manager; single long-lived `uv_timer_t` re-armed to earliest deadline. `DESIGN.md` updated.
+/* per-worker */
+goc_worker_task_t* _Atomic task_queue_head;  /* MPSC push-end (lockless CAS) */
+goc_worker_task_t* task_queue_tail;          /* pop-end (owner only) */
+uv_mutex_t         task_queue_lock;
+```
 
-### 10) Compaction trigger refinement (hybrid)
-
-Keep fixed threshold but add a density check (`dead_count` relative to live waiters).
-
-- **Why**: avoids over-compacting tiny queues while still cleaning stale-heavy queues quickly.
-- **Impact**: small-medium depending on `alts` churn.
-- **Risk**: low.
-
----
-
-## Phase 3 — Advanced / Experimental
-
-### 11) Optional reduced stack-root scan range
-
-Explore scanning `[scan_from, stack_top]` instead of full `[stack_base, stack_top]` for suspended fibers, behind a strict opt-in flag.
-
-- **Why**: full-range scan is safe but potentially expensive with many suspended fibers.
-- **Impact**: potentially high GC mark-time reduction.
-- **Risk**: high (must prove no missed roots; keep conservative default).
-
-### 12) Waiter-list partitioning by entry kind
-
-Evaluate separating fiber/callback/sync wait queues or kind-grouping to reduce branchy scans.
-
-- **Why**: mixed-kind queues force branching in hot wake paths.
-- **Impact**: medium if workloads are heavily mixed.
-- **Risk**: medium-high (touches core channel invariants).
-
----
-
-## Prioritization Matrix
-
-| Item | Impact | Risk | Priority |
-|---|---|---|---|
-| Phase 0 instrumentation | High (enabler) | Low | P0 ✅ |
-| Scheduler scaling (handoff/steal) — Phase 1.1 | High | Low-Med | P1 ✅ |
-| IO-aware steal suppression — Phase 1.2 | High (HTTP 0× scaling) | Low-Med | P1 ✅ |
-| Spawn steal thrashing fix | Med-High | Medium | P1 🔴 |
-| Timeout batching | Med-High | Medium | P1 ✅ |
-| Callback queue coalescing | Medium | Low-Med | P1 ✅ |
-| Spawn/materialization + stack policy | Medium | Medium | P2 |
-| Adaptive admission cap | Med-High | Medium | P2 |
-| Expose tuning knobs in one place | Medium | Low | P2 |
-| Compaction hybrid trigger | Small-Med | Low | P2 |
-| Reduced stack-root scan | High | High | P3 (experimental) |
-| Waiter-list partitioning | Medium | Med-High | P3 |
+Drain the task queue in a new `drain_worker_tasks(worker)` helper called from
+the `uv_async_t` wakeup callback on the worker's loop. This mirrors the role
+of `drain_cb_queue` on `g_loop`.
 
 ---
 
-## Benchmark Plan Per Phase
+### Phase 4 — Accept-loop connection distribution
 
-For each phase:
+**What:** The accept-loop fiber (`goc_http.c:accept_loop_fiber`) currently runs
+on whichever pool worker it lands on. All accepted connections are init'd on
+the global loop (Phase 2 above changes this to the accept fiber's worker loop,
+but all connections still land on one worker). For throughput to scale,
+connections must be distributed across all workers.
 
-1. Run existing benchmark suites plus one stress case for the touched subsystem.
-2. Compare against baseline on:
-   - throughput
-   - P95/P99 latency
-   - memory footprint / GC time
-3. Reject changes that improve one metric while causing unacceptable regressions in others.
+**Mechanism — SO_REUSEPORT (preferred on Linux ≥ 3.9):**
+- Create one `uv_tcp_t` listener per worker, all bound to the same
+  `host:port` with `SO_REUSEPORT`.
+- Each listener is initialized on its worker's loop (via Phase 2's direct-init
+  path).
+- The kernel load-balances `accept()` calls across the N listeners — no
+  application-level round-robin needed.
+- Each worker runs its own `accept_loop_fiber` and spawns connection fibers
+  that inherit the worker's loop.
+- `goc_http_server_listen` spawns N accept fibers (one per worker in the pool)
+  instead of one.
 
-### Coverage-gap rule
+**Fallback — application-level round-robin:**
+If `SO_REUSEPORT` is not available (macOS, older kernels):
+- Accept on `g_loop` as today (single `uv_tcp_t` listener).
+- After `uv_accept`, transfer the connection handle to a target worker using
+  `post_on_worker_loop` (Phase 3).
+- Target worker calls `uv_tcp_init` on its own loop and `uv_accept` is replaced
+  by `uv_tcp_open(fd)` after extracting the fd via `uv_fileno`.
 
-- Before promoting callback/timeout optimizations, first add dedicated callback-storm and timeout-storm benchmarks.
-- Keep those items in **gated P2** status until benchmark coverage exists and captures a reproducible bottleneck.
-
-### Recommended extra benchmark scenarios
-
-- **Spawn-heavy**: bounded vs unbounded live fibers.
-- **Timeout-heavy**: large concurrent timeout creation bursts.
-- **Callback-heavy**: loop-thread callback flood.
-- **Mixed**: channels + timeouts + callback completions together.
+Detect `SO_REUSEPORT` support at compile time (`#ifdef UV_TCP_REUSEPORT` or
+`#ifdef SO_REUSEPORT`) and fall back automatically.
 
 ---
 
-## Guardrails
+### Phase 5 — Handle close on owner loop
 
-- Preserve shutdown correctness (`uv_close` loop-thread ownership, callback queue drain).
-- Preserve channel close/wake invariants (`close_guard`, `try_claim_wake`, `cancelled` handling).
-- Keep platform parity (POSIX + Windows thread-registration differences).
-- Keep conservative behavior as default for any experimental GC-scan optimizations.
+**What:** `goc_io_handle_close` currently dispatches to `g_loop` via
+`post_on_loop`. After Phases 2–4, handles may be owned by worker loops. Close
+must be dispatched to the handle's home loop.
+
+**Mechanism:**
+- Read `handle->loop` to determine the home loop.
+- If `handle->loop == g_loop`: dispatch via `post_on_loop` as today.
+- If `handle->loop == &workers[i].loop`: dispatch via `post_on_worker_loop(i,
+  on_handle_close_dispatch, d)`.
+- If the calling thread *is* the owning worker: call directly.
 
 ---
 
-## Milestone Definition of Done
+## Expected Impact
 
-A roadmap item is complete only if:
+After Phases 1–4, the per-connection I/O path for a worker-owned connection
+becomes:
 
-1. Code lands with tests and docs updates.
-2. Benchmarks show measurable improvement for the intended workload.
-3. No correctness regressions in existing test phases.
-4. Feature flags/defaults are documented with recommended settings.
+- `uv_read_start` / `uv_write` — direct call from fiber, 0 extra threads
+- Read/write callbacks — fire on the owning worker thread, wake fiber via
+  `post_to_run_queue` (same-worker fast path: direct deque push)
+- Accept — distributed by kernel across N workers (SO_REUSEPORT)
+
+This mirrors Go's per-M netpoller model. Throughput should scale near-linearly
+with pool size for connection-bound workloads.
+
+Estimated throughput target (pool=8, 8-core machine): ≥ 60,000 req/s
+(currently 7,022 req/s; Go achieves 78,136 req/s).
+
+---
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|------|-----------|
+| `UV_RUN_NOWAIT` adds overhead on CPU-bound benchmarks (ping-pong, ring) | Run canary benchmarks after Phase 1; gate on no regression > 5% |
+| Handle stolen by work-stealing and run on a different worker | IO ops on cross-worker handles use `post_on_worker_loop` dispatch path; `tl_worker` always reflects current OS thread |
+| SO_REUSEPORT not portable | Compile-time detection + application-level round-robin fallback |
+| Worker shutdown while handles are still open | `goc_pool_destroy` drains fibers first; handle close happens before worker loop teardown; add assertion |
+| `post_on_worker_loop` task queue contention | Only used for cross-worker ops (rare in the steady state); worker's own direct-call path dominates |
+| Interaction with `goc_pool_destroy` / worker teardown | `uv_loop_close` must be called after all handles on the worker loop are closed; drain worker task queue in shutdown path |
+
+---
+
+## Phasing and Commits
+
+Each phase can be implemented and benchmarked independently:
+
+1. **Phase 1** (`UV_RUN_NOWAIT` after resume) — one-line change in `pool.c`,
+   immediate benchmark to verify no regression.
+2. **Phase 2** (worker-loop handle init) — `goc_io.c` + `internal.h`; no
+   behavior change for external callers.
+3. **Phase 3** (inline IO for same-worker handles + `post_on_worker_loop`) —
+   largest change; requires new per-worker task queue.
+4. **Phase 4** (SO_REUSEPORT accept distribution) — `goc_http.c` +
+   `goc_io.c`; separate benchmarkable step.
+5. **Phase 5** (handle close routing) — small follow-on after Phase 3.

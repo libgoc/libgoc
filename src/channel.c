@@ -169,6 +169,7 @@ void compact_dead_entries(goc_chan* ch)
                     (void*)e, (void*)ch, (int)e->kind,
                     (e->kind == GOC_FIBER ? (void*)e->coro : NULL));
             *pp = e->next;   /* unlink */
+            if (e->free_on_drain) free(e);
 #ifdef GOC_ENABLE_STATS
             removed++;
 #endif
@@ -186,6 +187,7 @@ void compact_dead_entries(goc_chan* ch)
         goc_entry* e = *pp;
         if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
             *pp = e->next;
+            if (e->free_on_drain) free(e);
 #ifdef GOC_ENABLE_STATS
             removed++;
 #endif
@@ -208,10 +210,15 @@ void compact_dead_entries(goc_chan* ch)
  * -------------------------------------------------------------------------- */
 goc_chan* goc_chan_make(size_t buf_size)
 {
+    GOC_DBG("goc_chan_make: before goc_malloc(chan) buf_size=%zu\n", buf_size);
     goc_chan* ch = goc_malloc(sizeof(goc_chan));   /* zero-initialised by GC_malloc */
+    GOC_DBG("goc_chan_make: after goc_malloc(chan) ch=%p\n", (void*)ch);
 
-    if (buf_size > 0)
+    if (buf_size > 0) {
+        GOC_DBG("goc_chan_make: before goc_malloc(buf) ch=%p\n", (void*)ch);
         ch->buf = goc_malloc(buf_size * sizeof(void*));
+        GOC_DBG("goc_chan_make: after goc_malloc(buf) ch=%p buf=%p\n", (void*)ch, (void*)ch->buf);
+    }
 
     ch->buf_size = buf_size;
     ch->item_count = 0;
@@ -274,7 +281,9 @@ void goc_close(goc_chan* ch)
     if (!atomic_compare_exchange_strong_explicit(
             &ch->close_guard, &expected, 1,
             memory_order_acq_rel, memory_order_acquire)) {
-        GOC_DBG("goc_close: ch=%p CAS lost\n", (void*)ch);
+        GOC_DBG("goc_close: ch=%p CAS lost expected=%d now=%d\n",
+                (void*)ch, expected,
+                atomic_load_explicit(&ch->close_guard, memory_order_acquire));
         return;
     }
     GOC_DBG("goc_close: ch=%p CAS won\n", (void*)ch);
@@ -300,8 +309,10 @@ void goc_close(goc_chan* ch)
 #endif
 
     /* Collect GOC_FIBER entries to post after lock release.
-     * Heap-allocate sized to the exact waiter count so no entry is dropped. */
-    goc_entry** to_post = waiter_count ? goc_malloc(sizeof(goc_entry*) * waiter_count) : NULL;
+     * Use plain malloc (not goc_malloc/GC_malloc) to avoid triggering a GC
+     * stop-the-world while ch->lock is held, which can deadlock if another
+     * thread is blocked waiting on the same lock. */
+    goc_entry** to_post = waiter_count ? malloc(sizeof(goc_entry*) * waiter_count) : NULL;
     size_t to_post_count = 0;
     int cancelled_found = 0;
     for (int _pass = 0; _pass < 2; _pass++) {
@@ -311,6 +322,9 @@ void goc_close(goc_chan* ch)
             if (atomic_load_explicit(&e->cancelled, memory_order_acquire)) {
                 cancelled_found = 1;
             } else if (try_claim_wake(e)) {
+                GOC_DBG("goc_close: claimed waiter ch=%p e=%p kind=%d arm_pass=%d coro=%p\n",
+                        (void*)ch, (void*)e, (int)e->kind, _pass,
+                        (e->kind == GOC_FIBER ? (void*)e->coro : NULL));
                 e->ok = GOC_CLOSED;
                 if (e->kind == GOC_FIBER)
                     to_post[to_post_count++] = (goc_entry*)mco_get_user_data(e->coro);
@@ -318,6 +332,12 @@ void goc_close(goc_chan* ch)
                     post_callback(e, NULL);
                 else if (e->kind == GOC_SYNC)
                     goc_sync_post(e->sync_sem_ptr);
+            } else {
+                GOC_DBG("goc_close: try_claim_wake failed ch=%p e=%p kind=%d arm_pass=%d cancelled=%d woken=%d fired=%p\n",
+                        (void*)ch, (void*)e, (int)e->kind, _pass,
+                        (int)atomic_load_explicit(&e->cancelled, memory_order_acquire),
+                        (int)atomic_load_explicit(&e->woken, memory_order_acquire),
+                        (void*)e->fired);
             }
             e = next;
         }
@@ -344,6 +364,7 @@ void goc_close(goc_chan* ch)
         if (_spin > 100) { GOC_DBG("goc_close(): spin resolved after %ld iters ch=%p\n", _spin, (void*)ch); }
         post_to_run_queue(fe->pool, fe);
     }
+    free(to_post);
 
     /* Telemetry: update counters for entries woken by close, then emit event */
 #ifdef GOC_ENABLE_STATS
@@ -427,7 +448,7 @@ goc_val_t* goc_take(goc_chan* ch)
     /* Slow path: park on this channel */
     void* local_result = NULL;
 
-    goc_entry* e = goc_malloc(sizeof(goc_entry));
+    goc_entry* e = malloc(sizeof(goc_entry));
     *e = (goc_entry){ 0 };
     e->kind             = GOC_FIBER;
     e->coro             = mco_running();
@@ -457,6 +478,7 @@ goc_val_t* goc_take(goc_chan* ch)
     GOC_DBG("goc_take: resumed coro=%p ch=%p ok=%d val=%p\n", (void*)mco_running(), (void*)ch, (int)e->ok, local_result);
     goc_val_t* r = goc_malloc(sizeof(goc_val_t));
     r->val = local_result; r->ok = e->ok;
+    free(e);
     return r;
 }
 
@@ -513,7 +535,7 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     }
 
     /* Slow path: park on this channel */
-    goc_entry* e = goc_malloc(sizeof(goc_entry));
+    goc_entry* e = malloc(sizeof(goc_entry));
     *e = (goc_entry){ 0 };
     e->kind             = GOC_FIBER;
     e->coro             = mco_running();
@@ -536,7 +558,9 @@ goc_status_t goc_put(goc_chan* ch, void* val)
     /* pool_worker_fn has set fiber_entry->parked = 1 by this point */
 
     GOC_DBG("goc_put: resumed coro=%p ch=%p ok=%d\n", (void*)mco_running(), (void*)ch, (int)e->ok);
-    return e->ok;
+    goc_status_t ok = e->ok;
+    free(e);
+    return ok;
 }
 
 /* --------------------------------------------------------------------------
@@ -723,13 +747,15 @@ void goc_take_cb(goc_chan* ch,
 {
     assert(cb != NULL && "goc_take_cb: cb must not be NULL");
 
-    goc_entry* e = goc_malloc(sizeof(goc_entry));
-    e->kind        = GOC_CALLBACK;
-    e->ch          = ch;
-    e->is_put      = false;
-    e->cb          = cb;
-    e->ud          = ud;
-    e->result_slot = &e->cb_result;
+    goc_entry* e = malloc(sizeof(goc_entry));
+    *e = (goc_entry){ 0 };
+    e->kind          = GOC_CALLBACK;
+    e->ch            = ch;
+    e->is_put        = false;
+    e->cb            = cb;
+    e->ud            = ud;
+    e->result_slot   = &e->cb_result;
+    e->free_on_drain = true;
 
     post_callback(e, NULL);
 }
@@ -745,13 +771,15 @@ void goc_put_cb(goc_chan* ch, void* val,
                 void* ud)
 {
     GOC_DBG("goc_put_cb: ch=%p val=%p put_cb=%p\n", (void*)ch, val, (void*)(uintptr_t)cb);
-    goc_entry* e = goc_malloc(sizeof(goc_entry));
-    e->kind    = GOC_CALLBACK;
-    e->ch      = ch;
-    e->is_put  = true;
-    e->put_val = val;
-    e->put_cb  = cb;
-    e->ud      = ud;
+    goc_entry* e = malloc(sizeof(goc_entry));
+    *e = (goc_entry){ 0 };
+    e->kind          = GOC_CALLBACK;
+    e->ch            = ch;
+    e->is_put        = true;
+    e->put_val       = val;
+    e->put_cb        = cb;
+    e->ud            = ud;
+    e->free_on_drain = true;
 
     post_callback(e, NULL);
 }

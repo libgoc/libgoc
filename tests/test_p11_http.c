@@ -40,6 +40,9 @@
  *   P11.27 Keep-alive: client/server persistent connection handles sequential requests
  *   P11.28 Regression: fire-and-forget ping-pong survives repeated immediate teardown
  *   P11.29 Regression: fire-and-forget connect churn survives repeated teardown
+ *   P11.30 Benchmark-style non-failing throughput comparison (pool=4 vs pool=1)
+ *   P11.31 Strict affinity invariant: completed fibers from request workload
+ *          should execute on >=2 workers (evidence of cross-worker scheduling)
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -52,11 +55,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
+#include <stdatomic.h>
 
 #include "test_harness.h"
 #include "goc.h"
 #include "goc_array.h"
 #include "goc_http.h"
+#include "goc_stats.h"
+#include "internal.h"
 
 /* =========================================================================
  * Helpers
@@ -1540,13 +1547,315 @@ done:;
 }
 
 /* =========================================================================
+ * P11.30 — Non-failing throughput comparison benchmark (pool=4 vs pool=1)
+ * ====================================================================== */
+
+#define P11_30_REQS 1200
+
+typedef struct {
+    goc_chan* done;
+    int       port;
+    int       nreq;
+    int       ok;
+    uint64_t  elapsed_ns;
+} p11_30_run_t;
+
+static void fiber_p11_30_run(void* arg)
+{
+    p11_30_run_t* a = (p11_30_run_t*)arg;
+    a->ok = 0;
+    a->elapsed_ns = 0;
+
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "GET", "/ping", handler_ping);
+    goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
+
+    const uint64_t t0 = uv_hrtime();
+    for (int i = 0; i < a->nreq; i++) {
+        goc_http_response_t* r = (goc_http_response_t*)goc_take(
+            goc_http_get(local_url("/ping", a->port), goc_http_request_opts()))->val;
+        if (!r || r->status != 200) {
+            goc_take(goc_http_server_close(srv));
+            goc_put(a->done, goc_box_int(0));
+            return;
+        }
+    }
+    a->elapsed_ns = uv_hrtime() - t0;
+    a->ok = 1;
+
+    goc_take(goc_http_server_close(srv));
+    goc_put(a->done, goc_box_int(1));
+}
+
+static int p11_30_mode_run(int pool_threads, uint64_t* elapsed_ns_out, int* nreq_out)
+{
+#if defined(_WIN32)
+    char envbuf[32];
+    snprintf(envbuf, sizeof(envbuf), "%d", pool_threads);
+    _putenv_s("GOC_POOL_THREADS", envbuf);
+#else
+    char envbuf[32];
+    snprintf(envbuf, sizeof(envbuf), "%d", pool_threads);
+    setenv("GOC_POOL_THREADS", envbuf, 1);
+#endif
+
+    goc_init();
+
+    p11_30_run_t run;
+    memset(&run, 0, sizeof(run));
+    run.done = goc_chan_make(1);
+    run.port = next_port();
+    run.nreq = P11_30_REQS;
+
+    goc_go(fiber_p11_30_run, &run);
+    goc_val_t* vd = goc_take_sync(run.done);
+
+    int ok = (vd && goc_unbox_int(vd->val) == 1 && run.ok == 1 && run.elapsed_ns > 0);
+    if (ok) {
+        *elapsed_ns_out = run.elapsed_ns;
+        *nreq_out = run.nreq;
+    }
+
+    goc_shutdown();
+    return ok ? 0 : 1;
+}
+
+static void test_p11_30(void)
+{
+    TEST_BEGIN("P11.30 Throughput comparison pool=4 vs pool=1 (non-failing benchmark)");
+
+    uint64_t ns1 = 0, ns4 = 0;
+    int req1 = 0, req4 = 0;
+
+    ASSERT(p11_30_mode_run(1, &ns1, &req1) == 0);
+    ASSERT(p11_30_mode_run(4, &ns4, &req4) == 0);
+    ASSERT(req1 > 0 && req4 > 0);
+    ASSERT(ns1 > 0 && ns4 > 0);
+
+    double sec1 = (double)ns1 / 1e9;
+    double sec4 = (double)ns4 / 1e9;
+    double rps1 = (double)req1 / sec1;
+    double rps4 = (double)req4 / sec4;
+    double ratio = (rps1 > 0.0) ? (rps4 / rps1) : 0.0;
+
+    printf("\n    [P11.30] pool=1: %.2f req/s (%d req in %.3fs)\n", rps1, req1, sec1);
+    printf("    [P11.30] pool=4: %.2f req/s (%d req in %.3fs)\n", rps4, req4, sec4);
+    printf("    [P11.30] ratio pool4/pool1 = %.3f (informational)\n", ratio);
+
+    /* Non-failing benchmark-style check: log and validate only basic sanity. */
+    ASSERT(rps1 > 0.0 && rps4 > 0.0);
+
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P11.31 — Strict affinity invariant proxy via worker distribution telemetry
+ * ====================================================================== */
+
+#define P11_31_CLIENTS 8
+
+typedef struct {
+    goc_chan* done;
+    goc_pool* pool;
+    int       port;
+    _Atomic int* completed;
+} p11_31_client_arg_t;
+
+typedef struct {
+    _Atomic int workers[64];
+    _Atomic int total_ok;
+    _Atomic int worker_seen;
+} p11_31_stats_t;
+
+typedef struct {
+    goc_http_server_t* srv;
+    int port;
+    goc_chan* done;
+} p11_31_listen_arg_t;
+
+typedef struct {
+    goc_http_server_t* srv;
+    goc_chan* done;
+} p11_31_close_arg_t;
+
+static p11_31_stats_t g_p11_31_stats;
+static uv_mutex_t g_p11_31_mtx;
+
+static void p11_31_listen_fiber(void* larg)
+{
+    p11_31_listen_arg_t* la = (p11_31_listen_arg_t*)larg;
+    int lrc = -1;
+    goc_chan* ch = goc_http_server_listen(la->srv, "127.0.0.1", la->port);
+    if (ch) {
+        goc_val_t* lv = goc_take(ch);
+        if (lv && lv->ok == GOC_OK)
+            lrc = (int)goc_unbox_int(lv->val);
+    }
+    goc_put(la->done, goc_box_int(lrc));
+}
+
+static void p11_31_close_fiber(void* carg)
+{
+    p11_31_close_arg_t* ca = (p11_31_close_arg_t*)carg;
+    int crc = -1;
+    goc_chan* ch = goc_http_server_close(ca->srv);
+    if (ch) {
+        goc_val_t* cv = goc_take(ch);
+        if (cv && cv->ok == GOC_OK)
+            crc = (int)goc_unbox_int(cv->val);
+    }
+    goc_put(ca->done, goc_box_int(crc));
+}
+
+static void p11_31_stats_reset(void)
+{
+    atomic_store(&g_p11_31_stats.total_ok, 0);
+    atomic_store(&g_p11_31_stats.worker_seen, 0);
+    for (int i = 0; i < 64; i++)
+        atomic_store(&g_p11_31_stats.workers[i], 0);
+}
+
+static void p11_31_collect_event_cb(const goc_stats_event_t* ev, void* ud)
+{
+    (void)ud;
+    if (!ev) return;
+    if (ev->type == GOC_STATS_EVENT_FIBER_STATUS) {
+        int wid = ev->data.fiber.last_worker_id;
+        if (wid >= 0 && wid < 64)
+            atomic_store(&g_p11_31_stats.workers[wid], 1);
+    }
+}
+
+static void fiber_p11_31_client(void* arg)
+{
+    p11_31_client_arg_t* a = (p11_31_client_arg_t*)arg;
+    int ok = 0;
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->pool = a->pool;
+    opts->keep_alive = 0;
+
+    goc_http_response_t* r = (goc_http_response_t*)goc_take(
+        goc_http_get(local_url("/ping", a->port), opts))->val;
+    if (r && r->status == 200)
+        ok = 1;
+
+    if (ok) {
+        int wid = goc_current_worker_id();
+        if (wid >= 0 && wid < 64) {
+            atomic_store(&g_p11_31_stats.workers[wid], 1);
+            atomic_store(&g_p11_31_stats.worker_seen, 1);
+        }
+        atomic_fetch_add(a->completed, 1);
+        atomic_fetch_add(&g_p11_31_stats.total_ok, 1);
+    }
+
+    goc_put(a->done, goc_box_int(ok ? 1 : 0));
+}
+
+static void test_p11_31(void)
+{
+    TEST_BEGIN("P11.31 strict affinity: completions observed across >=2 workers");
+
+    uv_mutex_init(&g_p11_31_mtx);
+    p11_31_stats_reset();
+
+    goc_stats_init();
+    goc_stats_set_callback(p11_31_collect_event_cb, NULL);
+    goc_stats_flush();
+
+    int port = next_port();
+    goc_http_server_t* srv = NULL;
+    goc_pool* p1 = NULL;
+    goc_pool* p2 = NULL;
+    goc_chan* done = NULL;
+
+    int rc = 0;
+    srv = goc_http_server_make(goc_http_server_opts());
+    ASSERT(srv != NULL);
+    goc_http_server_route(srv, "GET", "/ping", handler_ping);
+
+    goc_chan* listen_done = goc_chan_make(1);
+    ASSERT(listen_done != NULL);
+    p11_31_listen_arg_t largs = { .srv = srv, .port = port, .done = listen_done };
+    goc_go(p11_31_listen_fiber, &largs);
+
+    goc_val_t* listen_v = goc_take_sync(listen_done);
+    ASSERT(listen_v != NULL);
+    rc = (int)goc_unbox_int(listen_v->val);
+    ASSERT(rc == 0);
+
+    p1 = goc_pool_make(2);
+    p2 = goc_pool_make(2);
+    ASSERT(p1 && p2);
+
+    done = goc_chan_make(P11_31_CLIENTS);
+    ASSERT(done != NULL);
+
+    _Atomic int completed = 0;
+
+    p11_31_client_arg_t args[P11_31_CLIENTS];
+    for (int i = 0; i < P11_31_CLIENTS; i++) {
+        args[i].done = done;
+        args[i].pool = (i % 2 == 0) ? p1 : p2;
+        args[i].port = port;
+        args[i].completed = &completed;
+        goc_go_on(args[i].pool, fiber_p11_31_client, &args[i]);
+    }
+
+    int done_ok = 0;
+    for (int i = 0; i < P11_31_CLIENTS; i++) {
+        goc_val_t* vd = goc_take_sync(done);
+        ASSERT(vd != NULL);
+        if (goc_unbox_int(vd->val) == 1)
+            done_ok++;
+    }
+    ASSERT(done_ok == P11_31_CLIENTS);
+    ASSERT(atomic_load(&completed) == P11_31_CLIENTS);
+
+    goc_take_sync(goc_timeout(50));
+    goc_stats_flush();
+
+    int total_ok = atomic_load(&g_p11_31_stats.total_ok);
+    int seen_from_worker = atomic_load(&g_p11_31_stats.worker_seen);
+    int distinct = 0;
+    for (int i = 0; i < 64; i++)
+        if (atomic_load(&g_p11_31_stats.workers[i]))
+            distinct++;
+
+    printf("    [P11.31] strict-affinity: completed_ok=%d/%d distinct_workers=%d worker_seen=%d\n",
+           total_ok, P11_31_CLIENTS, distinct, seen_from_worker);
+
+    ASSERT(total_ok == P11_31_CLIENTS);
+    ASSERT(seen_from_worker == 1);
+    ASSERT(distinct >= 2);
+
+    TEST_PASS();
+done:
+    if (p1) goc_pool_destroy(p1);
+    if (p2) goc_pool_destroy(p2);
+    if (srv) {
+        goc_chan* close_done = goc_chan_make(1);
+        if (close_done) {
+            p11_31_close_arg_t cargs = { .srv = srv, .done = close_done };
+            goc_go(p11_31_close_fiber, &cargs);
+            goc_take_sync(close_done);
+        }
+    }
+    goc_stats_set_callback(NULL, NULL);
+    goc_stats_shutdown();
+    uv_mutex_destroy(&g_p11_31_mtx);
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
 int main(void)
 {
     install_crash_handler();
-    goc_test_arm_watchdog(90);
+    goc_test_arm_watchdog(120);
 
     /* Keep HTTP stress deterministic in CI/local loops by capping pool
      * parallelism for this test process. High worker counts amplify scheduler
@@ -1591,6 +1900,13 @@ int main(void)
     test_p11_28();
     test_p11_29();
 
+    /* P11.30 uses isolated init/shutdown cycles for pool=1 and pool=4
+     * throughput measurement, so run it after shutting down the main cycle. */
+    goc_shutdown();
+    test_p11_30();
+
+    goc_init();
+    test_p11_31();
 
     printf("\n%d/%d tests passed", g_tests_passed, g_tests_run);
     if (g_tests_failed)

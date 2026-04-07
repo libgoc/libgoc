@@ -89,7 +89,7 @@ static _Atomic size_t g_cb_queue_hwm   = 0;
 
 static void cb_queue_init(void)
 {
-    mpsc_node *sentinel = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
+    mpsc_node *sentinel = (mpsc_node *)malloc(sizeof(mpsc_node));
     atomic_store_explicit(&sentinel->next, NULL, memory_order_relaxed);
     sentinel->entry = NULL;
     atomic_store_explicit(&g_cb_queue.head, sentinel, memory_order_relaxed);
@@ -129,7 +129,7 @@ static goc_entry *cb_queue_pop(void)
         return NULL;
     g_cb_queue.tail = next;         /* advance tail past sentinel */
     goc_entry *e = next->entry;
-    /* Old tail (sentinel) is now garbage — GC will collect it. */
+    free(tail);                     /* old sentinel; malloc'd, not GC-tracked */
     atomic_fetch_sub_explicit(&g_cb_queue_depth, 1, memory_order_relaxed);
     return e;
 }
@@ -149,7 +149,7 @@ void post_callback(goc_entry *entry, void *value)
     /* For take callbacks: store the delivered value. */
     entry->cb_result = value;
 
-    mpsc_node *node = (mpsc_node *)goc_malloc(sizeof(mpsc_node));
+    mpsc_node *node = (mpsc_node *)malloc(sizeof(mpsc_node));
     node->entry = entry;
     size_t prev_depth = cb_queue_push(node);
 
@@ -180,6 +180,7 @@ void post_callback(goc_entry *entry, void *value)
 typedef struct {
     void (*fn)(void*);
     void* arg;
+    goc_entry e;   /* embedded entry — freed together with task */
 } goc_loop_task_t;
 
 static void on_loop_task_cb(void* val, goc_status_t ok, void* ud)
@@ -188,20 +189,19 @@ static void on_loop_task_cb(void* val, goc_status_t ok, void* ud)
     (void)ok;
     goc_loop_task_t* task = (goc_loop_task_t*)ud;
     task->fn(task->arg);
+    free(task);
 }
 
 void post_on_loop(void (*fn)(void*), void* arg)
 {
-    goc_loop_task_t* task = (goc_loop_task_t*)goc_malloc(sizeof(goc_loop_task_t));
+    goc_loop_task_t* task = (goc_loop_task_t*)malloc(sizeof(goc_loop_task_t));
     task->fn = fn;
     task->arg = arg;
-
-    goc_entry* e = (goc_entry*)goc_malloc(sizeof(goc_entry));
-    *e = (goc_entry){ 0 };
-    e->kind = GOC_CALLBACK;
-    e->cb = on_loop_task_cb;
-    e->ud = task;
-    post_callback(e, NULL);
+    task->e = (goc_entry){ 0 };
+    task->e.kind = GOC_CALLBACK;
+    task->e.cb   = on_loop_task_cb;
+    task->e.ud   = task;
+    post_callback(&task->e, NULL);
 }
 
 int post_on_loop_checked(void (*fn)(void*), void* arg)
@@ -214,16 +214,14 @@ int post_on_loop_checked(void (*fn)(void*), void* arg)
         rc = UV_ECANCELED;
     } else {
         goc_loop_task_t* task =
-            (goc_loop_task_t*)goc_malloc(sizeof(goc_loop_task_t));
+            (goc_loop_task_t*)malloc(sizeof(goc_loop_task_t));
         task->fn  = fn;
         task->arg = arg;
-
-        goc_entry* e = (goc_entry*)goc_malloc(sizeof(goc_entry));
-        *e = (goc_entry){ 0 };
-        e->kind = GOC_CALLBACK;
-        e->cb   = on_loop_task_cb;
-        e->ud   = task;
-        post_callback(e, NULL);
+        task->e   = (goc_entry){ 0 };
+        task->e.kind = GOC_CALLBACK;
+        task->e.cb   = on_loop_task_cb;
+        task->e.ud   = task;
+        post_callback(&task->e, NULL);
     }
     uv_mutex_unlock(&g_loop_submit_lock);
 
@@ -257,10 +255,10 @@ static void free_handle_cb(uv_handle_t *h);  /* defined in loop-thread callbacks
  * All operations run on the loop thread (no extra lock required).
  * -------------------------------------------------------------------------- */
 
-typedef struct {
+struct timer_heap_entry {
     uint64_t               deadline_ns;
     goc_timeout_timer_ctx* ctx;
-} timer_heap_entry_t;
+};
 
 #define TIMER_HEAP_INIT_CAP 64
 
@@ -359,9 +357,18 @@ static void on_timer_mgr_fire(uv_timer_t* h)
 
 /* Public: insert ctx into the heap; re-arm the backing timer if needed.
  * Called from on_start_timer (loop thread only). */
-void goc_timer_manager_insert(goc_timeout_timer_ctx* ctx, uint64_t deadline_ns)
+goc_timer_manager_t* goc_global_timer_mgr(void)
+{
+    static goc_timer_manager_t g_mgr;
+    return &g_mgr;
+}
+
+void goc_timer_manager_insert(goc_timer_manager_t* mgr,
+                              goc_timeout_timer_ctx* ctx,
+                              uint64_t deadline_ns)
 {
     /* Grow the GC-managed heap array if full. */
+    (void)mgr;
     if (g_timer_heap_len == g_timer_heap_cap) {
         size_t new_cap = g_timer_heap_cap ? g_timer_heap_cap * 2 : TIMER_HEAP_INIT_CAP;
         g_timer_heap = (timer_heap_entry_t*)goc_realloc(
@@ -382,8 +389,10 @@ void goc_timer_manager_insert(goc_timeout_timer_ctx* ctx, uint64_t deadline_ns)
 
 /* Public: remove ctx from the heap (cancel path).
  * Called from on_cancel_timer (loop thread only). */
-void goc_timer_manager_remove(goc_timeout_timer_ctx* ctx)
+void goc_timer_manager_remove(goc_timer_manager_t* mgr,
+                              goc_timeout_timer_ctx* ctx)
 {
+    (void)mgr;
     size_t i = ctx->heap_idx;
     if (i == SIZE_MAX || i >= g_timer_heap_len)
         return;
@@ -551,6 +560,7 @@ static void loop_process_pending_put(goc_entry *e)
                 (void*)ch, e->put_val);
         uv_mutex_unlock(ch->lock);
         if (e->put_cb) e->put_cb(GOC_CLOSED, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -568,9 +578,16 @@ static void loop_process_pending_put(goc_entry *e)
                             (void*)ch, (void*)fe_taker);
                 }
             }
+            GOC_DBG("loop_process_pending_put: posting taker fe=%p pool=%p parked=%d ch=%p\n",
+                    (void*)fe_taker, (void*)fe_taker->pool,
+                    (int)atomic_load_explicit(&fe_taker->parked, memory_order_acquire),
+                    (void*)ch);
             post_to_run_queue(fe_taker->pool, fe_taker);
+            GOC_DBG("loop_process_pending_put: posted taker fe=%p ch=%p\n",
+                    (void*)fe_taker, (void*)ch);
         }
         if (e->put_cb) e->put_cb(GOC_OK, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -580,6 +597,7 @@ static void loop_process_pending_put(goc_entry *e)
         GOC_DBG("loop_process_pending_put: ch=%p buffered val put_cb=%p\n", (void*)ch, (void*)(uintptr_t)e->put_cb);
         uv_mutex_unlock(ch->lock);
         if (e->put_cb) e->put_cb(GOC_OK, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -608,6 +626,7 @@ static void loop_process_pending_take(goc_entry *e)
         e->ok = GOC_OK;
         uv_mutex_unlock(ch->lock);
         if (e->cb) e->cb(val, GOC_OK, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -625,9 +644,16 @@ static void loop_process_pending_take(goc_entry *e)
                             (void*)ch, (void*)fe_putter);
                 }
             }
+            GOC_DBG("loop_process_pending_take: posting putter fe=%p pool=%p parked=%d ch=%p\n",
+                    (void*)fe_putter, (void*)fe_putter->pool,
+                    (int)atomic_load_explicit(&fe_putter->parked, memory_order_acquire),
+                    (void*)ch);
             post_to_run_queue(fe_putter->pool, fe_putter);
+            GOC_DBG("loop_process_pending_take: posted putter fe=%p ch=%p\n",
+                    (void*)fe_putter, (void*)ch);
         }
         if (e->cb) e->cb(val, GOC_OK, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -636,6 +662,7 @@ static void loop_process_pending_take(goc_entry *e)
         e->ok = GOC_CLOSED;
         uv_mutex_unlock(ch->lock);
         if (e->cb) e->cb(NULL, GOC_CLOSED, e->ud);
+        if (e->free_on_drain) free(e);
         return;
     }
 
@@ -665,20 +692,27 @@ static void drain_cb_queue(void)
          * Process the channel operation here on the loop thread. */
         if (e->ch != NULL &&
             !atomic_load_explicit(&e->woken, memory_order_acquire)) {
-            if (e->is_put)
+            if (e->is_put) {
+                GOC_DBG("drain_cb_queue: processing pending PUT e=%p ch=%p\n", (void*)e, (void*)e->ch);
                 loop_process_pending_put(e);
-            else
+                GOC_DBG("drain_cb_queue: processed pending PUT e=%p\n", (void*)e);
+            } else {
+                GOC_DBG("drain_cb_queue: processing pending TAKE e=%p ch=%p\n", (void*)e, (void*)e->ch);
                 loop_process_pending_take(e);
+                GOC_DBG("drain_cb_queue: processed pending TAKE e=%p\n", (void*)e);
+            }
             continue;
         }
 
         /* Already claimed by wake(): fire the callback. */
         GOC_DBG("drain_cb_queue: ch=already-cleared woken=1 ok=%d is_put=%d\n",
                 (int)e->ok, (int)e->is_put);
+        bool fod = e->free_on_drain;
         if (e->cb)
             e->cb(e->cb_result, e->ok, e->ud);
         else if (e->put_cb)
             e->put_cb(e->ok, e->ud);
+        if (fod) free(e);
     }
 
     /* More callbacks queued? Yield back to libuv and request another wakeup
@@ -760,6 +794,9 @@ static void loop_thread_fn(void *arg)
             GOC_DBG("loop_thread_fn: after UV_RUN iter=%ld ret=%d depth=%zu\n",
                     iter, ret, atomic_load_explicit(&g_cb_queue_depth, memory_order_relaxed));
         }
+        /* Safe point: event pass complete, no libuv callbacks running, no
+         * ch->lock held.  Drive incremental GC collection. */
+        GC_collect_a_little();
         atomic_store_explicit(&last_loop_iter, iter, memory_order_relaxed);
         if (!ret) break;
     }

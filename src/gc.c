@@ -527,7 +527,24 @@ void goc_init(void) {
     /* Step 1 — Initialise Boehm GC. */
     GC_INIT();
 
-    /* Step 1.1 — Register fiber-stack push callback (replaces GC_add_roots). */
+    /* Step 1.1 — Enable incremental (page-fault-driven) collection mode.
+     * This must be called before GC_disable() so that GC_collect_a_little()
+     * does genuinely bounded, incremental work rather than potentially
+     * escalating to a full stop-the-world collection.  Without incremental
+     * mode, GC_collect_a_little() may do a full STW pass ("may do more work
+     * if further progress requires it, e.g. if incremental collection is
+     * disabled" — Boehm GC docs), which would hang if any GC-registered
+     * thread is unresponsive. */
+    GC_enable_incremental();
+
+    /* Step 1.2 — Disable automatic stop-the-world collections.  goc_malloc
+     * (GC_malloc) will still expand the heap on demand but will never trigger
+     * a collection implicitly.  Collection is driven explicitly at scheduler
+     * safe points (pool_worker_fn after mco_resume, loop_thread_fn after
+     * uv_run) via GC_collect_a_little(). */
+    GC_disable();
+
+    /* Step 1.2 — Register fiber-stack push callback (replaces GC_add_roots). */
     goc_fiber_roots_init();
 
     /* Step 2 — Allow worker threads to register themselves with the GC. */

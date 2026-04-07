@@ -50,7 +50,7 @@ static void on_cancel_timer(void* arg)
         return;
 
     atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
-    goc_timer_manager_remove(tctx);
+    goc_timer_manager_remove(goc_global_timer_mgr(), tctx);
 }
 
 static void on_timeout_channel_closed(void* ud)
@@ -115,7 +115,7 @@ static void on_start_timer(void* arg)
     GOC_DBG("on_start_timer: inserting into manager tctx=%p fire_at_ns=%llu remaining=%llu\n",
             (void*)req->timer_ctx, (unsigned long long)fire_at_ns,
             (unsigned long long)remaining);
-    goc_timer_manager_insert(req->timer_ctx, fire_at_ns);
+    goc_timer_manager_insert(goc_global_timer_mgr(), req->timer_ctx, fire_at_ns);
 }
 
 /* -------------------------------------------------------------------------

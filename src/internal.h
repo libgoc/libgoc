@@ -78,6 +78,15 @@ typedef struct goc_pool goc_pool;   /* defined in pool.c */
 typedef struct goc_entry goc_entry;
 typedef struct goc_spawn_req goc_spawn_req;
 
+typedef struct timer_heap_entry timer_heap_entry_t;
+
+typedef struct {
+    uv_timer_t*         handle;
+    timer_heap_entry_t* heap;
+    size_t              len;
+    size_t              cap;
+} goc_timer_manager_t;
+
 /* ---------------------------------------------------------------------------
  * goc_entry_kind
  * --------------------------------------------------------------------------- */
@@ -137,6 +146,7 @@ struct goc_entry {
      *            false = pending take (cb receives the value). */
     struct goc_chan*   ch;
     bool               is_put;
+    bool               free_on_drain;  /* if true, drain/loop_process frees 'e' after delivery */
 
     /* Sync fields (GOC_SYNC) */
     goc_sync_t         sync_obj;
@@ -301,9 +311,17 @@ void post_callback(goc_entry* entry, void* value);
 void post_on_loop(void (*fn)(void*), void* arg);
 int  post_on_loop_checked(void (*fn)(void*), void* arg);
 
+/* pool.c → current worker helpers */
+uv_loop_t* goc_current_worker_loop(void);
+int        goc_current_worker_id(void);
+
 /* loop.c central timer manager → called from timeout.c */
-void goc_timer_manager_insert(goc_timeout_timer_ctx* ctx, uint64_t deadline_ns);
-void goc_timer_manager_remove(goc_timeout_timer_ctx* ctx);
+goc_timer_manager_t* goc_global_timer_mgr(void);
+void goc_timer_manager_insert(goc_timer_manager_t* mgr,
+                              goc_timeout_timer_ctx* ctx,
+                              uint64_t deadline_ns);
+void goc_timer_manager_remove(goc_timer_manager_t* mgr,
+                              goc_timeout_timer_ctx* ctx);
 
 /* timeout.c → called from loop.c timer manager */
 void goc_timeout_ctx_expire(goc_timeout_timer_ctx* tctx);
@@ -324,6 +342,11 @@ void mutex_registry_destroy_all(void);
 /* Defined in loop.c */
 extern uv_loop_t*            g_loop;
 extern _Atomic(uv_async_t*)  g_wakeup;
+
+static inline uv_loop_t* goc_worker_or_default_loop(void) {
+    uv_loop_t* l = goc_current_worker_loop();
+    return l ? l : g_loop;
+}
 
 /* Defined in fiber.c */
 extern goc_pool*             g_default_pool;

@@ -26,6 +26,9 @@
  *   P10.11 goc_io_fs_sendfile: copies bytes between two file descriptors; validates that the destination file content matches the source file content
  *   P10.12 Channel-based goc_io_fs_open integrates with goc_alts: validates integration of goc_io_fs_open with goc_alts; ensures the correct channel result is selected
  *   P10.13 goc_io_handle_register + goc_io_handle_close: validates that a GC-allocated uv_async_t handle registers, closes, and unregisters cleanly without crashes
+ *   P10.14 Two fibers on different workers perform concurrent file reads; both complete
+ *   P10.15 8 concurrent goc_io_getaddrinfo calls on pool=4; all complete
+ *   P10.16 Two fibers on different workers create goc_timeout with different durations; relative firing order is correct
  */
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -38,6 +41,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 #ifdef _WIN32
 #  include <windows.h>
@@ -51,11 +55,15 @@
 static const char* TMP_PATH   = NULL;
 static const char* TMP_PATH2  = NULL;
 static const char* TMP_PATH3  = NULL;
+static const char* TMP_PATH4  = NULL;
+static const char* TMP_PATH5  = NULL;
 
 #ifdef _WIN32
 static char s_tmp1[MAX_PATH];
 static char s_tmp2[MAX_PATH];
 static char s_tmp3[MAX_PATH];
+static char s_tmp4[MAX_PATH];
+static char s_tmp5[MAX_PATH];
 #endif
 
 static void init_tmp_paths(void)
@@ -71,14 +79,20 @@ static void init_tmp_paths(void)
     }
     snprintf(s_tmp1, sizeof(s_tmp1), "%sgoc_io_test.txt",         tmp_dir);
     snprintf(s_tmp2, sizeof(s_tmp2), "%sgoc_io_test_renamed.txt", tmp_dir);
-    snprintf(s_tmp3, sizeof(s_tmp3), "%sgoc_io_test_dst.txt",     tmp_dir);
+    snprintf(s_tmp3, sizeof(s_tmp3), "%sgoc_io_test_dst.txt",      tmp_dir);
+    snprintf(s_tmp4, sizeof(s_tmp4), "%sgoc_io_test_read_a.txt",   tmp_dir);
+    snprintf(s_tmp5, sizeof(s_tmp5), "%sgoc_io_test_read_b.txt",   tmp_dir);
     TMP_PATH  = s_tmp1;
     TMP_PATH2 = s_tmp2;
     TMP_PATH3 = s_tmp3;
+    TMP_PATH4 = s_tmp4;
+    TMP_PATH5 = s_tmp5;
 #else
     TMP_PATH  = "/tmp/goc_io_test.txt";
     TMP_PATH2 = "/tmp/goc_io_test_renamed.txt";
     TMP_PATH3 = "/tmp/goc_io_test_dst.txt";
+    TMP_PATH4 = "/tmp/goc_io_test_read_a.txt";
+    TMP_PATH5 = "/tmp/goc_io_test_read_b.txt";
 #endif
 }
 
@@ -97,6 +111,10 @@ static void cleanup_tmp_files(void)
     uv_fs_unlink(goc_scheduler(), &req, TMP_PATH2, NULL);
     uv_fs_req_cleanup(&req);
     uv_fs_unlink(goc_scheduler(), &req, TMP_PATH3, NULL);
+    uv_fs_req_cleanup(&req);
+    uv_fs_unlink(goc_scheduler(), &req, TMP_PATH4, NULL);
+    uv_fs_req_cleanup(&req);
+    uv_fs_unlink(goc_scheduler(), &req, TMP_PATH5, NULL);
     uv_fs_req_cleanup(&req);
 }
 
@@ -570,6 +588,301 @@ done:;
 }
 
 /* =========================================================================
+ * P10.14 Two fibers on different workers perform concurrent file reads
+ * ====================================================================== */
+
+typedef struct {
+    goc_chan* done;
+    const char* path;
+    const char* expected;
+    int expected_len;
+    _Atomic int* pass_count;
+} p10_14_read_arg_t;
+
+static void fiber_p10_14_read_worker(void* arg)
+{
+    p10_14_read_arg_t* a = (p10_14_read_arg_t*)arg;
+    int ok = 0;
+
+    goc_val_t* vopen = goc_take(goc_io_fs_open(a->path, UV_FS_O_RDONLY, 0));
+    if (!vopen || vopen->ok != GOC_OK) goto done;
+    uv_file fd = goc_unbox_int(vopen->val);
+    if (fd < 0) goto done;
+
+    goc_val_t* vrd = goc_take(goc_io_fs_read(fd, a->expected_len, 0));
+    goc_take(goc_io_fs_close(fd));
+
+    if (!vrd || vrd->ok != GOC_OK) goto done;
+    goc_io_fs_read_t* rr = (goc_io_fs_read_t*)vrd->val;
+    if (!rr) goto done;
+    if (rr->nread != a->expected_len) goto done;
+    if (memcmp(rr->buf, a->expected, (size_t)a->expected_len) != 0) goto done;
+
+    ok = 1;
+done:
+    if (ok)
+        atomic_fetch_add_explicit(a->pass_count, 1, memory_order_acq_rel);
+    goc_put(a->done, goc_box_int(ok));
+}
+
+static void test_p10_14(void)
+{
+    TEST_BEGIN("P10.14 concurrent reads on pool=2: two fibers both complete");
+
+    static const char DATA_A[] = "p10_14_read_a_payload";
+    static const char DATA_B[] = "p10_14_read_b_payload";
+    const int LEN_A = (int)(sizeof(DATA_A) - 1);
+    const int LEN_B = (int)(sizeof(DATA_B) - 1);
+
+    uv_fs_t req;
+    uv_file fd = -1;
+
+    /* Prepare file A */
+    if (uv_fs_open(goc_scheduler(), &req, TMP_PATH4,
+                   UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644, NULL) < 0)
+        goto done;
+    fd = (uv_file)req.result;
+    uv_fs_req_cleanup(&req);
+
+    uv_buf_t b1 = uv_buf_init((char*)DATA_A, LEN_A);
+    if (uv_fs_write(goc_scheduler(), &req, fd, &b1, 1, 0, NULL) < 0) {
+        uv_fs_req_cleanup(&req);
+        uv_fs_close(goc_scheduler(), &req, fd, NULL);
+        uv_fs_req_cleanup(&req);
+        goto done;
+    }
+    uv_fs_req_cleanup(&req);
+    uv_fs_close(goc_scheduler(), &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+
+    /* Prepare file B */
+    if (uv_fs_open(goc_scheduler(), &req, TMP_PATH5,
+                   UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644, NULL) < 0)
+        goto done;
+    fd = (uv_file)req.result;
+    uv_fs_req_cleanup(&req);
+
+    uv_buf_t b2 = uv_buf_init((char*)DATA_B, LEN_B);
+    if (uv_fs_write(goc_scheduler(), &req, fd, &b2, 1, 0, NULL) < 0) {
+        uv_fs_req_cleanup(&req);
+        uv_fs_close(goc_scheduler(), &req, fd, NULL);
+        uv_fs_req_cleanup(&req);
+        goto done;
+    }
+    uv_fs_req_cleanup(&req);
+    uv_fs_close(goc_scheduler(), &req, fd, NULL);
+    uv_fs_req_cleanup(&req);
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    goc_chan* done_a = goc_chan_make(1);
+    goc_chan* done_b = goc_chan_make(1);
+    ASSERT(done_a != NULL && done_b != NULL);
+
+    _Atomic int pass_count = 0;
+
+    p10_14_read_arg_t a1 = {
+        .done = done_a,
+        .path = TMP_PATH4,
+        .expected = DATA_A,
+        .expected_len = LEN_A,
+        .pass_count = &pass_count
+    };
+    p10_14_read_arg_t a2 = {
+        .done = done_b,
+        .path = TMP_PATH5,
+        .expected = DATA_B,
+        .expected_len = LEN_B,
+        .pass_count = &pass_count
+    };
+
+    goc_go_on(pool, fiber_p10_14_read_worker, &a1);
+    goc_go_on(pool, fiber_p10_14_read_worker, &a2);
+
+    goc_val_t* r1 = goc_take_sync(done_a);
+    goc_val_t* r2 = goc_take_sync(done_b);
+    ASSERT(r1 && goc_unbox_int(r1->val) == 1);
+    ASSERT(r2 && goc_unbox_int(r2->val) == 1);
+    ASSERT(atomic_load_explicit(&pass_count, memory_order_acquire) == 2);
+
+    goc_pool_destroy(pool);
+
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P10.15 8 concurrent getaddrinfo calls on pool=4
+ * ====================================================================== */
+
+#define P10_15_WORKERS 4
+#define P10_15_CALLS   8
+
+typedef struct {
+    goc_chan* done;
+    _Atomic int* completed;
+    _Atomic int* success;
+} p10_15_arg_t;
+
+static void fiber_p10_15_worker(void* arg)
+{
+    p10_15_arg_t* a = (p10_15_arg_t*)arg;
+
+    int ok = 0;
+    goc_chan* ch = goc_io_getaddrinfo("localhost", NULL, NULL);
+    goc_val_t* v = goc_take(ch);
+    if (v && v->ok == GOC_OK) {
+        goc_io_getaddrinfo_t* res = (goc_io_getaddrinfo_t*)v->val;
+        if (res && res->ok == GOC_IO_OK && res->res != NULL) {
+            uv_freeaddrinfo(res->res);
+            ok = 1;
+        }
+    }
+
+    if (ok)
+        atomic_fetch_add_explicit(a->success, 1, memory_order_acq_rel);
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1 == P10_15_CALLS)
+        goc_put(a->done, goc_box_int(1));
+}
+
+static void test_p10_15(void)
+{
+    TEST_BEGIN("P10.15 pool=4, 8 concurrent getaddrinfo calls all complete");
+
+    goc_pool* pool = goc_pool_make(P10_15_WORKERS);
+    ASSERT(pool != NULL);
+
+    goc_chan* done = goc_chan_make(1);
+    ASSERT(done != NULL);
+
+    _Atomic int completed = 0;
+    _Atomic int success = 0;
+    p10_15_arg_t arg = {
+        .done = done,
+        .completed = &completed,
+        .success = &success
+    };
+
+    for (int i = 0; i < P10_15_CALLS; i++)
+        goc_go_on(pool, fiber_p10_15_worker, &arg);
+
+    goc_val_t* vd = goc_take_sync(done);
+    ASSERT(vd && goc_unbox_int(vd->val) == 1);
+
+    ASSERT(atomic_load_explicit(&completed, memory_order_acquire) == P10_15_CALLS);
+    ASSERT(atomic_load_explicit(&success, memory_order_acquire) == P10_15_CALLS);
+
+    goc_pool_destroy(pool);
+
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P10.16 Two fibers on different workers create timeouts; relative order
+ * ====================================================================== */
+
+typedef struct {
+    goc_chan* done;
+    uint64_t ms;
+    int idx;
+    uint64_t t0_ns;
+    _Atomic int* seq;
+    _Atomic int* order;
+    _Atomic uint64_t* elapsed_ns;
+} p10_16_arg_t;
+
+static void fiber_p10_16_timeout_worker(void* arg)
+{
+    p10_16_arg_t* a = (p10_16_arg_t*)arg;
+
+    goc_chan* tch = goc_timeout(a->ms);
+    goc_val_t* tv = goc_take(tch);
+
+    int ok = 0;
+    if (tv && tv->ok == GOC_CLOSED) {
+        uint64_t now_ns = uv_hrtime();
+        uint64_t dt = (now_ns >= a->t0_ns) ? (now_ns - a->t0_ns) : 0;
+        atomic_store_explicit(&a->elapsed_ns[a->idx], dt, memory_order_release);
+
+        int s = atomic_fetch_add_explicit(a->seq, 1, memory_order_acq_rel);
+        atomic_store_explicit(&a->order[a->idx], s, memory_order_release);
+        ok = 1;
+    }
+
+    goc_put(a->done, goc_box_int(ok));
+}
+
+static void test_p10_16(void)
+{
+    TEST_BEGIN("P10.16 pool=2 timeout relative order: shorter fires first");
+
+    goc_pool* pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    goc_chan* done_a = goc_chan_make(1);
+    goc_chan* done_b = goc_chan_make(1);
+    ASSERT(done_a != NULL && done_b != NULL);
+
+    _Atomic int seq = 0;
+    _Atomic int order[2];
+    _Atomic uint64_t elapsed_ns[2];
+    atomic_store_explicit(&order[0], -1, memory_order_release);
+    atomic_store_explicit(&order[1], -1, memory_order_release);
+    atomic_store_explicit(&elapsed_ns[0], 0, memory_order_release);
+    atomic_store_explicit(&elapsed_ns[1], 0, memory_order_release);
+
+    const uint64_t short_ms = 20;
+    const uint64_t long_ms  = 80;
+    const uint64_t t0 = uv_hrtime();
+
+    p10_16_arg_t a_short = {
+        .done = done_a,
+        .ms = short_ms,
+        .idx = 0,
+        .t0_ns = t0,
+        .seq = &seq,
+        .order = order,
+        .elapsed_ns = elapsed_ns
+    };
+    p10_16_arg_t a_long = {
+        .done = done_b,
+        .ms = long_ms,
+        .idx = 1,
+        .t0_ns = t0,
+        .seq = &seq,
+        .order = order,
+        .elapsed_ns = elapsed_ns
+    };
+
+    goc_go_on(pool, fiber_p10_16_timeout_worker, &a_short);
+    goc_go_on(pool, fiber_p10_16_timeout_worker, &a_long);
+
+    goc_val_t* r1 = goc_take_sync(done_a);
+    goc_val_t* r2 = goc_take_sync(done_b);
+    ASSERT(r1 && goc_unbox_int(r1->val) == 1);
+    ASSERT(r2 && goc_unbox_int(r2->val) == 1);
+
+    int o_short = atomic_load_explicit(&order[0], memory_order_acquire);
+    int o_long  = atomic_load_explicit(&order[1], memory_order_acquire);
+    uint64_t e_short = atomic_load_explicit(&elapsed_ns[0], memory_order_acquire);
+    uint64_t e_long  = atomic_load_explicit(&elapsed_ns[1], memory_order_acquire);
+
+    ASSERT(o_short >= 0 && o_long >= 0);
+    ASSERT(o_short < o_long);
+
+    /* Relaxed time sanity: both fired, and long timeout should not precede short. */
+    ASSERT(e_short > 0 && e_long > 0);
+    ASSERT(e_short <= e_long);
+
+    goc_pool_destroy(pool);
+
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
  * main
  * ====================================================================== */
 
@@ -596,6 +909,9 @@ int main(void)
     test_p10_11();
     test_p10_12();
     test_p10_13();
+    test_p10_14();
+    test_p10_15();
+    test_p10_16();
 
     printf("\n%d/%d tests passed", g_tests_passed, g_tests_run);
     if (g_tests_failed)

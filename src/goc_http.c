@@ -484,11 +484,14 @@ static void accept_loop_fiber(void* arg)
 
 static void handle_conn_fiber(void* arg)
 {
+    static _Atomic uint64_t s_conn_fiber_seq = 0;
     conn_arg_t*   a    = (conn_arg_t*)arg;
     goc_http_server_t* srv  = a->srv;
     uv_tcp_t*     conn = a->conn;
     goc_chan*     close_ch = a->close_ch;
-    GOC_DBG("handle_conn_fiber: started conn=%p\n", (void*)conn);
+    uint64_t cfid = atomic_fetch_add_explicit(&s_conn_fiber_seq, 1, memory_order_relaxed) + 1;
+    GOC_DBG("handle_conn_fiber[%llu]: started conn=%p close_ch=%p srv=%p\n",
+            (unsigned long long)cfid, (void*)conn, (void*)close_ch, (void*)srv);
 
     /* Accumulation buffer (plain-malloc; we control its entire lifetime). */
     size_t buf_cap = 4096;
@@ -504,10 +507,12 @@ static void handle_conn_fiber(void* arg)
         int read_started = 0;
         int must_close_conn = 0;
 
-        GOC_DBG("handle_conn_fiber: calling goc_io_read_start on conn=%p\n", (void*)conn);
+        GOC_DBG("handle_conn_fiber[%llu]: calling goc_io_read_start conn=%p\n",
+                (unsigned long long)cfid, (void*)conn);
         goc_chan* read_ch = goc_io_read_start((uv_stream_t*)conn);
         read_started = 1;
-        GOC_DBG("handle_conn_fiber: goc_io_read_start returned read_ch=%p\n", (void*)read_ch);
+        GOC_DBG("handle_conn_fiber[%llu]: read_start returned read_ch=%p\n",
+                (unsigned long long)cfid, (void*)read_ch);
 
         /* ---- Read until we have a complete HTTP request head ---- */
         const char*       method        = NULL;
@@ -520,20 +525,30 @@ static void handle_conn_fiber(void* arg)
         int               pret          = -2;
 
         while (pret == -2) {
-            GOC_DBG("handle_conn_fiber: entering goc_alts read_ch=%p close_ch=%p\n",
-                    (void*)read_ch, (void*)close_ch);
+            GOC_DBG("handle_conn_fiber[%llu]: alts(wait head) read_ch=%p close_ch=%p pret=%d buf_len=%zu\n",
+                    (unsigned long long)cfid, (void*)read_ch, (void*)close_ch, pret, buf_len);
             goc_alt_op_t ops[] = {
                 { .ch = read_ch,  .op_kind = GOC_ALT_TAKE, .put_val = NULL },
                 { .ch = close_ch, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
             };
             goc_alts_result_t* sel = goc_alts(ops, 2);
+            GOC_DBG("handle_conn_fiber[%llu]: alts(head) sel=%p sel_ch=%p ok=%d\n",
+                    (unsigned long long)cfid, (void*)sel,
+                    sel ? (void*)sel->ch : NULL,
+                    (sel && sel->value.ok == GOC_OK) ? 1 : 0);
             if (!sel || sel->ch != read_ch || sel->value.ok != GOC_OK) {
+                GOC_DBG("handle_conn_fiber[%llu]: break(head) reason=alts_not_read_or_not_ok\n",
+                        (unsigned long long)cfid);
                 must_close_conn = 1;
                 break;
             }
             goc_val_t* v = &sel->value;
             goc_io_read_t* r = (goc_io_read_t*)v->val;
+            GOC_DBG("handle_conn_fiber[%llu]: read(head) nread=%zd read_ch=%p\n",
+                    (unsigned long long)cfid, r ? r->nread : -9999, (void*)read_ch);
             if (r->nread < 0) {
+                GOC_DBG("handle_conn_fiber[%llu]: break(head) reason=nread<0 nread=%zd\n",
+                        (unsigned long long)cfid, r->nread);
                 must_close_conn = 1;
                 break;
             }
@@ -638,12 +653,18 @@ static void handle_conn_fiber(void* arg)
         }
 
         if (read_started) {
+            GOC_DBG("handle_conn_fiber[%llu]: read_stop begin conn=%p read_ch=%p\n",
+                    (unsigned long long)cfid, (void*)conn, (void*)read_ch);
             goc_io_read_stop((uv_stream_t*)conn);
             for (;;) {
                 goc_val_t* dv = goc_take(read_ch);
+                GOC_DBG("handle_conn_fiber[%llu]: read_stop drain dv=%p ok=%d\n",
+                        (unsigned long long)cfid, (void*)dv, (dv && dv->ok == GOC_OK) ? 1 : 0);
                 if (!dv || dv->ok != GOC_OK)
                     break;
             }
+            GOC_DBG("handle_conn_fiber[%llu]: read_stop done conn=%p read_ch=%p\n",
+                    (unsigned long long)cfid, (void*)conn, (void*)read_ch);
             read_started = 0;
         }
 
@@ -774,7 +795,8 @@ static void handle_conn_fiber(void* arg)
 
     free(buf);
     goc_io_handle_close((uv_handle_t*)conn, NULL);
-    GOC_DBG("handle_conn_fiber: connection closed conn=%p\n", (void*)conn);
+    GOC_DBG("handle_conn_fiber[%llu]: connection closed conn=%p\n",
+            (unsigned long long)cfid, (void*)conn);
     if (atomic_fetch_sub_explicit(&srv->active_conns, 1, memory_order_release) == 1)
         goc_close(srv->shutdown_ch);
 }
@@ -1282,7 +1304,7 @@ static void http_client_fiber(void* arg)
             goc_io_read_t* r = (goc_io_read_t*)v->val;
             GOC_DBG("http_client_fiber[%llu]: response chunk nread=%zd\n",
                 (unsigned long long)a->req_id, r->nread);
-            if (r->nread < 0) break;
+            if (r->nread < 0) { break; }
 
             /* Grow plain-malloc buffer. */
             size_t needed = resp_len + (size_t)r->nread + 1;
@@ -1290,7 +1312,7 @@ static void http_client_fiber(void* arg)
                 size_t nc = resp_cap ? resp_cap * 2 : 4096;
                 while (nc < needed) nc *= 2;
                 char* nb = (char*)realloc(resp_buf, nc);
-                if (!nb) break;
+                if (!nb) { break; }
                 resp_buf = nb; resp_cap = nc;
             }
             memcpy(resp_buf + resp_len, r->buf->base, (size_t)r->nread);
@@ -1313,6 +1335,8 @@ static void http_client_fiber(void* arg)
             (unsigned long long)a->req_id, (void*)rd, (void*)tcp);
         goc_io_read_stop((uv_stream_t*)tcp);
         for (;;) {
+            GOC_DBG("http_client_fiber[%llu]: read drain loop top rd=%p\n",
+                (unsigned long long)a->req_id, (void*)rd);
             goc_val_t* dv = goc_take(rd);
             GOC_DBG("http_client_fiber[%llu]: read drain dv=%p ok=%d\n",
                 (unsigned long long)a->req_id, (void*)dv, dv ? (int)dv->ok : -1);

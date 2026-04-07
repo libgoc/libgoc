@@ -85,9 +85,14 @@ operations.
 
 ## Thread Safety
 
-File-system (`uv_fs_*`) and DNS (`uv_getaddrinfo`, `uv_getnameinfo`) operations
-are safe to initiate from any thread; libuv routes them through its internal
-worker-thread pool and fires the callback on the event loop.
+File-system (`uv_fs_*`), DNS (`uv_getaddrinfo`, `uv_getnameinfo`), and random
+(`uv_random`) operations are safe to initiate from any thread; libuv routes
+them through its internal worker-thread pool and fires the callback on the
+issuing loop. When called from a pool-worker fiber, these requests are
+submitted to that worker's own `uv_loop_t` (via `goc_worker_or_default_loop()`)
+rather than to the global `g_loop`. This allows threadpool-backed I/O issued
+from pool-worker fibers to be dispatched and completed without round-tripping
+through the central event-loop thread.
 
 Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) must reach the
 loop thread. The core TCP path (read_start/stop, write, tcp_connect, handle

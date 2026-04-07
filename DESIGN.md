@@ -214,6 +214,8 @@ libuv owns **one thing**: the event loop thread.
 
 **All libuv handles and internal context structs must be GC-allocated (`goc_malloc`) and pinned in the `live_uv_handles` root array** before being handed to libuv. libuv holds internal references to handles until `uv_close` completes; those references are not visible to the GC. Without pinning the GC would collect the object prematurely, causing use-after-free inside the event loop. Internal code uses `gc_handle_register`/`gc_handle_unregister` directly; user code uses the public wrappers `goc_io_handle_register` / `goc_io_handle_unregister` / `goc_io_handle_close`.
 
+**Exception — dispatch structs used in `post_on_loop`** (e.g. `goc_loop_task_t`, `goc_write_dispatch_t`, `goc_read_start_dispatch_t`) are `malloc`-allocated, not `goc_malloc`-allocated. Their lifetimes are bounded by the dispatched callback: they are `free()`d immediately after the callback completes on the loop thread. GC pinning is unnecessary because they do not outlive their callback delivery.
+
 User-created handles registered on the loop via `goc_scheduler()` follow the same rule: allocate with `goc_malloc`, register with `goc_io_handle_register`, and close with `goc_io_handle_close`.
 
 ### User I/O Callbacks and the uv Loop Thread
@@ -262,7 +264,9 @@ If the fiber side needs to produce or consume multiple values, launch a fiber wi
 
 Boehm GC (bdw-gc) is a **required link-time dependency**. It is not optional and requires no configuration from the caller.
 
-`goc_init` must be **the first call in `main()`**, before any other library or application code that could trigger GC allocation. It calls `GC_INIT()` unconditionally as its very first operation, then installs the fiber-root push callback, then calls `GC_allow_register_threads()`. `GC_INIT()` performs all one-time GC setup, and `GC_allow_register_threads()` enables multi-thread stack registration. **Callers must not call these functions themselves.**
+`goc_init` must be **the first call in `main()`**, before any other library or application code that could trigger GC allocation. It calls `GC_INIT()` unconditionally as its very first operation, then calls `GC_enable_incremental()` and `GC_disable()` to suppress automatic stop-the-world collections, then installs the fiber-root push callback, then calls `GC_allow_register_threads()`. `GC_INIT()` performs all one-time GC setup, and `GC_allow_register_threads()` enables multi-thread stack registration. **Callers must not call these functions themselves.**
+
+With automatic STW collections disabled, collection is driven explicitly at scheduler safe points: `GC_collect_a_little()` is called after each `mco_resume` (in pool workers, once the fiber has yielded or exited and the GC stack bottom has been restored) and after `uv_run` returns in the loop thread. This keeps collection incremental and bounded without ever blocking the scheduler at an arbitrary point. `goc_malloc` no longer triggers implicit GC collections.
 
 Pool workers and the uv loop thread are created via `goc_thread_create` on all platforms. It wraps `uv_thread_create` with a trampoline that calls `GC_register_my_thread` at startup and `GC_unregister_my_thread` at exit, ensuring every thread is visible to the collector. `GC_allow_register_threads()` is called by `goc_init()` before any threads are spawned.
 
@@ -285,7 +289,9 @@ Most GC-managed structs are allocated via `goc_malloc` — on the GC heap, so po
 **Exceptions (plain `malloc`):**
 - channel mutex internals (`uv_mutex_t*` inside `goc_chan`), destroyed by `goc_shutdown`;
 - work-stealing deque ring buffers use `GC_malloc_uncollectable`;
-- injector queue nodes use plain `malloc`/`free`.
+- injector queue nodes (`mpsc_node`) use plain `malloc`/`free`;
+- dispatch structs (`goc_loop_task_t`, `goc_write_dispatch_t`, `goc_read_start_dispatch_t`, and similar `post_on_loop` payloads) are `malloc`-allocated and `free()`d after the dispatched callback completes; their lifetimes are bounded by the callback and they need not participate in GC traversal;
+- per-worker wakeup handles (`uv_async_t*`) are `malloc`-allocated at pool init and `free()`d at pool teardown.
 
 See [libuv Role](#libuv-role) above.
 
@@ -392,6 +398,9 @@ typedef struct goc_entry {
     /* all kinds */
     goc_status_t      ok;           /* GOC_OK = delivered successfully, GOC_CLOSED = channel closed */
     size_t            arm_idx;      /* index of this arm in ops[]; used by goc_alts */
+    bool              free_on_drain; /* when true, loop_process_pending_put/take and compact_dead_entries
+                                        call free(e) after delivery or drain — used for malloc-allocated
+                                        entries whose lifetime is bounded by the channel operation */
 
     /* GOC_CALLBACK */
     void  (*cb)(void* val, goc_status_t ok, void* ud);
@@ -720,12 +729,15 @@ typedef struct {
     pthread_t        thread;
     goc_wsdq         deque;           /* Chase–Lev work-stealing deque (owner-push/pop + thief-steal) */
     goc_injector     injector;        /* MPSC queue: external callers push here; owner pops */
-    uv_sem_t         idle_sem;        /* posted when work is available; worker sleeps on this */
+    uv_loop_t        loop;            /* per-worker event loop; runs threadpool-backed I/O (fs, dns, random) */
+    uv_async_t*      wakeup;          /* async handle on worker->loop; sent when work is available */
     size_t           index;           /* worker index in pool->workers[] */
     goc_pool*        pool;            /* back-pointer to owning pool */
     _Atomic uint64_t steal_attempts;  /* total steal attempts from this worker's deque */
     _Atomic uint64_t steal_successes; /* successful steals from this worker's deque */
     uint32_t         miss_streak;     /* consecutive steal misses; resets on any successful dequeue or wakeup */
+    uint64_t         steal_misses;    /* steal misses accumulated this scheduling quantum */
+    uint64_t         idle_wakeups;    /* times this worker returned from uv_run(UV_RUN_ONCE) */
 } goc_worker;
 
 /* Pool-wide steal aggregates (file-scope globals in pool.c): */
@@ -736,7 +748,7 @@ typedef struct goc_pool {
     goc_worker*        workers;        /* array of thread_count workers */
     size_t             thread_count;
     size_t             max_live_fibers; /* 0 = unlimited; otherwise admission cap */
-    _Atomic size_t     idle_count;     /* number of workers currently sleeping on idle_sem */
+    _Atomic size_t     idle_count;     /* number of workers currently parked in uv_run(UV_RUN_ONCE) */
     _Atomic size_t     next_push_idx;  /* round-robin index for external injector pushes */
     _Atomic int        shutdown;       /* set to 1 to stop workers */
 
@@ -828,7 +840,7 @@ while not shutdown:
      *     neighbour before parking so work is not left stranded. */
     if thread_count > 1:
         if wsdq_approx_size(worker.deque) > 0 and idle_count > 0:
-            uv_sem_post(workers[(self+1) % thread_count].idle_sem)
+            uv_async_send(workers[(self+1) % thread_count].wakeup)
 
     atomic_fetch_add(idle_count, 1, seq_cst)  /* must be seq_cst — pairs with post seq_cst fence */
     entry = wsdq_pop_bottom(worker.deque)      /* double-check: close race with concurrent post */
@@ -836,7 +848,7 @@ while not shutdown:
     if entry != NULL:
         atomic_fetch_sub(idle_count, 1, relaxed)
         goto run
-    uv_sem_wait(worker.idle_sem)               /* sleep until posted by post_to_run_queue */
+    uv_run(&worker.loop, UV_RUN_ONCE)          /* sleep until wakeup is sent by post_to_run_queue */
     idle_wakeups++
     atomic_fetch_sub(idle_count, 1, relaxed)
     worker.miss_streak = 0  /* fresh steal budget after wakeup */
@@ -857,6 +869,7 @@ run:
     mco_resume(coro)                   /* run fiber until next mco_yield or return */
 
     GC_set_stackbottom(NULL, &orig_sb) /* restore OS thread stack bottom */
+    GC_collect_a_little()              /* scheduler-controlled incremental GC safe point */
 
     fe = mco_get_user_data(coro)
     st = mco_status(coro)
@@ -867,7 +880,7 @@ run:
     if st == MCO_SUSPENDED and thread_count > 1:
         depth = wsdq_approx_size(worker.deque)
         if depth > worker.deque.capacity/2 and idle_count > 0:
-            uv_sem_post(workers[(self+1) % thread_count].idle_sem)
+            uv_async_send(workers[(self+1) % thread_count].wakeup)
     if fe != NULL: atomic_store(fe->parked, 1, release)  /* release yield-gate after resume bookkeeping */
 
     if st == MCO_DEAD:
@@ -887,13 +900,13 @@ run:
        goc_pool_destroy / goc_pool_destroy_timeout will not see a spurious drain-complete. */
 ```
 
-> **Sleep-miss race closure.** A poster calling `post_to_run_queue` must not miss a sleeping worker. Protocol: (1) worker increments `idle_count` with `seq_cst` *before* its double-check; (2) poster completes its write (deque push or injector mutex-unlock, both full-barrier), then reads `idle_count` with `seq_cst`. The C11 total order on seq_cst operations guarantees that if the poster sees `idle_count == 0`, the worker's double-check will see the posted entry; if the poster sees `idle_count > 0`, it posts `idle_sem` to wake the worker.
+> **Sleep-miss race closure.** A poster calling `post_to_run_queue` must not miss a sleeping worker. Protocol: (1) worker increments `idle_count` with `seq_cst` *before* its double-check; (2) poster completes its write (deque push or injector mutex-unlock, both full-barrier), then reads `idle_count` with `seq_cst`. The C11 total order on seq_cst operations guarantees that if the poster sees `idle_count == 0`, the worker's double-check will see the posted entry; if the poster sees `idle_count > 0`, it calls `uv_async_send(worker->wakeup)` to wake the worker.
 
 > **Victim hinting.** Each worker maintains `last_steal_victim` (initialised to `SIZE_MAX` = unset). When a steal succeeds, the victim's index is stored there. On the next steal phase, that index is tried first (before the randomised scan), because a recently productive victim is likely still busy. If the hint steal fails or the index is unset, the worker falls back to the randomised xorshift scan. The hint is cleared when all steal attempts in a round fail. This reduces the average number of probes needed to find work in sustained high-throughput workloads.
 
-> **IO-aware steal backoff (`miss_streak`).** Each worker maintains a `uint32_t miss_streak` counter that increments on every `wsdq_steal_top` miss (both hint-path and randomised-scan) and resets to 0 on any successful dequeue (own-deque pop, injector drain, or steal hit) and after every `uv_sem_wait` wakeup. When `miss_streak >= STEAL_BACKOFF_THRESHOLD` (default: 8, defined in `src/config.h`), the worker skips Stage 3 entirely and parks immediately at Stage 4. This suppresses hot spinning on IO-bound workloads (e.g. HTTP) where runnable fibers are woken via `uv_async` and never appear on a deque at probe time — the observed 90–95% steal miss rates in HTTP benchmarks are collapsed to zero wasted probes per wakeup cycle. CPU-bound workloads (steal frequently succeeds) never accumulate a streak and are unaffected.
+> **IO-aware steal backoff (`miss_streak`).** Each worker maintains a `uint32_t miss_streak` counter that increments on every `wsdq_steal_top` miss (both hint-path and randomised-scan) and resets to 0 on any successful dequeue (own-deque pop, injector drain, or steal hit) and after every `uv_run` wakeup. When `miss_streak >= STEAL_BACKOFF_THRESHOLD` (default: 8, defined in `src/config.h`), the worker skips Stage 3 entirely and parks immediately at Stage 4. This suppresses hot spinning on IO-bound workloads (e.g. HTTP) where runnable fibers are woken via `uv_async` and never appear on a deque at probe time — the observed 90–95% steal miss rates in HTTP benchmarks are collapsed to zero wasted probes per wakeup cycle. CPU-bound workloads (steal frequently succeeds) never accumulate a streak and are unaffected.
 
-> **Steal and idle counters.** `steal_attempts`, `steal_successes`, and `steal_misses` are per-worker relaxed atomics accumulated on every `wsdq_steal_top` call (both hint-path and randomised-scan). `idle_wakeups` is incremented once per `uv_sem_wait` return. All four are mirrored to global aggregates (`g_steal_*`, `g_idle_wakeups` in `pool.c`) and exposed via `goc_pool_get_steal_stats`. Per-worker totals are also reported in the `GOC_WORKER_STOPPED` telemetry event (attempts and successes only). A high `misses`-to-`attempts` ratio indicates contention on steal targets; a high `idle_wakeups`-to-`successes` ratio indicates steal thrashing or spurious wakeups.
+> **Steal and idle counters.** `steal_attempts`, `steal_successes`, and `steal_misses` are per-worker relaxed atomics accumulated on every `wsdq_steal_top` call (both hint-path and randomised-scan). `idle_wakeups` is incremented once per `uv_run(UV_RUN_ONCE)` return. All four are mirrored to global aggregates (`g_steal_*`, `g_idle_wakeups` in `pool.c`) and exposed via `goc_pool_get_steal_stats`. Per-worker totals are also reported in the `GOC_WORKER_STOPPED` telemetry event (attempts and successes only). A high `misses`-to-`attempts` ratio indicates contention on steal targets; a high `idle_wakeups`-to-`successes` ratio indicates steal thrashing or spurious wakeups.
 
 
 > **Why `coro` is snapshotted before `mco_resume`.** `post_to_run_queue` may receive either a fiber's initial entry (launch/resume token) or another scheduler-visible entry that refers to the same coroutine. Snapshotting `coro = entry->coro` before `mco_resume` ensures the worker keeps a stable handle even if other state associated with the scheduling token becomes irrelevant once the coroutine advances. The `mco_coro` object itself remains valid until `mco_destroy`.
@@ -965,7 +978,7 @@ typedef struct {
 `post_to_run_queue` routes entries as follows:
 
 - **Internal caller** (a fiber running on a pool thread, i.e. `tl_worker != NULL && tl_worker->pool == pool`): pushes to the executing worker's own deque and does **not** proactively wake peers. This preserves locality for short handoff-heavy workloads.
-- **External caller** (main thread, libuv loop, another pool): pushes into a round-robin target worker's injector, then posts that worker's `idle_sem` if any worker is idle.
+- **External caller** (main thread, libuv loop, another pool): pushes into a round-robin target worker's injector, then sends `uv_async_send` to that worker's wakeup handle if any worker is idle.
 
 All threads — pool workers and the uv loop thread — are created via `goc_thread_create` (implemented in `gc.c`). It wraps `uv_thread_create` with a trampoline (`goc_thread_trampoline`) that calls `GC_register_my_thread` at thread start and `GC_unregister_my_thread` at thread exit on all platforms.
 
@@ -1310,6 +1323,10 @@ void**        goc_array_to_c(const goc_array* arr);
 | `chan_put_to_taker` | `static inline int chan_put_to_taker(goc_chan*, void*)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h`; iterates the full takers queue (discarding cancelled and lost-race entries mid-queue); snapshots `e->next` before `wake()` because the parked entry may become unreachable after dispatch |
 | `chan_put_to_buffer` | `static inline int chan_put_to_buffer(goc_chan*, void*)` | `channel_internal.h` — requires `struct goc_chan` in scope via `chan_type.h` |
 | `chan_set_on_close` | `void chan_set_on_close(goc_chan* ch, void (*on_close)(void*), void* ud)` | `channel.c` (declared in `channel_internal.h`) — registers a one-shot callback invoked when the channel is closed; if the channel is already closed at call time the callback fires immediately |
+| `goc_current_worker_loop` | `uv_loop_t* goc_current_worker_loop(void)` | `pool.c` — returns the `uv_loop_t*` owned by the calling pool worker thread, or `NULL` if not on a pool worker thread |
+| `goc_current_worker_id` | `int goc_current_worker_id(void)` | `pool.c` — returns the worker index (0-based) of the calling pool worker thread, or `-1` if not on a pool worker thread |
+| `goc_worker_or_default_loop` | `static inline uv_loop_t* goc_worker_or_default_loop(void)` | `internal.h` — returns `goc_current_worker_loop()` when called from a pool worker; falls back to the global `g_loop` otherwise |
+| `goc_global_timer_mgr` | `goc_timer_manager_t* goc_global_timer_mgr(void)` | `loop.c` — returns a pointer to the singleton `goc_timer_manager_t`; used by `goc_timer_manager_insert(mgr, ...)` / `goc_timer_manager_remove(mgr, ...)` which now take an explicit `goc_timer_manager_t*` argument |
 
 > **Note:** `chan_register` and `chan_unregister` are *defined* in `gc.c` but *called* from `channel.c` (`goc_chan_make` calls `chan_register`; `goc_close` calls `chan_unregister`). The inline ring-buffer helpers live in `channel_internal.h`, which includes both `chan_type.h` and `internal.h`. Files that need channel internals should include `channel_internal.h` (or `chan_type.h` directly when only the concrete channel layout is needed).
 
@@ -1397,7 +1414,7 @@ void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
   - `attempts` — total `wsdq_steal_top` calls (hint-path + randomised scan).
   - `successes` — attempts that returned a non-NULL entry.
   - `misses` — attempts that returned NULL; equals `attempts − successes`.
-  - `idle_wakeups` — number of times a worker returned from `uv_sem_wait` (one per sleep/wake cycle). High values relative to `successes` indicate steal thrashing or spurious wakeups.
+  - `idle_wakeups` — number of times a worker returned from `uv_run(UV_RUN_ONCE)` (one per sleep/wake cycle). High values relative to `successes` indicate steal thrashing or spurious wakeups.
 
 When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STATUS`, `GOC_STATS_WORKER_STATUS`, `GOC_STATS_FIBER_STATUS`, `GOC_STATS_CHANNEL_STATUS`) expand to `((void)0)` and have zero runtime cost.
 

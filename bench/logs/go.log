@@ -1,126 +1,126 @@
 make: Entering directory '/home/divyansh/repos/libgoc/bench/go'
 === Pool Size: 1 ===
 GOMAXPROCS=1
-Channel ping-pong: 200000 round trips in 81ms (2455906 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 209ms (2391413 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 295ms (676714 msg/s)
-Spawn idle tasks: 200000 goroutines in 884ms (226105 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1135ms (1992 primes/s)
-HTTP ping-pong: 2000 round trips in 1026ms (1949 round trips/s, avg 510.6us p50 383.6us p95 766.6us p99 1280.7us, warmup 200)
-HTTP server throughput: 47816 requests in 5000ms (9563 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 81ms (2455547 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 208ms (2401070 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 298ms (668924 msg/s)
+Spawn idle tasks: 200000 goroutines in 875ms (228447 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1109ms (2039 primes/s)
+HTTP ping-pong: 2000 round trips in 967ms (2068 round trips/s, avg 481.0us p50 372.2us p95 683.5us p99 1034.0us, warmup 200)
+HTTP server throughput: 49704 requests in 5000ms (9941 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOMAXPROCS=2
-Channel ping-pong: 200000 round trips in 87ms (2283765 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 223ms (2241437 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 321ms (621323 msg/s)
-Spawn idle tasks: 200000 goroutines in 462ms (432774 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 569ms (3969 primes/s)
-HTTP ping-pong: 2000 round trips in 807ms (2477 round trips/s, avg 401.1us p50 341.5us p95 502.7us p99 1043.6us, warmup 200)
-HTTP server throughput: 94832 requests in 5000ms (18966 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 87ms (2297412 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 216ms (2313345 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 279ms (716767 msg/s)
+Spawn idle tasks: 200000 goroutines in 449ms (444570 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 559ms (4043 primes/s)
+HTTP ping-pong: 2000 round trips in 711ms (2811 round trips/s, avg 353.1us p50 301.0us p95 430.7us p99 616.3us, warmup 200)
+HTTP server throughput: 100311 requests in 5000ms (20062 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOMAXPROCS=4
-Channel ping-pong: 200000 round trips in 96ms (2076752 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 234ms (2133027 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 337ms (592844 msg/s)
-Spawn idle tasks: 200000 goroutines in 390ms (512200 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 302ms (7477 primes/s)
-HTTP ping-pong: 2000 round trips in 857ms (2334 round trips/s, avg 425.9us p50 386.2us p95 530.3us p99 671.2us, warmup 200)
-HTTP server throughput: 211208 requests in 5000ms (42242 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 86ms (2312272 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2244745 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 267ms (747809 msg/s)
+Spawn idle tasks: 200000 goroutines in 349ms (571929 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 292ms (7741 primes/s)
+HTTP ping-pong: 2000 round trips in 698ms (2863 round trips/s, avg 346.8us p50 304.4us p95 394.0us p99 618.6us, warmup 200)
+HTTP server throughput: 219058 requests in 5000ms (43812 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOMAXPROCS=8
-Channel ping-pong: 200000 round trips in 89ms (2238000 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 231ms (2164189 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 296ms (673835 msg/s)
-Spawn idle tasks: 200000 goroutines in 351ms (568271 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 163ms (13799 primes/s)
-HTTP ping-pong: 2000 round trips in 829ms (2412 round trips/s, avg 412.0us p50 364.6us p95 513.2us p99 636.2us, warmup 200)
-HTTP server throughput: 377198 requests in 5000ms (75440 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 88ms (2256625 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 221ms (2254478 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 267ms (748164 msg/s)
+Spawn idle tasks: 200000 goroutines in 357ms (559891 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 159ms (14138 primes/s)
+HTTP ping-pong: 2000 round trips in 754ms (2651 round trips/s, avg 374.5us p50 340.7us p95 402.4us p99 459.0us, warmup 200)
+HTTP server throughput: 390678 requests in 5000ms (78136 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/go'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/go'
 === Pool Size: 1 ===
 GOMAXPROCS=1
-Channel ping-pong: 200000 round trips in 84ms (2379316 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 215ms (2324328 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 302ms (661270 msg/s)
-Spawn idle tasks: 200000 goroutines in 863ms (231601 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1160ms (1950 primes/s)
-HTTP ping-pong: 2000 round trips in 1026ms (1948 round trips/s, avg 510.9us p50 381.1us p95 872.5us p99 1092.3us, warmup 200)
-HTTP server throughput: 47354 requests in 5000ms (9471 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 81ms (2443736 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 208ms (2397862 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 294ms (677985 msg/s)
+Spawn idle tasks: 200000 goroutines in 836ms (239025 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1114ms (2029 primes/s)
+HTTP ping-pong: 2000 round trips in 983ms (2034 round trips/s, avg 489.1us p50 374.1us p95 721.3us p99 1057.9us, warmup 200)
+HTTP server throughput: 49167 requests in 5000ms (9833 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOMAXPROCS=2
-Channel ping-pong: 200000 round trips in 89ms (2237657 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 224ms (2230529 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 322ms (620692 msg/s)
-Spawn idle tasks: 200000 goroutines in 463ms (431596 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 581ms (3887 primes/s)
-HTTP ping-pong: 2000 round trips in 858ms (2329 round trips/s, avg 426.8us p50 360.8us p95 568.4us p99 804.5us, warmup 200)
-HTTP server throughput: 96538 requests in 5000ms (19308 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 88ms (2259117 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 219ms (2274718 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 291ms (685760 msg/s)
+Spawn idle tasks: 200000 goroutines in 434ms (459826 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 557ms (4058 primes/s)
+HTTP ping-pong: 2000 round trips in 809ms (2470 round trips/s, avg 402.4us p50 300.6us p95 692.9us p99 882.0us, warmup 200)
+HTTP server throughput: 99684 requests in 5000ms (19937 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOMAXPROCS=4
-Channel ping-pong: 200000 round trips in 92ms (2172700 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 228ms (2186271 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 313ms (636947 msg/s)
-Spawn idle tasks: 200000 goroutines in 356ms (560554 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 295ms (7646 primes/s)
-HTTP ping-pong: 2000 round trips in 869ms (2301 round trips/s, avg 431.9us p50 391.5us p95 537.9us p99 673.8us, warmup 200)
-HTTP server throughput: 214663 requests in 5000ms (42933 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 88ms (2255421 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 223ms (2236191 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 270ms (740711 msg/s)
+Spawn idle tasks: 200000 goroutines in 351ms (568860 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 292ms (7728 primes/s)
+HTTP ping-pong: 2000 round trips in 719ms (2782 round trips/s, avg 357.0us p50 313.9us p95 404.0us p99 640.4us, warmup 200)
+HTTP server throughput: 218391 requests in 5000ms (43678 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOMAXPROCS=8
-Channel ping-pong: 200000 round trips in 89ms (2228225 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 225ms (2214958 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 299ms (667291 msg/s)
-Spawn idle tasks: 200000 goroutines in 404ms (494180 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 166ms (13595 primes/s)
-HTTP ping-pong: 2000 round trips in 975ms (2050 round trips/s, avg 484.9us p50 442.2us p95 591.3us p99 664.3us, warmup 200)
-HTTP server throughput: 382739 requests in 5000ms (76548 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 88ms (2267552 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 221ms (2257697 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 267ms (747480 msg/s)
+Spawn idle tasks: 200000 goroutines in 354ms (563659 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 159ms (14143 primes/s)
+HTTP ping-pong: 2000 round trips in 687ms (2910 round trips/s, avg 341.1us p50 304.3us p95 383.0us p99 510.5us, warmup 200)
+HTTP server throughput: 387909 requests in 5000ms (77582 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/go'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/go'
 === Pool Size: 1 ===
 GOMAXPROCS=1
-Channel ping-pong: 200000 round trips in 81ms (2457209 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 208ms (2393527 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 298ms (669274 msg/s)
-Spawn idle tasks: 200000 goroutines in 933ms (214151 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 1132ms (1998 primes/s)
-HTTP ping-pong: 2000 round trips in 1105ms (1810 round trips/s, avg 550.0us p50 406.1us p95 894.7us p99 1396.5us, warmup 200)
-HTTP server throughput: 50062 requests in 5000ms (10012 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 81ms (2445404 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 208ms (2403352 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 300ms (665008 msg/s)
+Spawn idle tasks: 200000 goroutines in 774ms (258378 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 1117ms (2025 primes/s)
+HTTP ping-pong: 2000 round trips in 975ms (2050 round trips/s, avg 485.3us p50 362.9us p95 733.1us p99 965.6us, warmup 200)
+HTTP server throughput: 49017 requests in 5000ms (9803 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOMAXPROCS=2
-Channel ping-pong: 200000 round trips in 89ms (2246302 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 223ms (2240982 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 319ms (626372 msg/s)
-Spawn idle tasks: 200000 goroutines in 452ms (442301 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 561ms (4027 primes/s)
-HTTP ping-pong: 2000 round trips in 925ms (2162 round trips/s, avg 460.1us p50 354.0us p95 671.0us p99 1133.3us, warmup 200)
-HTTP server throughput: 97265 requests in 5000ms (19453 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 88ms (2249743 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 220ms (2264644 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 288ms (693590 msg/s)
+Spawn idle tasks: 200000 goroutines in 442ms (452017 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 561ms (4026 primes/s)
+HTTP ping-pong: 2000 round trips in 762ms (2622 round trips/s, avg 378.8us p50 305.2us p95 562.8us p99 819.1us, warmup 200)
+HTTP server throughput: 100021 requests in 5000ms (20004 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOMAXPROCS=4
-Channel ping-pong: 200000 round trips in 89ms (2231281 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 223ms (2236216 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 331ms (602443 msg/s)
-Spawn idle tasks: 200000 goroutines in 385ms (518747 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 293ms (7698 primes/s)
-HTTP ping-pong: 2000 round trips in 778ms (2569 round trips/s, avg 386.6us p50 342.9us p95 447.3us p99 674.3us, warmup 200)
-HTTP server throughput: 215164 requests in 5000ms (43033 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 89ms (2245620 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 224ms (2225618 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 270ms (739427 msg/s)
+Spawn idle tasks: 200000 goroutines in 355ms (562427 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 294ms (7683 primes/s)
+HTTP ping-pong: 2000 round trips in 712ms (2808 round trips/s, avg 353.7us p50 306.2us p95 401.3us p99 605.1us, warmup 200)
+HTTP server throughput: 217464 requests in 5000ms (43493 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOMAXPROCS=8
-Channel ping-pong: 200000 round trips in 91ms (2193806 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 225ms (2212828 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 310ms (643311 msg/s)
-Spawn idle tasks: 200000 goroutines in 376ms (530837 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 162ms (13924 primes/s)
-HTTP ping-pong: 2000 round trips in 876ms (2282 round trips/s, avg 435.5us p50 394.4us p95 559.0us p99 659.7us, warmup 200)
-HTTP server throughput: 365015 requests in 5000ms (73003 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 89ms (2245143 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 222ms (2247891 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 265ms (751984 msg/s)
+Spawn idle tasks: 200000 goroutines in 364ms (549380 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 159ms (14153 primes/s)
+HTTP ping-pong: 2000 round trips in 742ms (2693 round trips/s, avg 368.6us p50 335.8us p95 398.2us p99 455.8us, warmup 200)
+HTTP server throughput: 387132 requests in 5000ms (77426 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/go'
