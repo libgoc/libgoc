@@ -26,12 +26,23 @@
  *   P10.11 goc_io_fs_sendfile: copies bytes between two file descriptors; validates that the destination file content matches the source file content
  *   P10.12 Channel-based goc_io_fs_open integrates with goc_alts: validates integration of goc_io_fs_open with goc_alts; ensures the correct channel result is selected
  *   P10.13 goc_io_handle_register + goc_io_handle_close: validates that a GC-allocated uv_async_t handle registers, closes, and unregisters cleanly without crashes
- *   P10.14 Two fibers on different workers perform concurrent file reads; both complete
- *   P10.15 8 concurrent goc_io_getaddrinfo calls on pool=4; all complete
- *   P10.16 Two fibers on different workers create goc_timeout with different durations; relative firing order is correct
+ *   P10.14 goc_io_read_start + goc_io_handle_close: pending read closes cleanly when its stream handle closes
+ *   P10.15 goc_io_write + goc_io_handle_close: pending write completes on close
+ *   P10.16 Two fibers on different workers perform concurrent file reads; both complete
+ *   P10.17 8 concurrent goc_io_getaddrinfo calls on pool=4; all complete
+ *   P10.18 Two fibers on different workers create goc_timeout with different durations; relative firing order is correct
+ *   P10.19 goc_io_read_start + goc_io_read_stop: pending read-start cancellation closes the read channel
+ *   P10.20 goc_io_read_start + goc_io_read_stop: active read stops and closes cleanly
+ *   P10.21a goc_io_handle_close: handle->data is cleared when closing a GC-managed handle
+ *   P10.21b goc_io_handle_close: closing a handle with pending read/write operations does not crash and properly cancels pending operations
+ *   P10.21c cross-worker read-start cancellation does not corrupt pending state
+ *   P10.21d cross worker handle close: closing a wrapper handle from a different worker completes cleanly
+ *   P10.21e goc_io_handle_close: repeated close calls on a wrapper handle are ignored
+ *   P10.21f cross-worker uv_async_t close: closing a raw uv_async_t from a different worker does not crash
+ *   P10.22 dropped accepted connection cleanup is safe
  */
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if defined(__linux__)
 #  define _GNU_SOURCE
 #endif
 
@@ -50,6 +61,8 @@
 #include "test_harness.h"
 #include "goc.h"
 #include "goc_io.h"
+#include "internal.h"
+#include "channel_internal.h"
 
 /* Temporary file paths used across tests — set by init_tmp_paths(). */
 static const char* TMP_PATH   = NULL;
@@ -57,6 +70,12 @@ static const char* TMP_PATH2  = NULL;
 static const char* TMP_PATH3  = NULL;
 static const char* TMP_PATH4  = NULL;
 static const char* TMP_PATH5  = NULL;
+
+static int s_port = 18600;
+static int next_port(void)
+{
+    return s_port++;
+}
 
 #ifdef _WIN32
 static char s_tmp1[MAX_PATH];
@@ -554,7 +573,7 @@ done:;
 }
 
 /* =========================================================================
- * P10.13 goc_io_handle_register + goc_io_handle_close
+ * P10.13 goc_io_handle_close on raw uv_async_t
  * ====================================================================== */
 
 static void fiber_p10_13(void* arg)
@@ -563,14 +582,12 @@ static void fiber_p10_13(void* arg)
     int ok = 0;
 
     /* uv_async_init is the only uv_*_init documented as safe from any thread.
-     * Other handle init functions (uv_tcp_init, uv_pipe_init, etc.) modify
-     * loop->handle_queue without a lock and must be called from the loop thread. */
+     * Raw async handles may be closed directly via goc_io_handle_close(). */
     uv_async_t* h = goc_malloc(sizeof(uv_async_t));
     int rc = uv_async_init(goc_scheduler(), h, NULL);
     if (rc != 0) goto done;
 
-    goc_io_handle_register((uv_handle_t*)h);
-    goc_io_handle_close((uv_handle_t*)h, NULL);
+    goc_io_handle_close((uv_handle_t*)h);
 
     ok = 1;
 done:
@@ -579,7 +596,7 @@ done:
 
 static void test_p10_13(void)
 {
-    TEST_BEGIN("P10.13 goc_io_handle_register + goc_io_handle_close: no crash");
+    TEST_BEGIN("P10.13 goc_io_handle_close accepts raw uv_async_t handles");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_13, res_ch);
     ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
@@ -588,8 +605,82 @@ done:;
 }
 
 /* =========================================================================
- * P10.14 Two fibers on different workers perform concurrent file reads
+ * P10.14 Pending read is canceled on close
  * ====================================================================== */
+
+static void fiber_p10_14(void* arg)
+{
+    goc_chan* res_ch = arg;
+    int ok = 0;
+    int port = next_port();
+
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* client = NULL;
+    uv_tcp_t* peer = NULL;
+    goc_chan* accept_ch = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* timeout_ch = NULL;
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+        goto done;
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    if (goc_unbox_int(
+            goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
+        goto done;
+
+    ready = goc_chan_make(1);
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take(ready);
+    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+        goto done;
+    goc_close(ready);
+
+    client = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+        goto done;
+
+    goc_val_t* vconn = goc_take(goc_io_tcp_connect(
+        client, (const struct sockaddr*)&addr));
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+        goto done;
+
+    goc_val_t* vacc = goc_take(accept_ch);
+    if (!vacc || vacc->ok != GOC_OK)
+        goto done;
+    peer = (uv_tcp_t*)vacc->val;
+
+    goc_chan* rd = goc_io_read_start((uv_stream_t*)client);
+    goc_io_handle_close((uv_handle_t*)client);
+
+    goc_val_t* vread = goc_take(rd);
+    if (!vread || vread->ok != GOC_OK)
+        goto done;
+    goc_io_read_t* rr = (goc_io_read_t*)vread->val;
+    if (!rr || (rr->nread != UV_ECANCELED && rr->nread != UV_EOF))
+        goto done;
+
+    /* Close the server-side peer and listener to avoid leaking the TCP handles. */
+    goc_io_handle_close((uv_handle_t*)peer);
+    goc_close(accept_ch);
+    goc_io_handle_close((uv_handle_t*)server);
+
+    ok = 1;
+done:
+    goc_put(res_ch, goc_box_int(ok));
+}
+
+static void test_p10_14(void)
+{
+    TEST_BEGIN("P10.14 goc_io_read_start + goc_io_handle_close: pending read is canceled on close");
+    goc_chan* res_ch = goc_chan_make(1);
+    goc_go(fiber_p10_14, res_ch);
+    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    TEST_PASS();
+done:;
+}
 
 typedef struct {
     goc_chan* done;
@@ -625,9 +716,95 @@ done:
     goc_put(a->done, goc_box_int(ok));
 }
 
-static void test_p10_14(void)
+static void fiber_p10_15_write_close(void* arg)
 {
-    TEST_BEGIN("P10.14 concurrent reads on pool=2: two fibers both complete");
+    goc_chan* res_ch = arg;
+    int ok = 0;
+    int port = next_port();
+
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* client = NULL;
+    uv_tcp_t* peer = NULL;
+    goc_chan* accept_ch = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* timeout_ch = NULL;
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+        goto done;
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    if (goc_unbox_int(
+            goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
+        goto done;
+
+    ready = goc_chan_make(1);
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take(ready);
+    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+        goto done;
+    goc_close(ready);
+
+    client = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+        goto done;
+
+    goc_val_t* vconn = goc_take(goc_io_tcp_connect(
+        client, (const struct sockaddr*)&addr));
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+        goto done;
+
+    goc_val_t* vacc = goc_take(accept_ch);
+    if (!vacc || vacc->ok != GOC_OK)
+        goto done;
+    peer = (uv_tcp_t*)vacc->val;
+
+    const char body[] = "x";
+    uv_buf_t buf = uv_buf_init((char*)body, sizeof(body) - 1);
+    goc_chan* write_ch = goc_io_write((uv_stream_t*)client, &buf, 1);
+    goc_io_handle_close((uv_handle_t*)client);
+
+    timeout_ch = goc_timeout(1000);
+    goc_alt_op_t ops[2] = {
+        { .ch = write_ch,   .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+        { .ch = timeout_ch, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+    };
+    goc_alts_result_t* res = goc_alts(ops, 2);
+    if (!res || res->ch != write_ch)
+        goto done;
+    if (!res->value.ok)
+        goto done;
+
+    ok = 1;
+
+done:
+    if (timeout_ch)
+        goc_close(timeout_ch);
+    if (server)
+        goc_io_handle_close((uv_handle_t*)server);
+    if (client)
+        goc_io_handle_close((uv_handle_t*)client);
+    if (peer)
+        goc_io_handle_close((uv_handle_t*)peer);
+    if (accept_ch)
+        goc_close(accept_ch);
+    goc_put(res_ch, goc_box_int(ok));
+}
+
+static void test_p10_15(void)
+{
+    TEST_BEGIN("P10.15 write + goc_io_handle_close: pending write completes on close");
+    goc_chan* res_ch = goc_chan_make(1);
+    goc_go(fiber_p10_15_write_close, res_ch);
+    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    TEST_PASS();
+done:;
+}
+
+static void test_p10_16(void)
+{
+    TEST_BEGIN("P10.16 concurrent reads on pool=2: two fibers both complete");
 
     static const char DATA_A[] = "p10_14_read_a_payload";
     static const char DATA_B[] = "p10_14_read_b_payload";
@@ -713,7 +890,7 @@ done:;
 }
 
 /* =========================================================================
- * P10.15 8 concurrent getaddrinfo calls on pool=4
+ * P10.17 8 concurrent getaddrinfo calls on pool=4
  * ====================================================================== */
 
 #define P10_15_WORKERS 4
@@ -725,7 +902,7 @@ typedef struct {
     _Atomic int* success;
 } p10_15_arg_t;
 
-static void fiber_p10_15_worker(void* arg)
+static void fiber_p10_16_worker(void* arg)
 {
     p10_15_arg_t* a = (p10_15_arg_t*)arg;
 
@@ -746,9 +923,9 @@ static void fiber_p10_15_worker(void* arg)
         goc_put(a->done, goc_box_int(1));
 }
 
-static void test_p10_15(void)
+static void test_p10_17(void)
 {
-    TEST_BEGIN("P10.15 pool=4, 8 concurrent getaddrinfo calls all complete");
+    TEST_BEGIN("P10.17 pool=4, 8 concurrent getaddrinfo calls all complete");
 
     goc_pool* pool = goc_pool_make(P10_15_WORKERS);
     ASSERT(pool != NULL);
@@ -765,7 +942,7 @@ static void test_p10_15(void)
     };
 
     for (int i = 0; i < P10_15_CALLS; i++)
-        goc_go_on(pool, fiber_p10_15_worker, &arg);
+        goc_go_on(pool, fiber_p10_16_worker, &arg);
 
     goc_val_t* vd = goc_take_sync(done);
     ASSERT(vd && goc_unbox_int(vd->val) == 1);
@@ -780,7 +957,7 @@ done:;
 }
 
 /* =========================================================================
- * P10.16 Two fibers on different workers create timeouts; relative order
+ * P10.18 Two fibers on different workers create timeouts; relative order
  * ====================================================================== */
 
 typedef struct {
@@ -814,9 +991,9 @@ static void fiber_p10_16_timeout_worker(void* arg)
     goc_put(a->done, goc_box_int(ok));
 }
 
-static void test_p10_16(void)
+static void test_p10_18(void)
 {
-    TEST_BEGIN("P10.16 pool=2 timeout relative order: shorter fires first");
+    TEST_BEGIN("P10.18 pool=2 timeout relative order: shorter fires first");
 
     goc_pool* pool = goc_pool_make(2);
     ASSERT(pool != NULL);
@@ -882,6 +1059,559 @@ static void test_p10_16(void)
 done:;
 }
 
+/* ======================================================================================
+ * P10.19 goc_io_read_start + goc_io_read_stop: read stop closes the channel with EOF
+ * =================================================================================== */
+
+static void fiber_p10_19(void* arg)
+{
+    goc_chan* res_ch = arg;
+    int ok = 0;
+    int port = next_port();
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* client = NULL;
+    uv_tcp_t* peer = NULL;
+    goc_chan* accept_ch = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* rd = NULL;
+    goc_chan* timeout_ch = NULL;
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+        goto done;
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    if (goc_unbox_int(
+            goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
+        goto done;
+
+    ready = goc_chan_make(1);
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take(ready);
+    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+        goto done;
+    goc_close(ready);
+
+    client = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+        goto done;
+
+    goc_val_t* vconn = goc_take(goc_io_tcp_connect(
+        client, (const struct sockaddr*)&addr));
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+        goto done;
+
+    goc_val_t* vacc = goc_take(accept_ch);
+    if (!vacc || vacc->ok != GOC_OK)
+        goto done;
+    peer = (uv_tcp_t*)vacc->val;
+
+    rd = goc_io_read_start((uv_stream_t*)client);
+    goc_io_read_stop((uv_stream_t*)client);
+
+    timeout_ch = goc_timeout(1000);
+    goc_alt_op_t ops[2] = {
+        { .ch = rd,        .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+        { .ch = timeout_ch, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+    };
+    goc_alts_result_t* res = goc_alts(ops, 2);
+    if (!res || res->ch != rd)
+        goto done;
+    if (!res->value.ok)
+        goto done;
+    goc_io_read_t* r = (goc_io_read_t*)res->value.val;
+    if (!r || r->nread != UV_EOF)
+        goto done;
+
+    ok = 1;
+
+done:
+    if (timeout_ch)
+        goc_close(timeout_ch);
+    if (rd)
+        goc_close(rd);
+    if (peer)
+        goc_io_handle_close((uv_handle_t*)peer);
+    if (accept_ch)
+        goc_close(accept_ch);
+    if (server)
+        goc_io_handle_close((uv_handle_t*)server);
+    if (client)
+        goc_io_handle_close((uv_handle_t*)client);
+    goc_put(res_ch, goc_box_int(ok));
+}
+
+static void test_p10_19(void)
+{
+    TEST_BEGIN("P10.19 goc_io_read_start + goc_io_read_stop: read stop closes the channel with EOF");
+    goc_chan* res_ch = goc_chan_make(1);
+    goc_go(fiber_p10_19, res_ch);
+    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    TEST_PASS();
+done:;
+}
+
+
+/* ======================================================================================
+ * P10.20 goc_io_read_start + goc_io_read_stop: active read stops and closes cleanly
+ * =================================================================================== */
+
+static void fiber_p10_20(void* arg)
+{
+    goc_chan* res_ch = arg;
+    int ok = 0;
+    int port = next_port();
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* client = NULL;
+    uv_tcp_t* peer = NULL;
+    goc_chan* accept_ch = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* rd = NULL;
+    goc_chan* timeout_ch = NULL;
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+        goto done;
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    if (goc_unbox_int(
+            goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
+        goto done;
+
+    ready = goc_chan_make(1);
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take(ready);
+    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+        goto done;
+    goc_close(ready);
+
+    client = goc_malloc(sizeof(uv_tcp_t));
+    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+        goto done;
+    if (goc_unbox_int(
+            goc_take(goc_io_tcp_connect(client, (const struct sockaddr*)&addr))->val) != 0)
+        goto done;
+
+    goc_val_t* vacc = goc_take(accept_ch);
+    if (!vacc || vacc->ok != GOC_OK)
+        goto done;
+    peer = (uv_tcp_t*)vacc->val;
+
+    rd = goc_io_read_start((uv_stream_t*)client);
+
+    uv_buf_t buf = uv_buf_init("x", 1);
+    if (goc_unbox_int(goc_take(goc_io_write((uv_stream_t*)peer, &buf, 1))->val) != 0)
+        goto done;
+    goc_io_handle_close((uv_handle_t*)peer);
+
+    goc_val_t* v = goc_take(rd);
+    if (!v || v->ok != GOC_OK)
+        goto done;
+
+    goc_io_read_stop((uv_stream_t*)client);
+    goc_close(rd);
+
+    timeout_ch = goc_timeout(1000);
+    for (;;) {
+        goc_alt_op_t ops[2] = {
+            { .ch = rd, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+            { .ch = timeout_ch, .op_kind = GOC_ALT_TAKE, .put_val = NULL },
+        };
+        goc_alts_result_t* res = goc_alts(ops, 2);
+        if (!res)
+            goto done;
+        if (res->ch == timeout_ch)
+            goto done;
+        if (!res->value.ok)
+            break;
+    }
+
+    ok = 1;
+
+done:
+    if (timeout_ch)
+        goc_close(timeout_ch);
+    if (rd)
+        goc_close(rd);
+    if (peer)
+        goc_io_handle_close((uv_handle_t*)peer);
+    if (accept_ch)
+        goc_close(accept_ch);
+    if (server)
+        goc_io_handle_close((uv_handle_t*)server);
+    if (client)
+        goc_io_handle_close((uv_handle_t*)client);
+    goc_put(res_ch, goc_box_int(ok));
+}
+
+static void test_p10_20(void)
+{
+    TEST_BEGIN("P10.20 goc_io_read_start + goc_io_read_stop: active read stops and closes cleanly");
+    goc_chan* res_ch = goc_chan_make(1);
+    goc_go(fiber_p10_20, res_ch);
+    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    TEST_PASS();
+done:;
+}
+
+/* ======================================================================================
+ * P10.21a goc_io_handle_close: handle->data is cleared when closing a GC-managed handle
+ * =================================================================================== */
+
+static void test_p10_21a(void)
+{
+    TEST_BEGIN("P10.21a goc_io_handle_close: handle->data is cleared when closing a GC-managed handle");
+
+    uv_tcp_t* tcp = NULL;
+    goc_chan* close_ch = NULL;
+
+    tcp = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(tcp))->val) == 0);
+
+    tcp->data = (void*)(uintptr_t)0xDEADBEAD;
+    goc_io_handle_close((uv_handle_t*)tcp);
+
+    TEST_PASS();
+done:;
+}
+
+/* ============================================================================================
+ * P10.21b goc_io_handle + goc_io_handle_close: wrapper close state and callback
+ * ========================================================================================= */
+
+static void test_p10_21b(void)
+{
+    TEST_BEGIN("P10.21b goc_io_handle + goc_io_handle_close: wrapper close state and callback");
+
+    uv_tcp_t* tcp_handle = NULL;
+    goc_io_handle_t* wrapped = NULL;
+
+    tcp_handle = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(tcp_handle != NULL);
+
+    goc_val_t* v = goc_take_sync(goc_io_tcp_init(tcp_handle));
+    ASSERT(v != NULL && v->ok == GOC_OK);
+    int rc = goc_unbox_int(v->val);
+    ASSERT(rc == 0);
+
+    wrapped = tcp_handle->data;
+    ASSERT(goc_io_handle_is_open(wrapped));
+
+    goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp_handle));
+    ASSERT(!goc_io_handle_is_open(wrapped));
+    GOC_DBG("[P10.21b] First close completed, handle is closed.\n");
+
+    /* Second close must be ignored and should not crash. */
+    GOC_DBG("[P10.21b] Attempting 10 more closes...\n");
+    for (int i = 1; i <= 10; i++) {
+        goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp_handle));
+        GOC_DBG("[P10.21b] Close completed: %d\n", i);
+    }
+
+    TEST_PASS();
+done:;
+    goc_io_handle_close((uv_handle_t*)tcp_handle);
+}
+
+/* ============================================================================================
+ * P10.21c cross-worker goc_io_read_start cancellation: repeated read start + stop does not
+ * corrupt pending state
+ * ========================================================================================= */
+
+ typedef struct {
+    goc_chan* done;
+    uv_tcp_t* client;
+    int port;
+    int ok;
+} p10_21c_init_arg_t;
+
+static void fiber_p10_21c_client_init(void* arg)
+{
+    p10_21c_init_arg_t* a = (p10_21c_init_arg_t*)arg;
+    a->client = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(a->client != NULL);
+
+    ASSERT(goc_unbox_int(goc_take(goc_io_tcp_init(a->client))->val) == 0);
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", a->port, &addr);
+    goc_val_t* vconn = goc_take(
+        goc_io_tcp_connect(
+            a->client, 
+            (const struct sockaddr*)&addr));
+    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox_int(vconn->val) == 0);
+
+done:
+    goc_put(a->done, goc_box_int(a->ok));
+}
+
+static void test_p10_21c(void)
+{
+    TEST_BEGIN("P10.21c cross-worker read-start cancellation does not corrupt pending state");
+
+    int port = next_port();
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* peer = NULL;
+    goc_pool* pool = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* accept_ch = NULL;
+    p10_21c_init_arg_t arg = { 0 };
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(server != NULL);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(server))->val) == 0);
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
+
+    ready = goc_chan_make(1);
+    goc_chan_set_debug_tag(ready, "P10_21c_ready_ch");
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take_sync(ready);
+    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox_int(vready->val) == 0);
+    goc_close(ready);
+    ready = NULL;
+
+    pool = goc_pool_make(2);
+    ASSERT(pool != NULL);
+
+    goc_chan* init_done = goc_chan_make(1);
+    goc_chan_set_debug_tag(init_done, "P10_21c_init_done_ch");
+    arg.done = init_done;
+    arg.port = port;
+    arg.ok = 0;
+    goc_go_on(pool, fiber_p10_21c_client_init, &arg);
+    goc_val_t* vinit = goc_take_sync(arg.done);
+    ASSERT(vinit != NULL && goc_unbox_int(vinit->val) == 0);
+
+    uv_tcp_t* client = arg.client;
+    goc_val_t* vacc = goc_take_sync(accept_ch);
+    ASSERT(vacc != NULL && vacc->ok == GOC_OK);
+    peer = (uv_tcp_t*)vacc->val;
+
+    for (int i = 0; i < 200; i++) {
+        goc_chan* rd = goc_io_read_start((uv_stream_t*)client);
+        goc_io_read_stop((uv_stream_t*)client);
+
+        for (;;) {
+            goc_val_t* v = goc_take_sync(rd);
+            if (!v || v->ok != GOC_OK)
+                break;
+        }
+    }
+
+    TEST_PASS();
+done:
+    if (peer)
+        goc_io_handle_close((uv_handle_t*)peer);
+    if (arg.client)
+        goc_io_handle_close((uv_handle_t*)arg.client);
+    if (server)
+        goc_io_handle_close((uv_handle_t*)server);
+    if (pool)
+        goc_pool_destroy(pool);
+    if (init_done)
+        goc_close(init_done);
+    if (ready)
+        goc_close(ready);
+}
+
+/* ============================================================================
+ * P10.21d cross-worker goc_io_handle_close: closing a wrapper handle
+ * from a different worker completes cleanly
+ * ========================================================================= */
+
+typedef struct {
+    goc_chan* result_ch;
+    uv_tcp_t* tcp;
+} p10_21d_init_arg_t;
+
+static void fiber_p10_21d_init(void* arg)
+{
+    p10_21d_init_arg_t* a = (p10_21d_init_arg_t*)arg;
+    a->tcp = goc_malloc(sizeof(uv_tcp_t));
+    if (!a->tcp) {
+        goc_put(a->result_ch, goc_box_uint(0));
+        return;
+    }
+
+    goc_val_t* v = goc_take(goc_io_tcp_init(a->tcp));
+    if (!v || v->ok != GOC_OK || goc_unbox_int(v->val) != 0) {
+        goc_put(a->result_ch, goc_box_uint(0));
+        return;
+    }
+    goc_put(a->result_ch, a->tcp);
+}
+
+static void test_p10_21d(void)
+{
+    TEST_BEGIN("P10.21d cross-loop goc_io_handle_close on a worker-owned wrapper handle");
+
+    goc_pool* pool = goc_pool_make(1);
+    ASSERT(pool != NULL);
+
+    goc_chan* result_ch = goc_chan_make(1);
+    p10_21d_init_arg_t arg = { .result_ch = result_ch, .tcp = NULL };
+    goc_go_on(pool, fiber_p10_21d_init, &arg);
+
+    goc_val_t* v = goc_take_sync(result_ch);
+    ASSERT(v && v->ok == GOC_OK);
+
+    uv_tcp_t* tcp = (uv_tcp_t*)goc_unbox_uint(v->val);
+    ASSERT(tcp != NULL);
+
+    goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp));
+
+    TEST_PASS();
+done:
+    if (tcp)
+        goc_io_handle_close((uv_handle_t*)tcp);
+    if (result_ch)
+        goc_close(result_ch);
+    if (pool)
+        goc_pool_destroy(pool);
+}
+
+/* =====================================================================================
+ * P10.21e goc_io_handle_close: repeated close calls on a wrapper handle are ignored
+ * ================================================================================== */
+
+static void test_p10_21e(void)
+{
+    TEST_BEGIN("P10.21e repeated goc_io_handle_close calls on a wrapper handle are ignored");
+
+    uv_tcp_t* tcp_handle = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(tcp_handle != NULL);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(tcp_handle))->val) == 0);
+
+    goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp_handle));
+    for (int i = 0; i < 10; i++) {
+        goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp_handle));
+    }
+
+    TEST_PASS();
+done:
+    if (tcp_handle)
+        goc_io_handle_close((uv_handle_t*)tcp_handle);
+}
+
+/* ==========================================================================
+ * P10.21f cross-worker uv_async_t close: closing a raw uv_async_t from a 
+ * different worker does not crash
+ * ======================================================================= */
+
+typedef struct {
+    goc_chan* result_ch;
+    uv_async_t* async;
+} p10_21f_init_arg_t;
+
+static void fiber_p10_21f_init(void* arg)
+{
+    p10_21f_init_arg_t* a = (p10_21f_init_arg_t*)arg;
+    a->async = goc_malloc(sizeof(uv_async_t));
+    if (!a->async) {
+        goc_put(a->result_ch, goc_box_uint(0));
+        return;
+    }
+
+    int rc = uv_async_init(goc_scheduler(), a->async, NULL);
+    if (rc != 0) {
+        goc_put(a->result_ch, goc_box_uint(0));
+        return;
+    }
+    goc_put(a->result_ch, goc_box_uint((uintptr_t)a->async));
+}
+
+static void test_p10_21f(void)
+{
+    TEST_BEGIN("P10.21f raw uv_async_t close from a different worker does not crash");
+
+    goc_pool* pool = goc_pool_make(1);
+    ASSERT(pool != NULL);
+
+    goc_chan* result_ch = goc_chan_make(1);
+    p10_21f_init_arg_t arg = { .result_ch = result_ch, .async = NULL };
+    goc_go_on(pool, fiber_p10_21f_init, &arg);
+
+    goc_val_t* v = goc_take_sync(result_ch);
+    ASSERT(v && v->ok == GOC_OK);
+
+    uv_async_t* async_handle = (uv_async_t*)(uintptr_t)goc_unbox_uint(v->val);
+    ASSERT(async_handle != NULL);
+
+    goc_take_sync(goc_io_handle_close((uv_handle_t*)async_handle));
+
+    TEST_PASS();
+done:
+    if (async_handle)
+        goc_io_handle_close((uv_handle_t*)async_handle);
+    if (result_ch)
+        goc_close(result_ch);
+    if (pool)
+        goc_pool_destroy(pool);
+}
+
+/* =================================================================================================
+ * P10.22 dropped accepted connection cleanup is safe: closing the accept channel while a pending
+ * connection may still be delivered must not cause a double-close of the server-side client
+ * handle.
+ * ============================================================================================== */
+
+static void test_p10_22(void)
+{
+    TEST_BEGIN("P10.22 dropped accepted connection cleanup is safe");
+
+    int port = next_port();
+    uv_tcp_t* server = NULL;
+    uv_tcp_t* client = NULL;
+    goc_chan* ready = NULL;
+    goc_chan* accept_ch = NULL;
+
+    server = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(server != NULL);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(server))->val) == 0);
+
+    struct sockaddr_in addr;
+    uv_ip4_addr("127.0.0.1", port, &addr);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
+
+    ready = goc_chan_make(1);
+    accept_ch = goc_io_tcp_server_make(server, 1, ready);
+    goc_val_t* vready = goc_take_sync(ready);
+    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox_int(vready->val) == 0);
+
+    goc_close(ready);
+    ready = NULL;
+
+    client = goc_malloc(sizeof(uv_tcp_t));
+    ASSERT(client != NULL);
+    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(client))->val) == 0);
+
+    goc_val_t* vconn = goc_take_sync(goc_io_tcp_connect(
+        client, (const struct sockaddr*)&addr));
+    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox_int(vconn->val) == 0);
+
+    /* Close the accept channel while a pending connection may still be
+     * delivered to it. The dropped accept callback must not double-close the
+     * already-closing server-side client handle. */
+    goc_close(accept_ch);
+    accept_ch = NULL;
+
+    TEST_PASS();
+done:
+    if (client)
+        goc_io_handle_close((uv_handle_t*)client);
+    if (accept_ch)
+        goc_close(accept_ch);
+    if (server)
+        goc_io_handle_close((uv_handle_t*)server);
+    if (ready)
+        goc_close(ready);
+}
+
 /* =========================================================================
  * main
  * ====================================================================== */
@@ -912,11 +1642,19 @@ int main(void)
     test_p10_14();
     test_p10_15();
     test_p10_16();
+    test_p10_17();
+    test_p10_18();
+    test_p10_19();
+    test_p10_20();
+    test_p10_21a();
+    test_p10_21b();
+    test_p10_21c();
+    test_p10_21d();
+    test_p10_21e();
+    test_p10_21f();
+    test_p10_22();
 
-    printf("\n%d/%d tests passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed)
-        printf(", %d FAILED", g_tests_failed);
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     goc_shutdown();
     return g_tests_failed ? 1 : 0;

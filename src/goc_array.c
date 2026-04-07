@@ -24,13 +24,14 @@
  * All allocations use goc_malloc / goc_realloc so the GC owns every byte.
  * No manual free() is ever required.
  *
- * See ARRAY.md for the full design rationale.
+ * See docs/ARRAY.md for the full design rationale.
  */
 
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "internal.h"
 #include "../include/goc.h"
 #include "../include/goc_array.h"
 
@@ -147,10 +148,7 @@ size_t goc_array_len(const goc_array* arr)
 void* goc_array_get(const goc_array* arr, size_t i)
 {
     if (i >= arr->len) {
-        fprintf(stderr,
-                "libgoc: goc_array_get: index %zu out of bounds (len=%zu)\n",
-                i, arr->len);
-        abort();
+        ABORT("goc_array_get: index %zu out of bounds (len=%zu)\n", i, arr->len);
     }
     return arr->data[arr->head + i];
 }
@@ -158,10 +156,7 @@ void* goc_array_get(const goc_array* arr, size_t i)
 void goc_array_set(goc_array* arr, size_t i, void* val)
 {
     if (i >= arr->len) {
-        fprintf(stderr,
-                "libgoc: goc_array_set: index %zu out of bounds (len=%zu)\n",
-                i, arr->len);
-        abort();
+        ABORT("goc_array_set: index %zu out of bounds (len=%zu)\n", i, arr->len);
     }
     arr->data[arr->head + i] = val;
 }
@@ -182,8 +177,7 @@ void goc_array_push(goc_array* arr, void* val)
 void* goc_array_pop(goc_array* arr)
 {
     if (arr->len == 0) {
-        fprintf(stderr, "libgoc: goc_array_pop: array is empty\n");
-        abort();
+        ABORT("goc_array_pop: array is empty\n");
     }
     arr->len--;
     return arr->data[arr->head + arr->len];
@@ -206,8 +200,7 @@ void goc_array_push_head(goc_array* arr, void* val)
 void* goc_array_pop_head(goc_array* arr)
 {
     if (arr->len == 0) {
-        fprintf(stderr, "libgoc: goc_array_pop_head: array is empty\n");
-        abort();
+        ABORT("goc_array_pop_head: array is empty\n");
     }
     void* val = arr->data[arr->head];
     arr->head++;
@@ -246,11 +239,7 @@ goc_array* goc_array_concat(const goc_array* a, const goc_array* b)
 goc_array* goc_array_slice(const goc_array* arr, size_t start, size_t end)
 {
     if (start > end || end > arr->len) {
-        fprintf(stderr,
-                "libgoc: goc_array_slice: invalid range [%zu, %zu) "
-                "(len=%zu)\n",
-                start, end, arr->len);
-        abort();
+        ABORT("goc_array_slice: invalid range [%zu, %zu) (len=%zu)\n", start, end, arr->len);
     }
 
     goc_array* s = (goc_array*)goc_malloc(sizeof(goc_array));

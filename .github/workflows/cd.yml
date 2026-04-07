@@ -61,16 +61,28 @@ jobs:
           path: ${{ env.BDWGC_PREFIX }}
           key: bdwgc-${{ env.BDWGC_VERSION }}-ubuntu-latest
 
-      - name: Build Boehm GC from source
-        if: steps.cache-bdwgc.outputs.cache-hit != 'true'
+      - name: Build or validate Boehm GC from source
         run: |
+          if [ -f "${{ env.BDWGC_PREFIX }}/lib/libgc.a" ]; then
+            echo "Cached Boehm GC static archive found; skipping rebuild."
+            exit 0
+          fi
+
+          echo "Cached Boehm GC is invalid or missing libgc.a; building from source."
+          rm -rf "${{ env.BDWGC_PREFIX }}"
+          mkdir -p "${{ env.BDWGC_PREFIX }}"
           wget -q https://github.com/ivmai/bdwgc/releases/download/v${{ env.BDWGC_VERSION }}/gc-${{ env.BDWGC_VERSION }}.tar.gz
           tar xf gc-${{ env.BDWGC_VERSION }}.tar.gz
           cd gc-${{ env.BDWGC_VERSION }}
           ./configure --enable-threads=posix --enable-thread-local-alloc \
-                      --enable-shared --prefix=${{ env.BDWGC_PREFIX }}
+                      --disable-shared --enable-static --prefix=${{ env.BDWGC_PREFIX }}
           make -j$(nproc)
           make install
+          if [ ! -f "${{ env.BDWGC_PREFIX }}/lib/libgc.a" ]; then
+            echo "ERROR: Boehm GC install did not produce libgc.a"
+            ls -l "${{ env.BDWGC_PREFIX }}/lib"
+            exit 1
+          fi
           cp ${{ env.BDWGC_PREFIX }}/lib/pkgconfig/bdw-gc.pc \
              ${{ env.BDWGC_PREFIX }}/lib/pkgconfig/bdw-gc-threaded.pc
 
@@ -79,12 +91,22 @@ jobs:
           echo "${{ env.BDWGC_PREFIX }}/lib" | sudo tee /etc/ld.so.conf.d/bdwgc.conf
           sudo ldconfig
 
+      - name: Verify static dependencies
+        run: |
+          pkg-config --modversion libuv
+          pkg-config --modversion bdw-gc-threaded
+          PKG_CONFIG_ALL_STATIC=1 pkg-config --static --libs libuv
+          PKG_CONFIG_ALL_STATIC=1 pkg-config --static --libs bdw-gc-threaded
+        env:
+          PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
           cmake --build build --target goc --parallel $(nproc)
         env:
           PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: 1
 
       - name: Package artifact
         run: |
@@ -112,6 +134,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Install Homebrew dependencies
         run: brew install cmake libuv bdw-gc pkg-config
 
@@ -122,10 +149,19 @@ jobs:
             cp "$GLOBAL_PKGDIR/bdw-gc.pc" "$GLOBAL_PKGDIR/bdw-gc-threaded.pc"
           fi
 
+      - name: Verify static dependencies
+        run: |
+          pkg-config --modversion libuv
+          pkg-config --modversion bdw-gc-threaded
+          PKG_CONFIG_ALL_STATIC=1 pkg-config --static --libs libuv
+          PKG_CONFIG_ALL_STATIC=1 pkg-config --static --libs bdw-gc-threaded
+
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
           cmake --build build --target goc --parallel $(sysctl -n hw.ncpu)
+        env:
+          PKG_CONFIG_ALL_STATIC: 1
 
       - name: Package artifact
         run: |
@@ -153,6 +189,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Set up MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -173,12 +214,20 @@ jobs:
             cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
           fi
 
+      - name: Verify static dependencies
+        shell: msys2 {0}
+        run: |
+          pkg-config --static --libs libuv
+          pkg-config --static --libs bdw-gc-threaded
+
       - name: Build libgoc
         shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
           cmake --build build --target goc --parallel $(nproc)
         timeout-minutes: 10
+        env:
+          PKG_CONFIG_ALL_STATIC: 1
 
       - name: Package artifact
         shell: msys2 {0}

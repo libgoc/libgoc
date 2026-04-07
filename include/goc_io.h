@@ -26,14 +26,17 @@
  * are safe to initiate from any thread; libuv routes them through its
  * internal worker-thread pool and fires the callback on the event loop.
  *
- * Stream and UDP operations (uv_write, uv_read_start, etc.) require the
- * libuv handle to be used from the event loop thread.  Stream/UDP wrappers
- * use a uv_async_t bridge so they can be called safely from fiber or
- * OS-thread context.
+ * Stream and UDP operations (uv_write, uv_read_start, etc.) must run on the
+ * loop thread that owns the handle.  All wrappers use dispatch_on_handle_loop:
+ * if the calling fiber owns the handle's loop, the operation is performed
+ * directly; otherwise it is posted to the owning loop thread.
  *
- * Handle initialisation (uv_tcp_init, uv_pipe_init, uv_udp_init, etc.) must
- * reach the event loop thread; use goc_io_tcp_init / goc_io_pipe_init /
- * goc_io_udp_init which dispatch there and register the handle automatically:
+ * Handle initialisation (uv_tcp_init, uv_pipe_init, uv_udp_init, etc.) uses a
+ * worker-affine path: when called from a pool-worker fiber, the handle is
+ * initialised directly on the calling worker's own uv_loop_t (no dispatch).
+ * When called outside a worker, or for goc_io_fs_event_init /
+ * goc_io_fs_poll_init, the global g_loop is used.  All init helpers register
+ * the handle with the GC automatically:
  *   uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
  *   int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
  *
@@ -47,6 +50,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
 #ifndef _WIN32
 #  include <netdb.h>
 #endif
@@ -317,9 +321,11 @@ goc_chan* goc_io_read_start(uv_stream_t* stream);
  * goc_io_read_stop() — Stop reading from a stream previously started with
  * goc_io_read_start().
  *
- * Dispatches uv_read_stop() to the event loop thread and closes the
- * associated read channel.  Returns 0; the actual stop happens
- * asynchronously on the event loop thread.
+ * Dispatches uv_read_stop() to the handle's owning loop thread (same-worker
+ * fast path or cross-thread post).  Before closing the read channel, delivers
+ * one final goc_io_read_t with nread == UV_EOF so the taker can distinguish a
+ * caller-initiated stop from a natural EOF.  Returns 0; the actual stop
+ * happens asynchronously.
  *
  * stream : the same handle passed to goc_io_read_start().
  *
@@ -568,7 +574,7 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags);
  *   // tcp is now initialised and registered; rc == 0 on success.
  *
  *   // ... later, to tear down:
- *   goc_io_handle_close((uv_handle_t*)tcp, NULL);  // unregisters automatically
+ *   goc_io_handle_close((uv_handle_t*)tcp);  // unregisters automatically
  *
  * If you are already on the event loop thread and do not want a channel
  * round-trip, call uv_tcp_init() directly and then goc_io_handle_register().
@@ -587,9 +593,12 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags);
  *
  * handle : GC-allocated uv_tcp_t (via goc_malloc).
  *
- * Dispatches uv_tcp_init() to the event loop thread, then registers the handle
- * with goc_io_handle_register().  Returns a channel delivering
- * (void*)(intptr_t)status; 0 on success, a negative libuv error on failure.
+ * When called from a pool-worker fiber, initialises the handle directly on the
+ * calling worker's own uv_loop_t (worker-affine, no cross-thread dispatch).
+ * When called from outside a worker fiber, dispatches to the global g_loop.
+ * Registers the handle with goc_io_handle_register() on success.
+ * Returns a channel delivering (void*)(intptr_t)status; 0 on success,
+ * a negative libuv error on failure.
  * On success the handle is initialised and pinned as a GC root; call
  * goc_io_handle_close() to tear it down.
  *
@@ -603,8 +612,9 @@ goc_chan* goc_io_tcp_init(uv_tcp_t* handle);
  * handle : GC-allocated uv_pipe_t (via goc_malloc).
  * ipc    : non-zero if this pipe will be used for handle passing.
  *
- * Dispatches uv_pipe_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
+ * Worker-affine: when called from a pool-worker fiber, initialises on the
+ * calling worker's own uv_loop_t.  Otherwise dispatches to the global g_loop.
+ * Returns a channel delivering (void*)(intptr_t)status; 0 on success,
  * a negative libuv error on failure.
  *
  * Safe to call from any context.
@@ -616,8 +626,9 @@ goc_chan* goc_io_pipe_init(uv_pipe_t* handle, int ipc);
  *
  * handle : GC-allocated uv_udp_t (via goc_malloc).
  *
- * Dispatches uv_udp_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
+ * Worker-affine: when called from a pool-worker fiber, initialises on the
+ * calling worker's own uv_loop_t.  Otherwise dispatches to the global g_loop.
+ * Returns a channel delivering (void*)(intptr_t)status; 0 on success,
  * a negative libuv error on failure.
  *
  * Safe to call from any context.
@@ -630,8 +641,9 @@ goc_chan* goc_io_udp_init(uv_udp_t* handle);
  * handle : GC-allocated uv_tty_t (via goc_malloc).
  * fd     : file descriptor for the TTY (e.g. 0=stdin, 1=stdout, 2=stderr).
  *
- * Dispatches uv_tty_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
+ * Worker-affine: when called from a pool-worker fiber, initialises on the
+ * calling worker's own uv_loop_t.  Otherwise dispatches to the global g_loop.
+ * Returns a channel delivering (void*)(intptr_t)status; 0 on success,
  * a negative libuv error on failure.
  *
  * Safe to call from any context.
@@ -643,8 +655,9 @@ goc_chan* goc_io_tty_init(uv_tty_t* handle, uv_file fd);
  *
  * handle : GC-allocated uv_signal_t (via goc_malloc).
  *
- * Dispatches uv_signal_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
+ * Worker-affine: when called from a pool-worker fiber, initialises on the
+ * calling worker's own uv_loop_t.  Otherwise dispatches to the global g_loop.
+ * Returns a channel delivering (void*)(intptr_t)status; 0 on success,
  * a negative libuv error on failure.
  *
  * Safe to call from any context.
@@ -656,9 +669,9 @@ goc_chan* goc_io_signal_init(uv_signal_t* handle);
  *
  * handle : GC-allocated uv_fs_event_t (via goc_malloc).
  *
- * Dispatches uv_fs_event_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
- * a negative libuv error on failure.
+ * Always dispatches to the global g_loop (not worker-affine), then registers
+ * the handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on
+ * success, a negative libuv error on failure.
  *
  * Safe to call from any context.
  */
@@ -669,9 +682,9 @@ goc_chan* goc_io_fs_event_init(uv_fs_event_t* handle);
  *
  * handle : GC-allocated uv_fs_poll_t (via goc_malloc).
  *
- * Dispatches uv_fs_poll_init() to the event loop thread, then registers the
- * handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on success,
- * a negative libuv error on failure.
+ * Always dispatches to the global g_loop (not worker-affine), then registers
+ * the handle.  Returns a channel delivering (void*)(intptr_t)status; 0 on
+ * success, a negative libuv error on failure.
  *
  * Safe to call from any context.
  */
@@ -728,6 +741,12 @@ goc_chan* goc_io_tcp_nodelay(uv_tcp_t* handle, int enable);
 
 /** Dispatch uv_tcp_simultaneous_accepts; delivers goc_box_int(status). */
 goc_chan* goc_io_tcp_simultaneous_accepts(uv_tcp_t* handle, int enable);
+
+/** Dispatch uv_tcp_open; delivers goc_box_int(status). */
+goc_chan* goc_io_tcp_open(uv_tcp_t* handle, uv_os_fd_t fd);
+
+/** Dispatch SO_REUSEADDR on a TCP handle; delivers goc_box_int(status). */
+goc_chan* goc_io_tcp_reuseaddr(uv_tcp_t* handle);
 
 /* =========================================================================
  * Pipe server / bind
@@ -870,7 +889,7 @@ goc_chan* goc_io_fs_statfs(const char* path);
 
 /**
  * goc_io_fs_read_file() — Read entire file; delivers goc_io_fs_read_file_t*.
- * data is a goc_array of bytes (each element is goc_box_int(byte)).
+ * data is a GC-managed null-terminated char* containing the file contents.
  */
 goc_chan* goc_io_fs_read_file(const char* path);
 
@@ -1031,8 +1050,11 @@ void goc_io_handle_unregister(uv_handle_t* handle);
  * goc_io_handle_close() — Close a GC-allocated handle and unregister it.
  *
  * Dispatches uv_close(handle, ...) to the event loop thread and automatically
- * calls goc_io_handle_unregister() once the close completes, then forwards to
- * cb (if non-NULL).
+ * calls goc_io_handle_unregister() once close completes.
+ *
+ * Returns a join channel that is closed after the handle has finished closing.
+ * This allows callers to wait for close completion instead of supplying a
+ * callback.
  *
  * Prefer this over calling uv_close() + goc_io_handle_unregister() manually.
  *
@@ -1041,7 +1063,32 @@ void goc_io_handle_unregister(uv_handle_t* handle);
  * Note: overwrites handle->data from the loop thread before calling uv_close.
  * Do not use handle->data after calling goc_io_handle_close().
  */
-void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb);
+goc_chan* goc_io_handle_close(uv_handle_t* handle);
+
+/** Handle wrapper for ownership and close-state tracking. */
+typedef enum {
+    GOC_H_OPEN,
+    GOC_H_QUEUED,
+    GOC_H_CLOSING,
+    GOC_H_CLOSED,
+} goc_io_handle_state_t;
+
+typedef struct goc_io_handle goc_io_handle_t;
+
+/** Wrap a raw uv handle for owner-safe close tracking. */
+goc_io_handle_t* goc_io_handle_wrap(uv_handle_t* uv, void* owner);
+
+/** Transfer ownership of a wrapped handle. */
+void goc_io_handle_set_owner(goc_io_handle_t* h, void* owner);
+
+/** Request a close through the wrapper. */
+void goc_io_handle_request_close(goc_io_handle_t* h, uv_close_cb cb);
+
+/** Return true if the wrapper is tracking an open handle. */
+bool goc_io_handle_is_open(goc_io_handle_t* h);
+
+/** Return true if the wrapper is owned by the provided owner. */
+bool goc_io_handle_is_owned_by(goc_io_handle_t* h, void* owner);
 
 #ifdef __cplusplus
 } /* extern "C" */

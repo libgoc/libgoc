@@ -46,6 +46,8 @@
  *         in the ring buffer and the completion callback fires with ok==GOC_OK;
  *         a subsequent goc_take_sync retrieves the correct value (exercises the
  *         buffer path, distinct from the parked-taker path in P4.3)
+ *   P4.7  goc_close while a pending goc_put_cb is in the loop queue must not
+ *         crash or double-deliver; the completion callback should fire once.
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -128,7 +130,7 @@ typedef struct {
  * Records the received value and status, then signals the main thread.
  * Must not block — runs on the libuv loop thread.
  */
-static void take_cb(void* val, goc_status_t ok, void* ud) {
+static void take_cb(goc_chan* _ch, void* val, goc_status_t ok, void* ud) {
     take_cb_result_t* r = (take_cb_result_t*)ud;
     r->val = val;
     r->ok  = ok;
@@ -250,7 +252,7 @@ typedef struct {
  * Records the delivery status, then signals the main thread.
  * Must not block — runs on the libuv loop thread.
  */
-static void put_cb(goc_status_t ok, void* ud) {
+static void put_cb(goc_chan* _ch, void* _val, goc_status_t ok, void* ud) {
     put_cb_result_t* r = (put_cb_result_t*)ud;
     r->ok = ok;
     done_signal(r->done);
@@ -442,6 +444,50 @@ static void test_p4_6(void) {
 done:;
 }
 
+/* --- P4.7: goc_close races with pending goc_put_cb --------------------- */
+
+static void test_p4_7(void) {
+    TEST_BEGIN("P4.7  goc_close while goc_put_cb is pending must not crash");
+
+    for (int i = 0; i < 100; i++) {
+        goc_chan* ch = goc_chan_make(0);
+        ASSERT(ch != NULL);
+
+        done_t done;
+        done_init(&done);
+
+        put_cb_result_t result = { .ok = GOC_EMPTY, .done = &done };
+        goc_put_cb(ch, goc_box_uint(77), put_cb, &result);
+        goc_close(ch);
+
+        done_wait(&done);
+        ASSERT(result.ok == GOC_CLOSED);
+
+        done_destroy(&done);
+    }
+
+    for (int i = 0; i < 100; i++) {
+        goc_chan* ch = goc_chan_make(0);
+        ASSERT(ch != NULL);
+
+        done_t done;
+        done_init(&done);
+
+        take_cb_result_t result = { .val = NULL, .ok = GOC_EMPTY, .done = &done };
+        goc_take_cb(ch, take_cb, &result);
+        goc_close(ch);
+
+        done_wait(&done);
+        ASSERT(result.ok == GOC_CLOSED);
+        ASSERT(result.val == NULL);
+
+        done_destroy(&done);
+    }
+
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -465,16 +511,12 @@ int main(void) {
     test_p4_4();
     test_p4_5();
     test_p4_6();
+    test_p4_7();
     printf("\n");
 
     goc_shutdown();
 
-    printf("=========================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

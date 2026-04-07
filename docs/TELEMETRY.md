@@ -62,6 +62,8 @@
 | `steal_attempts`   | `uint64_t` | Lifetime steal attempts for this worker (only meaningful at `STOPPED`) |
 | `steal_successes`  | `uint64_t` | Lifetime steal successes for this worker (only meaningful at `STOPPED`) |
 
+> **Note:** `steal_misses` and `idle_wakeups` are **not** included in the per-event struct. Use `goc_pool_get_steal_stats()` to read aggregate lifetime totals across all workers.
+
 | `goc_stats_worker_status_t` | Value | Meaning                       |
 |---------------------------|-------|-------------------------------|
 | `GOC_WORKER_CREATED`      | `0`   | Thread started                |

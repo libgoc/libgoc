@@ -1,5 +1,38 @@
 /*
  * tests/test_p9_mutexes.c — Phase 9: RW mutex tests for libgoc
+ *
+ * Verifies the channel-backed reader/writer mutex API: goc_mutex_make(),
+ * goc_read_lock(), and goc_write_lock().  Tests cover acquisition from both
+ * OS-thread and fiber contexts, exclusion invariants, and queued-waiter
+ * ordering.
+ *
+ * Build:  cmake -B build && cmake --build build
+ * Run:    ctest --test-dir build --output-on-failure
+ *         ./build/test_p9_mutexes
+ *
+ * Compile requirements: -std=c11 -DGC_THREADS -D_GNU_SOURCE
+ *
+ * Dependencies:
+ *   - libgoc (goc.h)  — runtime under test
+ *   - libuv           — mutex + condvar for done_t; event loop for fibers
+ *
+ * Test coverage (Phase 9 — RW mutexes):
+ *
+ *   P9.1  Read lock acquired and released from an OS thread; no hang
+ *   P9.2  Multiple readers acquire concurrently; all succeed without blocking
+ *         each other
+ *   P9.3  Writer blocks until an active reader releases; then acquires and
+ *         releases cleanly
+ *   P9.4  Queued writer blocks subsequent readers: a new reader arriving while
+ *         a writer is waiting must not jump the queue ahead of the writer
+ *   P9.5  Fiber parks on a read lock held by a writer; the fiber unblocks once
+ *         the writer releases the lock
+ *
+ * Notes:
+ *   - goc_init() is called once in main() before any test runs.
+ *   - goc_shutdown() is called once in main() after all tests complete.
+ *   - The test harness uses the same goto-based cleanup pattern as earlier
+ *     phases; see test_harness.h for details.
  */
 
 #include <stddef.h>
@@ -276,11 +309,7 @@ int main(void)
 
     goc_shutdown();
 
-    printf("=========================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0)
-        printf(", %d FAILED", g_tests_failed);
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

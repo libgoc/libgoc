@@ -28,9 +28,13 @@
  *   S3.1  Channel open/close events via API
  *   S3.2  Buffered channel: buf_size and item_count after put/take
  *   S3.3  Multiple fibers and channels: all events unique and present
+ *   S3.4  close event carries non-zero taker_scans/putter_scans
+ *   S3.5  close event carries non-zero compaction_runs/entries_removed
  *   S4.1  goc_stats_shutdown() disables stats delivery
  *   S5.1  Worker STOPPED event carries valid steal_attempts/steal_successes
  *   S6.1  goc_cb_queue_get_hwm() reflects peak callback-queue depth
+ *   S6.2  goc_timeout_get_stats tracks allocations and expirations
+ *   S6.3  goc_pool_get_steal_stats returns non-decreasing totals
  *   S6.4  steal counters readable; misses<=attempts invariant holds (no-work pool)
  *   S6.5  idle_wakeups increments after external injection (pool=2, 1 fiber)
  *   S6.6  goc_pool_get_steal_stats extended signature returns valid values
@@ -545,7 +549,7 @@ static void test_s3_4(void) {
     drain_pending_events();
     
     goc_chan* join = goc_go(s3_4_fiber, ch);
-    goc_nanosleep(1000000); // 1ms to ensure fiber parks
+    goc_nanosleep(10000000); // 10ms to ensure fiber parks
     goc_close(ch); // triggers close event
     goc_take_sync(join); // cleanup
     
@@ -687,8 +691,7 @@ typedef struct {
     uv_cond_t   cond;
 } s6_1_state_t;
 
-static void s6_1_take_cb(void* val, goc_status_t ok, void* vud) {
-    (void)val; (void)ok;
+static void s6_1_take_cb(goc_chan* _ch, void* _val, goc_status_t ok, void* vud) {
     s6_1_state_t* s = vud;
     uv_mutex_lock(&s->mtx);
     if (atomic_fetch_sub_explicit(&s->rem, 1, memory_order_relaxed) == 1)
@@ -951,11 +954,7 @@ int main(void) {
     uv_cond_destroy(&g_event_cond);
     uv_mutex_destroy(&g_event_mutex);
 
-    printf("=======================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0)
-        printf(", %d FAILED", g_tests_failed);
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

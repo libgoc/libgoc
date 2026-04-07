@@ -24,9 +24,9 @@ Benchmarks
 	  measuring sustained requests/second under load.
 
 Usage:
-  go run .                    # single run (current GOMAXPROCS)
+  go run .                    # single run
   GOMAXPROCS=4 go run .       # single run with explicit parallelism
-  make run-all                # run with GOMAXPROCS = 1, 2, 4, 8
+  make run all=1              # run with GOMAXPROCS = 1, 2, 4, 8
 */
 package main
 

@@ -65,6 +65,8 @@ typedef struct goc_stats_event {
             int      pending_jobs;
             uint64_t steal_attempts;   /* lifetime steal attempts (only meaningful at STOPPED) */
             uint64_t steal_successes;  /* lifetime steal successes (only meaningful at STOPPED) */
+            /* steal_misses and idle_wakeups are NOT in the per-event struct;
+             * use goc_pool_get_steal_stats() to read aggregate lifetime totals. */
         } worker;
         struct { int id; int last_worker_id; int last_pool_id; int status; } fiber;
         struct {

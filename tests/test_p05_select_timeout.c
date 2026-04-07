@@ -47,6 +47,9 @@
  *   P5.11  goc_alts_sync blocks OS thread on take arm until a fiber sends a value
  *   P5.12  goc_alts_sync blocks OS thread on put arm until a fiber takes the value
  *   P5.13  goc_timeout closes its channel after the deadline, not before
+ *   P5.14  goc_timeout channel closes at the correct time (deadline accuracy)
+ *   P5.15  alts close event: taker_scans >= 1 after parked take arm
+ *   P5.16  channel close event carries taker_scans >= 1 after alts park
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -219,7 +222,7 @@ static void test_p5_2_taker_fn(void* arg) {
 static void test_p5_2_fiber_fn(void* arg) {
     p5_2_args_t* a = (p5_2_args_t*)arg;
     goc_alt_op_t ops[] = {
-        { .ch = a->put_ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xBEEF) },
+        { .ch = a->put_ch, .op_kind = GOC_ALT_PUT, .put_val = goc_box_uint(0xBEAD) },
     };
     a->result = goc_alts(ops, 1);
     done_signal(a->done);
@@ -1152,12 +1155,7 @@ int main(void) {
     goc_stats_shutdown();
     goc_shutdown();
 
-    printf("=================================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

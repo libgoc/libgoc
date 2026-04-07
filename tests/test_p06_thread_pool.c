@@ -109,6 +109,8 @@
  *   P6.34  no steal attempts at pool=1 (steal phase skipped when thread_count==1)
  *   P6.35  goc_pool_make(2) + goc_pool_destroy() without fibers; clean worker-loop teardown
  *   P6.36  post one fiber to idle 2-worker pool; idle_wakeups increases (uv_async wake path)
+ *   P6.37  goc_pool_destroy waits for all live fibers to complete, including
+ *          ones blocked on unbuffered channel rendezvous (1000 putter fibers)
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -1655,6 +1657,81 @@ done:;
     done_destroy(&done);
 }
 
+/* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
+/*
+ * Bug being tested (gc.c goc_fiber_root_register):
+ *   Before the fix, the fiber root bitmap bit was set FIRST (under the mutex),
+ *   then slot data (entry pointer, stack_top, scan_from) was written AFTER.
+ *   push_fiber_roots runs without the mutex during BDW-GC stop-the-world.
+ *   If GC stopped the world between the bit-set and the data-write,
+ *   push_fiber_roots would see the bit set and read STALE slot data from the
+ *   previous occupant of that slot — a fiber whose mco_coro stack was already
+ *   freed by mco_destroy.  GC_push_all_eager on freed memory corrupts the GC
+ *   heap, causing later GC operations or allocations to SIGABRT.
+ *
+ * Fix: write slot data first, then atomic_thread_fence(release), then set bit.
+ *   Any observer that sees the bit set is guaranteed to see correct slot data.
+ *
+ * Test strategy:
+ *   Spawn N_WAVES waves of N_PER_WAVE short-lived fibers.  Each fiber calls
+ *   GC_malloc to allocate a small object (forcing BDW-GC to run collection
+ *   cycles frequently).  The fibers complete immediately, causing rapid slot
+ *   reuse in the bitmap.  The combination of high slot-reuse rate and frequent
+ *   GC cycles maximises the probability of hitting the write-ordering window.
+ *   Without the fix, this reliably produces a SIGABRT from GC heap corruption
+ *   (observed via the crash handler installed in main()).
+ *   With the fix, all fibers complete and the test passes.
+ */
+#define P6_23_WORKERS   4
+#define P6_23_WAVES     20
+#define P6_23_PER_WAVE  50
+
+typedef struct {
+    done_t*      done;
+    _Atomic int* completed;
+    int          total;
+} p6_23_arg_t;
+
+static void p6_23_fiber_fn(void* arg) {
+    p6_23_arg_t* a = (p6_23_arg_t*)arg;
+    /* Allocate on the GC heap to pressure BDW-GC into running collections.
+     * The allocation is intentionally kept alive briefly via a volatile read
+     * so the compiler cannot elide it. */
+    volatile char* gc_buf = (volatile char*)goc_malloc(256);
+    (void)*gc_buf;
+    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
+            == a->total)
+        done_signal(a->done);
+}
+
+static void test_p6_23(void) {
+    TEST_BEGIN("P6.23  GC bitmap write-ordering: slot reuse under concurrent GC");
+
+    done_t done;
+    done_init(&done);
+
+    goc_pool* pool = goc_pool_make(P6_23_WORKERS);
+    ASSERT(pool != NULL);
+
+    _Atomic int completed = 0;
+    p6_23_arg_t args = { &done, &completed, P6_23_PER_WAVE };
+
+    for (int w = 0; w < P6_23_WAVES; w++) {
+        atomic_store_explicit(&completed, 0, memory_order_relaxed);
+
+        for (int i = 0; i < P6_23_PER_WAVE; i++)
+            goc_go_on(pool, p6_23_fiber_fn, &args);
+
+        bool ok = done_wait_timeout(&done, 3000);
+        ASSERT(ok);
+    }
+
+    goc_pool_destroy(pool);
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * P6.24 / P6.25 — steal telemetry tests (GOC_ENABLE_STATS only)
  * ====================================================================== */
@@ -1855,7 +1932,9 @@ done:;
  * once to done_ch so the parent collects all completions and exits cleanly.
  * After the pool drains, steal_successes delta must be > 0.
  */
-#define P6_28_NCHILDREN  300   /* > q-cap/2 = 256, ensures depth check fires */
+#define P6_28_NCHILDREN      300   /* > q-cap/2 = 256, ensures depth check fires */
+#define P6_28_CHILD_DELAY_MS  100   /* longer delay for Windows/Ubuntu scheduling jitter */
+#define P6_28_STEAL_WINDOW_MS 50    /* yield time to let idle workers steal before parent drains completions */
 
 typedef struct {
     goc_pool* pool;
@@ -1864,6 +1943,10 @@ typedef struct {
 
 static void p6_28_child_fn(void* arg) {
     goc_chan* done_ch = (goc_chan*)arg;
+    /* Sleep long enough for idle workers to reliably wake and steal the
+     * backlog of 300 children off the owner's deque. Windows timer and
+     * scheduler jitter make a 10ms delay too fragile in CI. */
+    goc_take(goc_timeout(P6_28_CHILD_DELAY_MS));
     goc_put(done_ch, NULL);
 }
 
@@ -1872,10 +1955,32 @@ static void p6_28_fanout_fn(void* arg) {
     /* Push all children onto this worker's deque without yielding. */
     for (int i = 0; i < P6_28_NCHILDREN; i++)
         goc_go_on(a->pool, p6_28_child_fn, a->done_ch);
-    /* Park: depth = P6_28_NCHILDREN > 256 → post-yield check fires,
-     * idle workers wake and steal children off the deque. */
+    /* Park briefly: let idle workers wake and steal before the parent begins
+     * draining the completion channel. */
+    goc_take(goc_timeout(P6_28_STEAL_WINDOW_MS));
     for (int i = 0; i < P6_28_NCHILDREN; i++)
         goc_take(a->done_ch);
+}
+
+static void p6_28_dump_steal_stats(const char* label,
+                                   uint64_t att0,
+                                   uint64_t suc0,
+                                   uint64_t mis0,
+                                   uint64_t wak0)
+{
+    uint64_t att1, suc1, mis1, wak1;
+    goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
+    printf("    [P6.28 DIAG] %s\n", label);
+    printf("    [P6.28 DIAG]   before: attempts=%llu successes=%llu misses=%llu wakeups=%llu\n",
+           (unsigned long long)att0,
+           (unsigned long long)suc0,
+           (unsigned long long)mis0,
+           (unsigned long long)wak0);
+    printf("    [P6.28 DIAG]   after:  attempts=%llu successes=%llu misses=%llu wakeups=%llu\n",
+           (unsigned long long)att1,
+           (unsigned long long)suc1,
+           (unsigned long long)mis1,
+           (unsigned long long)wak1);
 }
 
 static void test_p6_28(void) {
@@ -2100,7 +2205,7 @@ done:;
  * children are still in the deque (unbuffered, unrun) when round-2 pushes
  * another P6_33_NCHILDREN items — total would exceed q-cap (512).
  */
-#define P6_33_NCHILDREN  300
+#define P6_33_NCHILDREN  1000
 
 typedef struct {
     goc_pool* pool;
@@ -2108,6 +2213,8 @@ typedef struct {
 } p6_33_fanout_args_t;
 
 static void p6_33_child_fn(void* arg) {
+    volatile int x = 0;
+    for (int i = 0; i < 1000; i++) x++;
     goc_put((goc_chan*)arg, NULL);
 }
 
@@ -2152,7 +2259,7 @@ static void test_p6_33(void) {
 
     uint64_t att1, suc1, mis1, wak1;
     goc_pool_get_steal_stats(&att1, &suc1, &mis1, &wak1);
-    ASSERT((suc1 - suc0) > 0);
+    ASSERT((suc1 - suc0) >= P6_33_NCHILDREN / 4);
 
     TEST_PASS();
 done:;
@@ -2248,77 +2355,39 @@ static void test_p6_36(void) {
 done:;
 }
 
-/* ---- P6.23: GC bitmap write-ordering: slot data visible before bit ---- */
-/*
- * Bug being tested (gc.c goc_fiber_root_register):
- *   Before the fix, the fiber root bitmap bit was set FIRST (under the mutex),
- *   then slot data (entry pointer, stack_top, scan_from) was written AFTER.
- *   push_fiber_roots runs without the mutex during BDW-GC stop-the-world.
- *   If GC stopped the world between the bit-set and the data-write,
- *   push_fiber_roots would see the bit set and read STALE slot data from the
- *   previous occupant of that slot — a fiber whose mco_coro stack was already
- *   freed by mco_destroy.  GC_push_all_eager on freed memory corrupts the GC
- *   heap, causing later GC operations or allocations to SIGABRT.
- *
- * Fix: write slot data first, then atomic_thread_fence(release), then set bit.
- *   Any observer that sees the bit set is guaranteed to see correct slot data.
- *
- * Test strategy:
- *   Spawn N_WAVES waves of N_PER_WAVE short-lived fibers.  Each fiber calls
- *   GC_malloc to allocate a small object (forcing BDW-GC to run collection
- *   cycles frequently).  The fibers complete immediately, causing rapid slot
- *   reuse in the bitmap.  The combination of high slot-reuse rate and frequent
- *   GC cycles maximises the probability of hitting the write-ordering window.
- *   Without the fix, this reliably produces a SIGABRT from GC heap corruption
- *   (observed via the crash handler installed in main()).
- *   With the fix, all fibers complete and the test passes.
+/* ---- P6.37: goc_pool_destroy waits for live fibers posting to an unbuffered channel ----
  */
-#define P6_23_WORKERS   4
-#define P6_23_WAVES     20
-#define P6_23_PER_WAVE  50
 
-typedef struct {
-    done_t*      done;
-    _Atomic int* completed;
-    int          total;
-} p6_23_arg_t;
+#define P6_37_FIBERS 1000
 
-static void p6_23_fiber_fn(void* arg) {
-    p6_23_arg_t* a = (p6_23_arg_t*)arg;
-    /* Allocate on the GC heap to pressure BDW-GC into running collections.
-     * The allocation is intentionally kept alive briefly via a volatile read
-     * so the compiler cannot elide it. */
-    volatile char* gc_buf = (volatile char*)goc_malloc(256);
-    (void)*gc_buf;
-    if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1
-            == a->total)
-        done_signal(a->done);
+static void p6_37_receiver_fn(void* arg) {
+    goc_chan* ch = arg;
+    for (int i = 0; i < P6_37_FIBERS; i++) {
+        goc_val_t* v = goc_take(ch);
+        ASSERT(v->ok == GOC_OK);
+    }
+done:;
 }
 
-static void test_p6_23(void) {
-    TEST_BEGIN("P6.23  GC bitmap write-ordering: slot reuse under concurrent GC");
+static void p6_37_putter_fn(void* arg) {
+    goc_chan* ch = arg;
+    goc_put(ch, NULL);
+}
 
-    done_t done;
-    done_init(&done);
+static void test_p6_37(void) {
+    TEST_BEGIN("P6.37  goc_pool_destroy waits for live fibers to complete");
 
-    goc_pool* pool = goc_pool_make(P6_23_WORKERS);
-    ASSERT(pool != NULL);
+    goc_pool* pool = goc_pool_make(4);
 
-    _Atomic int completed = 0;
-    p6_23_arg_t args = { &done, &completed, P6_23_PER_WAVE };
+    goc_chan* ch = goc_chan_make(0);
+    goc_go_on(pool, p6_37_receiver_fn, ch);
 
-    for (int w = 0; w < P6_23_WAVES; w++) {
-        atomic_store_explicit(&completed, 0, memory_order_relaxed);
-
-        for (int i = 0; i < P6_23_PER_WAVE; i++)
-            goc_go_on(pool, p6_23_fiber_fn, &args);
-
-        bool ok = done_wait_timeout(&done, 3000);
-        ASSERT(ok);
-    }
+    for (int i = 0; i < P6_37_FIBERS; i++)
+        goc_go_on(pool, p6_37_putter_fn, ch);
 
     goc_pool_destroy(pool);
-    done_destroy(&done);
+    goc_close(ch);
+
     TEST_PASS();
 done:;
 }
@@ -2333,6 +2402,7 @@ done:;
 
 int main(void) {
     install_crash_handler();
+    goc_test_arm_watchdog(120);
 
     printf("libgoc test suite — Phase 6: Thread pool\n");
     printf("==========================================\n\n");
@@ -2345,9 +2415,6 @@ int main(void) {
     test_p6_3();
     test_p6_4();
     test_p6_5();
-    printf("\n");
-
-    printf("Phase 6 (continued) — Work-stealing deque + injector\n");
     test_p6_6();
     test_p6_7();
     test_p6_8();
@@ -2379,6 +2446,7 @@ int main(void) {
     test_p6_34();
     test_p6_35();
     test_p6_36();
+    test_p6_37();
     printf("\n");
 
     if (!g_skip_shutdown) {
@@ -2388,12 +2456,7 @@ int main(void) {
                 "skipping goc_shutdown: P6.22 left an undrained pool after failure\n");
     }
 
-    printf("==========================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

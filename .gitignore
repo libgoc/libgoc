@@ -71,16 +71,16 @@ build_orig/
 
 # Go module cache (accidentally committed)
 root/
-.clj-kondo/.cache/v1/lock
-.lsp/.cache/db.transit.json
+.lsp/.cache/
 build-bench-vmem/
 build-bench-vmem-old/
 bench/libgoc/bench-libgoc-vmem
 bench/libgoc/bench-vmem-old
-.clj-kondo/
-fix.md
+
+# local test files
 meta/*
 test.log
 
 # Clojure cache files
+.clj-kondo/
 bench/clojure/.cpcache/

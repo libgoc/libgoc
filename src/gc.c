@@ -20,6 +20,67 @@
 #include "../include/goc.h"
 #include "chan_type.h"
 #include "internal.h"
+#include "channel_internal.h"
+
+/* Forward declarations for module lifecycle reset hooks. */
+extern void goc_http_reset_globals(void*);
+extern size_t goc_cb_queue_get_hwm(void);
+
+#define GOC_LIFECYCLE_HOOK_CAP 16
+
+typedef struct {
+    void (*fn)(void*);
+    void*     ub;
+} goc_lifecycle_hook_t;
+
+static uv_mutex_t g_lifecycle_hook_lock;
+static goc_lifecycle_hook_t g_lifecycle_hooks[GOC_LIFECYCLE_HOOK_COUNT][GOC_LIFECYCLE_HOOK_CAP];
+static size_t g_lifecycle_hooks_len[GOC_LIFECYCLE_HOOK_COUNT] = {0};
+
+void goc_run_lifecycle_hooks(goc_lifecycle_hook_phase_t phase,
+                                void* event_arg)
+{
+    if (phase < 0 || phase >= GOC_LIFECYCLE_HOOK_COUNT)
+        return;
+
+    goc_lifecycle_hook_t hooks[GOC_LIFECYCLE_HOOK_CAP];
+    size_t len = 0;
+
+    uv_mutex_lock(&g_lifecycle_hook_lock);
+    len = g_lifecycle_hooks_len[phase];
+    for (size_t i = 0; i < len; i++)
+        hooks[i] = g_lifecycle_hooks[phase][i];
+    uv_mutex_unlock(&g_lifecycle_hook_lock);
+
+    for (size_t i = 0; i < len; i++) {
+        if (!hooks[i].fn)
+            continue;
+
+        if (event_arg == NULL) {
+            if (hooks[i].ub == NULL)
+                hooks[i].fn(NULL);
+        } else {
+            if (hooks[i].ub == event_arg)
+                hooks[i].fn(hooks[i].ub);
+        }
+    }
+}
+
+void goc_register_lifecycle_hook(goc_lifecycle_hook_phase_t phase,
+                                 void (*fn)(void*),
+                                 void* ub)
+{
+    if (phase < 0 || phase >= GOC_LIFECYCLE_HOOK_COUNT || !fn)
+        return;
+
+    uv_mutex_lock(&g_lifecycle_hook_lock);
+    if (g_lifecycle_hooks_len[phase] < GOC_LIFECYCLE_HOOK_CAP) {
+        g_lifecycle_hooks[phase][g_lifecycle_hooks_len[phase]].fn = fn;
+        g_lifecycle_hooks[phase][g_lifecycle_hooks_len[phase]].ub = ub;
+        g_lifecycle_hooks_len[phase]++;
+    }
+    uv_mutex_unlock(&g_lifecycle_hook_lock);
+}
 
 /* ---------------------------------------------------------------------------
  * goc_thread_create / goc_thread_join  (all platforms)
@@ -334,10 +395,7 @@ static void lifecycle_abort_non_main_thread(const char* fn_name)
 
     uv_thread_t self = uv_thread_self();
     if (!uv_thread_equal(&self, &g_main_thread)) {
-        fprintf(stderr,
-                "libgoc: %s must be called from the main thread\n",
-                fn_name);
-        abort();
+        ABORT("%s must be called from the main thread\n", fn_name);
     }
 }
 
@@ -346,7 +404,10 @@ static void lifecycle_abort_non_main_thread(const char* fn_name)
  * ---------------------------------------------------------------------------*/
 
 void* goc_malloc(size_t n) {
-    return GC_malloc(n);
+    void* p = GC_malloc(n);
+    if (!p)
+        ABORT("goc_malloc: allocation failed\n");
+    return p;
 }
 
 /* ---------------------------------------------------------------------------
@@ -354,7 +415,10 @@ void* goc_malloc(size_t n) {
  * ---------------------------------------------------------------------------*/
 
 void* goc_realloc(void* ptr, size_t n) {
-    return GC_realloc(ptr, n);
+    void* p = GC_realloc(ptr, n);
+    if (n > 0 && !p)
+        ABORT("goc_realloc: allocation failed\n");
+    return p;
 }
 
 /* ---------------------------------------------------------------------------
@@ -369,8 +433,7 @@ char* goc_sprintf(const char* fmt, ...) {
     int len = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
     if (len < 0) {
-        fprintf(stderr, "libgoc: goc_sprintf: vsnprintf failed (len=%d)\n", len);
-        abort();
+        ABORT("goc_sprintf: vsnprintf failed (len=%d)\n", len);
     }
 
     char* buf = (char*)GC_malloc((size_t)len + 1);
@@ -553,17 +616,24 @@ void goc_init(void) {
     /* Step 3 — Live-channels registry (this file). */
     live_channels_init();
 
+    /* Step 3.0 — Lifecycle hook registry. */
+    uv_mutex_init(&g_lifecycle_hook_lock);
+
     /* Step 3.1 — Live UV-handle channel registry (this file). */
     live_uv_handles_init();
 
     /* Step 4 — Pool registry (pool.c). */
     pool_registry_init();
 
+    /* Step 4.5 — goc_io internal init. */
+    goc_io_init();
+
     /* Step 4.1 — Mutex registry (mutex.c). */
     mutex_registry_init();
 
     /* Step 5 — libuv event loop + loop thread (loop.c). */
     loop_init();
+    goc_run_lifecycle_hooks(GOC_LIFECYCLE_HOOK_POST_LOOP_INIT, NULL);
 
     /* Step 6 — Default fiber pool.
      *
@@ -614,12 +684,16 @@ void goc_init(void) {
 
 void goc_shutdown(void) {
     lifecycle_abort_non_main_thread("goc_shutdown");
+    goc_debug_set_close_phase("goc_shutdown");
     GOC_DBG("goc_shutdown: begin\n");
 
     /* B.1 — Drain and destroy all registered pools (including g_default_pool). */
     GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all begin\n");
     pool_registry_destroy_all();
-    GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all done\n");
+    GOC_DBG("goc_shutdown: B.1 pool_registry_destroy_all done g_loop_shutting_down=%d\n",
+            goc_loop_is_shutting_down());
+
+    goc_run_lifecycle_hooks(GOC_LIFECYCLE_HOOK_PRE_LOOP_SHUTDOWN, NULL);
 
     /* B.2 — Shut down the event loop and join the loop thread.
      *
@@ -632,14 +706,22 @@ void goc_shutdown(void) {
      * callbacks that run on the loop thread call gc_handle_unregister(). */
     GOC_DBG("goc_shutdown: B.2 loop_shutdown begin\n");
     loop_shutdown();
-    GOC_DBG("goc_shutdown: B.2 loop_shutdown done\n");
+    GOC_DBG("goc_shutdown: B.2 loop_shutdown done g_loop_shutting_down=%d hwm=%zu\n",
+            goc_loop_is_shutting_down(),
+            goc_cb_queue_get_hwm());
 
-    /* B.2a — Tear down the live UV handle roots registry. */
+    /* B.2a — goc_io internal shutdown. */
+    goc_io_shutdown();
+    goc_run_lifecycle_hooks(GOC_LIFECYCLE_HOOK_POST_LOOP_SHUTDOWN, NULL);
+
+    /* B.2b — Tear down the live UV handle roots registry. */
     live_uv_handles     = NULL;
     live_uv_handles_len = 0;
     live_uv_handles_cap = 0;
     uv_mutex_destroy(&g_live_uv_mutex);
     GOC_DBG("goc_shutdown: B.2a live_uv teardown done\n");
+
+    uv_mutex_destroy(&g_lifecycle_hook_lock);
 
     /* B.3 — Destroy channel mutexes and tear down the live-channels registry.
      *
@@ -684,4 +766,8 @@ void goc_shutdown(void) {
     atomic_store_explicit(&fiber_root_num_chunks, 0, memory_order_relaxed);
     uv_mutex_destroy(&fiber_root_mutex);
     GOC_DBG("goc_shutdown: B.4 fiber roots teardown done; shutdown complete\n");
+
+    goc_debug_set_close_phase("normal");
+
+    GOC_DBG("goc_shutdown: END\n");
 }

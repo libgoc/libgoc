@@ -38,13 +38,14 @@
  * Building
  * --------
  *   make -C bench/libgoc build          # single build
- *   make -C bench/libgoc run            # build + run (current GOC_POOL_THREADS)
- *   make -C bench/libgoc run-all        # build + run with pool sizes 1/2/4/8
+ *   make -C bench/libgoc run            # build + run
+ *   make -C bench/libgoc run all=1      # build + run with pool sizes 1/2/4/8
  *
  * Environment variables
  * ---------------------
- *   GOC_POOL_THREADS   Number of worker threads in the default pool (default:
- *                      max(4, nproc)).  Set by the Makefile run-all target.
+ *   GOC_POOL_THREADS   Number of worker threads in the default pool.
+ *                      `make run` uses threads=nproc by default; `make run all=1`
+ *                      iterates over 1, 2, 4, 8.
  *   GOC_MAX_LIVE_FIBERS
  *                      Pool live-fiber cap. Defaults to
  *                      floor(0.6 × (memory / stack_size));
@@ -576,7 +577,7 @@ static void bench_prime_sieve(size_t max) {
  * =========================================================================
  *
  * Two HTTP/1.1 servers (A on port 19090, B on port 19091) bounce a counter
- * back and forth, mirroring the ping-pong example in HTTP.md.
+ * back and forth, mirroring the ping-pong example in docs/HTTP.md.
  *
  * Server A (POST /ping): reads the counter, responds "ok", then forwards
  * counter+1 to server B.  When counter >= rounds it closes `done` and stops.
@@ -768,6 +769,7 @@ static void http_tp_handler(goc_http_ctx_t* ctx) {
 }
 
 typedef struct {
+    size_t   worker_id;
     uint64_t warmup_end_ns;
     uint64_t measure_end_ns;
     uint64_t* succ_out;
@@ -778,6 +780,7 @@ static void http_tp_worker(void* arg) {
     http_tp_worker_args_t* a = (http_tp_worker_args_t*)arg;
     uint64_t succ = 0;
     uint64_t err  = 0;
+    uint64_t req_count = 0;
 
     goc_http_request_opts_t* opts = goc_http_request_opts();
     opts->keep_alive = 1;
@@ -787,6 +790,7 @@ static void http_tp_worker(void* arg) {
         if (uv_hrtime() >= a->measure_end_ns)
             break;
 
+        req_count++;
         goc_http_response_t* r =
             (goc_http_response_t*)goc_take(goc_http_get(HTTP_TP_URL, opts))->val;
         uint64_t done_ns = uv_hrtime();
@@ -826,6 +830,7 @@ static void bench_http_server_throughput(size_t concurrency,
     for (size_t i = 0; i < concurrency; i++) {
         succ[i] = 0;
         err[i]  = 0;
+        args[i].worker_id      = i;
         args[i].warmup_end_ns  = warmup_end_ns;
         args[i].measure_end_ns = measure_end_ns;
         args[i].succ_out       = &succ[i];
@@ -863,8 +868,6 @@ static void main_fiber(void* _) {
     size_t select_tasks   = 200000;
     size_t spawn_count    = 200000;
     size_t prime_max      = 20000;
-    /* Lower count than CSP benchmarks: each HTTP request opens a new TCP
-     * connection.  See bench_http_ping_pong comment for context. */
     size_t http_rounds    = 2000;
     size_t http_tp_concurrency = 32;
     int http_tp_warmup_ms = 1000;

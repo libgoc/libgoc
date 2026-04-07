@@ -12,17 +12,17 @@ three-way performance comparison.
 ## Running
 
 ```sh
-# Single run (default pool size = 8)
+# Single run (default threads = nproc)
 make run
 
-# Multi-pool testing — runs with CLOJURE_POOL_THREADS = 1, 2, 4, 8
-make run-all
+# Multi-pool testing — runs with threads = 1, 2, 4, 8
+make run all=1
 
 # Single run with an explicit pool size
-make run POOL_SIZE=4
+make run threads=4
 ```
 
-The `POOL_SIZE` variable sets the JVM system property
+The `threads` variable sets the JVM system property
 `clojure.core.async.pool-size`, which controls the number of threads in
 `core.async`'s go-block dispatch thread pool.
 

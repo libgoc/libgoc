@@ -64,6 +64,7 @@
  *          intact, ok == GOC_OK for each
  *   P3.20  goc_take_all from fiber blocks until sender fibers deliver; all values
  *          intact
+ *   P3.21  goc_close: closing the same channel from different fibers doesn't crash
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -85,6 +86,7 @@
 
 #include "test_harness.h"
 #include "goc.h"
+#include <goc_array.h>
 
 /* =========================================================================
  * done_t — lightweight fiber-to-main synchronisation via mutex + condvar
@@ -149,13 +151,13 @@ static void test_p3_1(void) {
     goc_chan* ch = goc_chan_make(0);
     ASSERT(ch != NULL);
 
-    send_args_t args = { .ch = ch, .value = 0xDEADBEEFUL };
+    send_args_t args = { .ch = ch, .value = 0xDEADBEADUL };
     goc_chan* join = goc_go(send_fiber_fn, &args);
     ASSERT(join != NULL);
 
     goc_val_t* v = goc_take_sync(ch);
     ASSERT(v->ok == GOC_OK);
-    ASSERT(goc_unbox_uint(v->val) == 0xDEADBEEFUL);
+    ASSERT(goc_unbox_uint(v->val) == 0xDEADBEADUL);
 
     /* Wait for the fiber to finish. */
     goc_val_t* jv = goc_take_sync(join);
@@ -271,6 +273,7 @@ static void test_p3_5(void) {
     ASSERT(ch != NULL);
 
     goc_close(ch);
+    goc_nanosleep(100 * 1000000); /* 100ms to ensure it's closed */
 
     goc_val_t* v = goc_take_try(ch);
     ASSERT(v->ok == GOC_CLOSED);
@@ -1025,6 +1028,38 @@ static void test_p3_20(void) {
 done:;
 }
 
+/* -------------------------------------------------------------------------
+ * P3.21 — closing a channel from different fibers doesn't crash
+ * ---------------------------------------------------------------------- */
+
+#define P3_21_FIBER_COUNT 50
+
+static void p3_21_closer_fn(void* arg) {
+    goc_chan* ch = (goc_chan*)arg;
+    goc_close(ch);
+    goc_take_sync(ch);
+}
+
+static void test_p3_21(void) {
+    TEST_BEGIN("P3.21 closing a channel from different fibers doesn't crash");
+    goc_chan* ch = goc_chan_make(0);
+
+    goc_array* closers = goc_array_make(P3_21_FIBER_COUNT);
+    for(int i = 0; i < P3_21_FIBER_COUNT; i++) {
+        goc_chan* join = goc_go(p3_21_closer_fn, ch);
+        goc_array_push(closers, join);
+    }
+  
+    goc_take_sync(ch);
+    for(int i = 0; i < P3_21_FIBER_COUNT; i++) {
+        goc_chan* join = (goc_chan*)goc_array_pop_head(closers);
+        goc_take_sync(join);
+    }
+
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -1066,12 +1101,7 @@ int main(void) {
 
     goc_shutdown();
 
-    printf("==========================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

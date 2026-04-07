@@ -18,7 +18,7 @@
 ; -------
 ;   clojure -M -m bench.core                        ; single run (default pool)
 ;   make run                                         ; same via Makefile
-;   make run-all                                     ; pool sizes 1, 2, 4, 8
+;   make run all=1                                  ; pool sizes 1, 2, 4, 8
 
 (ns bench.core
   (:require [clojure.core.async :as a

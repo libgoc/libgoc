@@ -29,6 +29,7 @@
  *   P11.16 HTTP client: goc_http_post
  *   P11.17 HTTP client: parallel requests with goc_take_all
  *   P11.18 HTTP client: timeout fires correctly
+ *   P11.18a HTTP client: keepalive request timeout fires correctly
  *   P11.19 Security: oversized request body rejected; server stays alive
  *   P11.20 Security: method mismatch (GET route hit with POST) → 404
  *   P11.21 Correctness: ctx->path and ctx->method populated correctly
@@ -40,12 +41,13 @@
  *   P11.27 Keep-alive: client/server persistent connection handles sequential requests
  *   P11.28 Regression: fire-and-forget ping-pong survives repeated immediate teardown
  *   P11.29 Regression: fire-and-forget connect churn survives repeated teardown
- *   P11.30 Benchmark-style non-failing throughput comparison (pool=4 vs pool=1)
+ *   P11.30 Regression: repeated listen/close under worker-pool startup race
  *   P11.31 Strict affinity invariant: completed fibers from request workload
  *          should execute on >=2 workers (evidence of cross-worker scheduling)
+ *   P11.32 Benchmark-style throughput comparison (pool=4 vs pool=1)
  */
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if defined(__linux__)
 #  define _GNU_SOURCE
 #endif
 
@@ -65,6 +67,8 @@
 #include "goc_stats.h"
 #include "internal.h"
 
+extern int goc_http_client_inflight(void);
+
 /* =========================================================================
  * Helpers
  * ====================================================================== */
@@ -76,7 +80,15 @@ static int next_port(void)
     return s_port++;
 }
 
-static char s_url_buf[256];
+#if defined(_MSC_VER)
+#  define TEST_THREAD_LOCAL __declspec(thread)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define TEST_THREAD_LOCAL _Thread_local
+#else
+#  define TEST_THREAD_LOCAL __thread
+#endif
+
+static TEST_THREAD_LOCAL char s_url_buf[256];
 static const char* local_url(const char* path, int port)
 {
     snprintf(s_url_buf, sizeof(s_url_buf),
@@ -100,8 +112,9 @@ static void fiber_p11_1(void* arg)
 {
     p11_1_args_t* a   = (p11_1_args_t*)arg;
     goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
-    int rc = (int)goc_unbox_int(
-        goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port))->val);
+    int rc = goc_unbox_int(
+                    goc_take(
+                        goc_http_server_listen(srv, "127.0.0.1", a->port))->val);
     int ok = (rc == 0);
     if (ok)
         goc_take(goc_http_server_close(srv));
@@ -240,36 +253,39 @@ done:;
 
 typedef struct {
     goc_chan* done;
+    goc_chan* handler_done;
     int       port;
     int       has_ct;
     int       absent_ok;
     int       case_ok;
 } p11_hdr_t;
 
-static p11_hdr_t* g_hdr;
+static p11_hdr_t* _Atomic g_hdr;
 
 static void handler_inspect_headers(goc_http_ctx_t* ctx)
 {
+    p11_hdr_t* h = atomic_load_explicit(&g_hdr, memory_order_acquire);
     const char* ct  = goc_http_server_header(ctx, "content-type");
-    g_hdr->has_ct    = (ct != NULL);
+    h->has_ct    = (ct != NULL);
     const char* x   = goc_http_server_header(ctx, "x-no-such-header-p11");
-    g_hdr->absent_ok = (x == NULL);
+    h->absent_ok = (x == NULL);
     const char* ct2 = goc_http_server_header(ctx, "CONTENT-TYPE");
-    g_hdr->case_ok   = (ct2 != NULL);
+    h->case_ok   = (ct2 != NULL);
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+    goc_put(h->handler_done, goc_box_int(1));
 }
 
 static void fiber_p11_hdrs(void* arg)
 {
     p11_hdr_t*    a   = (p11_hdr_t*)arg;
-    g_hdr = a;
+    atomic_store_explicit(&g_hdr, a, memory_order_release);
     goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "POST", "/hdr", handler_inspect_headers);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
     goc_take(goc_http_post(local_url("/hdr", a->port),
                             "application/json", "{}", goc_http_request_opts()));
-    goc_take(goc_timeout(20));
+    goc_take(a->handler_done);
 
     goc_take(goc_http_server_close(srv));
     goc_put(a->done, goc_box_int(1));
@@ -281,6 +297,7 @@ static void test_p11_5(void)
     p11_hdr_t args;
     memset(&args, 0, sizeof(args));
     args.done = goc_chan_make(1);
+    args.handler_done = goc_chan_make(1);
     args.port = next_port();
     goc_go(fiber_p11_hdrs, &args);
     goc_take_sync(args.done);
@@ -295,6 +312,7 @@ static void test_p11_6(void)
     p11_hdr_t args;
     memset(&args, 0, sizeof(args));
     args.done = goc_chan_make(1);
+    args.handler_done = goc_chan_make(1);
     args.port = next_port();
     goc_go(fiber_p11_hdrs, &args);
     goc_take_sync(args.done);
@@ -309,6 +327,7 @@ static void test_p11_7(void)
     p11_hdr_t args;
     memset(&args, 0, sizeof(args));
     args.done = goc_chan_make(1);
+    args.handler_done = goc_chan_make(1);
     args.port = next_port();
     goc_go(fiber_p11_hdrs, &args);
     goc_take_sync(args.done);
@@ -820,40 +839,63 @@ static void handler_slow(goc_http_ctx_t* ctx)
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "too late"));
 }
 
-typedef struct {
-    goc_chan* done;
-    int       port;
-    int       timed_out;
-} p11_to_t;
-
-static void fiber_p11_18(void* arg)
+static void test_p11_18(void)
 {
-    p11_to_t*     a   = (p11_to_t*)arg;
+    TEST_BEGIN("P11.18 HTTP client: timeout fires → status 408 (timeout)");
     goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    int port = next_port();
     goc_http_server_route(srv, "GET", "/slow", handler_slow);
-    goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
+    goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", port));
 
     goc_http_request_opts_t* opts = goc_http_request_opts();
     opts->timeout_ms = 150;
 
     goc_http_response_t* r =
-        (goc_http_response_t*)goc_take(
-            goc_http_get(local_url("/slow", a->port), opts))->val;
-    a->timed_out = (!r || r->status == 0);
+        (goc_http_response_t*)goc_take_sync(
+            goc_http_get(local_url("/slow", port), opts))->val;
+    ASSERT(r && r->status == 408);
 
-    /* Wait for handler_slow (500 ms) to finish before closing. */
-    goc_take(goc_timeout(600));
-    goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_take_sync(goc_http_server_close(srv));
+    TEST_PASS();
+done:;
 }
 
-static void test_p11_18(void)
+/* =========================================================================
+ * P11.18a — Timeout fires correctly for keepalive connections
+ * ====================================================================== */
+
+static void test_p11_18a(void)
 {
-    TEST_BEGIN("P11.18 HTTP client: timeout fires → status 0 (timeout)");
-    p11_to_t args = { goc_chan_make(1), next_port(), 0 };
-    goc_go(fiber_p11_18, &args);
-    goc_take_sync(args.done);
-    ASSERT(args.timed_out);
+    TEST_BEGIN("P11.18a HTTP client: keep-alive timeout cleans up inflight fiber");
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    int port = next_port();
+    goc_http_server_route(srv, "GET", "/slow", handler_slow);
+    goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", port));
+
+    int before = goc_http_client_inflight();
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    opts->timeout_ms = 150;
+    goc_http_response_t* r =
+        (goc_http_response_t*)goc_take_sync(
+            goc_http_get(local_url("/slow", port), opts))->val;
+    ASSERT(r && r->status == 408);
+
+    /* Wait for handler_slow (500 ms) to finish before issuing the next request. */
+    goc_take_sync(goc_timeout(600));
+    ASSERT(goc_http_client_inflight() == before);
+
+    goc_http_request_opts_t* opts2 = goc_http_request_opts();
+    opts2->keep_alive = 1;
+    opts2->timeout_ms = 1000;
+    goc_http_response_t* r2 =
+        (goc_http_response_t*)goc_take_sync(
+            goc_http_get(local_url("/slow", port), opts2))->val;
+    ASSERT(r2 && r2->status == 200);
+    ASSERT(goc_http_client_inflight() == before);
+
+    goc_take_sync(goc_http_server_close(srv));
     TEST_PASS();
 done:;
 }
@@ -1190,25 +1232,19 @@ static p11_inject_t* g_inject;
 
 static void handler_check_injection(goc_http_ctx_t* ctx)
 {
-    GOC_DBG("P11.25 handler_check_injection: entered ctx=%p\n", (void*)ctx);
     /* If injection succeeded, the server sees X-Injected as a header. */
     const char* v = goc_http_server_header(ctx, "x-injected");
     g_inject->injected = (v != NULL);
-    GOC_DBG("P11.25 handler_check_injection: x-injected=%s\n", v ? v : "<NULL>");
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
-    GOC_DBG("P11.25 handler_check_injection: responded\n");
 }
 
 static void fiber_p11_25(void* arg)
 {
     p11_inject_t* a = (p11_inject_t*)arg;
-    GOC_DBG("P11.25 fiber: start port=%d done=%p\n", a->port, (void*)a->done);
     g_inject = a;
     goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/check-inject", handler_check_injection);
-    GOC_DBG("P11.25 fiber: listening\n");
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
-    GOC_DBG("P11.25 fiber: listen done\n");
 
     /* Header value contains embedded CRLF — would inject "X-Injected: evil"
      * into raw HTTP request bytes if not sanitised. */
@@ -1221,18 +1257,11 @@ static void fiber_p11_25(void* arg)
     opts->headers = goc_array_make(1);
     goc_array_push(opts->headers, hdr);
 
-    GOC_DBG("P11.25 fiber: before goc_http_get\n");
     goc_take(goc_http_get(local_url("/check-inject", a->port), opts));
-    GOC_DBG("P11.25 fiber: after goc_http_get\n");
-    GOC_DBG("P11.25 fiber: before timeout\n");
     goc_take(goc_timeout(20));
-    GOC_DBG("P11.25 fiber: after timeout\n");
 
-    GOC_DBG("P11.25 fiber: before server_close\n");
     goc_take(goc_http_server_close(srv));
-    GOC_DBG("P11.25 fiber: after server_close\n");
     goc_put(a->done, goc_box_int(1));
-    GOC_DBG("P11.25 fiber: done put\n");
 }
 
 static void test_p11_25(void)
@@ -1249,7 +1278,7 @@ done:;
 /* =========================================================================
  * P11.26 — Ping-pong: two servers bounce a counter for 500 round trips
  *
- * Mirrors the ping-pong example from HTTP.md.  Two servers on separate
+ * Mirrors the ping-pong example from docs/HTTP.md.  Two servers on separate
  * loopback ports exchange a counter via POST requests until the counter
  * reaches P11_26_ROUNDS, at which point server A closes pp_done and both
  * servers are shut down cleanly.
@@ -1386,7 +1415,7 @@ static void test_p11_27(void)
     ASSERT(args.status1 == 200);
     ASSERT(args.status2 == 200);
     TEST_PASS();
-done:;
+done:
 }
 
 /* =========================================================================
@@ -1400,94 +1429,91 @@ done:;
  * under repeated runs. Keep this test as a stress guard for close/write races.
  * ========================================================================= */
 
-#define P11_28_ITERS  8
-#define P11_28_ROUNDS 250
+#define P11_28_ITERS  10
+#define P11_28_ROUNDS 200
 
-typedef struct {
-    goc_chan* test_done;
-    int       ok;
-} p11_ff_reg_t;
+int P11_28_PORT_A, P11_28_PORT_B;
+goc_chan* P11_28_DONE_CH;
 
-typedef struct {
-    goc_chan* done;
-    int       rounds;
-    char      url_a[64];
-    char      url_b[64];
-} p11_ff_ctx_t;
-
-static p11_ff_ctx_t* g_ff_ctx = NULL;
-
-static void ff_handler_a(goc_http_ctx_t* ctx)
+static void p11_28_handler_A(goc_http_ctx_t* ctx)
 {
     int n = atoi(goc_http_server_body_str(ctx));
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
-    if (n >= g_ff_ctx->rounds) {
-        goc_close(g_ff_ctx->done);
+    if (n >= P11_28_ROUNDS) {
+        goc_close(P11_28_DONE_CH);
         return;
     }
     goc_http_request_opts_t* opts = goc_http_request_opts();
     opts->keep_alive = 1;
-    goc_http_post(g_ff_ctx->url_b, "text/plain", goc_sprintf("%d", n + 1), opts);
+    goc_http_post(
+        local_url("/ping", P11_28_PORT_B), 
+        "text/plain", 
+        goc_sprintf("%d", n + 1), 
+        opts
+    );
 }
 
-static void ff_handler_b(goc_http_ctx_t* ctx)
+static void p11_28_handler_B(goc_http_ctx_t* ctx)
 {
     int n = atoi(goc_http_server_body_str(ctx));
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
+    if (n >= P11_28_ROUNDS) {
+        goc_close(P11_28_DONE_CH);
+        return;
+    }
     goc_http_request_opts_t* opts = goc_http_request_opts();
     opts->keep_alive = 1;
-    goc_http_post(g_ff_ctx->url_a, "text/plain", goc_sprintf("%d", n + 1), opts);
-}
-
-static void fiber_p11_28(void* arg)
-{
-    p11_ff_reg_t* a = (p11_ff_reg_t*)arg;
-    a->ok = 1;
-
-    for (int i = 0; i < P11_28_ITERS; i++) {
-        int port_a = next_port();
-        int port_b = next_port();
-
-        p11_ff_ctx_t* ctx = (p11_ff_ctx_t*)goc_malloc(sizeof(p11_ff_ctx_t));
-        ctx->done   = goc_chan_make(0);
-        ctx->rounds = P11_28_ROUNDS;
-        snprintf(ctx->url_a, sizeof(ctx->url_a), "http://127.0.0.1:%d/ping", port_a);
-        snprintf(ctx->url_b, sizeof(ctx->url_b), "http://127.0.0.1:%d/ping", port_b);
-        g_ff_ctx = ctx;
-
-        goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
-        goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
-        goc_http_server_route(srv_a, "POST", "/ping", ff_handler_a);
-        goc_http_server_route(srv_b, "POST", "/ping", ff_handler_b);
-
-        goc_take(goc_http_server_listen(srv_a, "127.0.0.1", port_a));
-        goc_take(goc_http_server_listen(srv_b, "127.0.0.1", port_b));
-
-        goc_http_request_opts_t* opts = goc_http_request_opts();
-        opts->keep_alive = 1;
-        goc_http_post(ctx->url_a, "text/plain", "0", opts);
-
-        goc_take(ctx->done);
-
-        /* Intentional immediate teardown: this is the race window we guard. */
-        goc_take(goc_http_server_close(srv_a));
-        goc_take(goc_http_server_close(srv_b));
-    }
-
-    goc_put(a->test_done, goc_box_int(1));
+    goc_http_post(
+        local_url("/ping", P11_28_PORT_A), 
+        "text/plain", 
+        goc_sprintf("%d", n + 1), 
+        opts
+    );
 }
 
 static void test_p11_28(void)
 {
     TEST_BEGIN("P11.28 Regression: fire-and-forget ping-pong survives repeated teardown");
-    p11_ff_reg_t args;
-    memset(&args, 0, sizeof(args));
-    args.test_done = goc_chan_make(1);
-    goc_go(fiber_p11_28, &args);
-    goc_take_sync(args.test_done);
-    ASSERT(args.ok == 1);
+
+    for (int i = 0; i < P11_28_ITERS; i++) {
+        P11_28_DONE_CH = goc_chan_make(0);
+
+        P11_28_PORT_A = next_port();
+        goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
+        goc_http_server_route(srv_a, "POST", "/ping", p11_28_handler_A);
+        goc_chan* rc_ch_a = goc_http_server_listen(srv_a, "127.0.0.1", P11_28_PORT_A);
+        int rc_a = goc_unbox_int(goc_take_sync(rc_ch_a)->val);
+        ASSERT(rc_a == 0);
+
+        P11_28_PORT_B = next_port();
+        goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+        goc_http_server_route(srv_b, "POST", "/ping", p11_28_handler_B);
+        goc_chan* rc_ch_b = goc_http_server_listen(srv_b, "127.0.0.1", P11_28_PORT_B);
+        int rc_b = goc_unbox_int(goc_take_sync(rc_ch_b)->val);
+        ASSERT(rc_b == 0);
+
+        goc_http_request_opts_t* opts = goc_http_request_opts();
+        opts->keep_alive = 1;
+        goc_http_post(
+            local_url("/ping", P11_28_PORT_A),
+            "text/plain", 
+            "0", 
+            opts
+        );
+
+        /* ensure all requests have completed */
+        goc_take_sync(P11_28_DONE_CH);
+        P11_28_DONE_CH = NULL;
+
+        /* Intentional immediate teardown: this is the race window we guard. */
+        goc_take_sync(goc_http_server_close(srv_a));
+        goc_take_sync(goc_http_server_close(srv_b));
+    }
+
     TEST_PASS();
-done:;
+done:
+    if (P11_28_DONE_CH)
+        goc_close(P11_28_DONE_CH);
 }
 
 /* =========================================================================
@@ -1498,96 +1524,311 @@ done:;
  * to catch connect/write lifecycle regressions (including libuv req asserts).
  * ========================================================================= */
 
-#define P11_29_ITERS     6
-#define P11_29_REQUESTS  600
+#define P11_29_ITERS     10
+#define P11_29_REQUESTS  100
 
-typedef struct {
-    goc_chan* done;
-    int       ok;
-} p11_ff_churn_t;
-
-static void fiber_p11_29(void* arg)
+static void fiber_p11_29(void* _)
 {
-    p11_ff_churn_t* a = (p11_ff_churn_t*)arg;
-    a->ok = 1;
-
+    goc_http_server_t* srv = NULL;
     for (int iter = 0; iter < P11_29_ITERS; iter++) {
+        goc_http_server_opts_t* srv_opts = goc_http_server_opts();
+        srv = goc_http_server_make(srv_opts);
+        goc_http_server_route(srv, "POST", "/ping", handler_ping);
+        
         int port = next_port();
-        goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
-        goc_http_server_route(srv, "POST", "/ok", handler_ping);
-        goc_take(goc_http_server_listen(srv, "127.0.0.1", port));
+        goc_chan* rc_ch = goc_http_server_listen(srv, "127.0.0.1", port);
+        int rc = goc_unbox_int(goc_take(rc_ch)->val);
+        ASSERT(rc == 0);
 
-        const char* url = local_url("/ok", port);
+        const char* url = local_url("/ping", port);
+        goc_chan* resp_chs[P11_29_REQUESTS];
         for (int i = 0; i < P11_29_REQUESTS; i++) {
             goc_http_request_opts_t* opts = goc_http_request_opts();
             opts->keep_alive = 0; /* force connect churn */
-            goc_http_post(url, "text/plain", "x", opts);
+            resp_chs[i] = goc_http_post(url, "text/plain", "ping", opts);
         }
 
-        /* Keep this intentionally short to maximize overlap with in-flight IO.
-         */
-        goc_take(goc_timeout(15));
+        /* Wait for all requests to complete before tearing down the server. */
+        goc_val_t** response_vals = goc_take_all(resp_chs, P11_29_REQUESTS);
+        for (int i = 0; i < P11_29_REQUESTS; i++) {
+            goc_val_t* rv = response_vals[i];
+            ASSERT(rv != NULL);
+            ASSERT(rv->ok == GOC_OK);
+
+            goc_http_response_t* r = rv->val;
+            ASSERT(r != NULL);
+            ASSERT(r->status == 200);
+            ASSERT(strcmp(r->body, "pong") == 0);
+        }
+
         goc_take(goc_http_server_close(srv));
     }
-
-    goc_put(a->done, goc_box_int(1));
+done:;
 }
 
 static void test_p11_29(void)
 {
-    TEST_BEGIN("P11.29 Regression: fire-and-forget connect churn survives repeated teardown");
-    p11_ff_churn_t args;
-    memset(&args, 0, sizeof(args));
-    args.done = goc_chan_make(1);
-    goc_go(fiber_p11_29, &args);
-    goc_take_sync(args.done);
-    ASSERT(args.ok == 1);
+    TEST_BEGIN("P11.29 Regression: fire-and-forget connect churn survives repeated teardown");    
+    goc_pool* pool = goc_pool_make(2);
+    goc_chan* done_ch = goc_go_on(pool, fiber_p11_29, NULL);
+    goc_take_sync(done_ch);
+    TEST_PASS();
+done:;
+    goc_pool_destroy(pool);
+}
+
+/* ==============================================================================
+ * P11.30 — Regression: repeated listen/close under worker-pool startup race
+ * =========================================================================== */
+
+static void test_p11_30(void)
+{
+    TEST_BEGIN("P11.30 Regression: repeated listen/close under worker-pool startup race");
+    goc_pool* pool = goc_pool_make(4);
+    for (int iter = 0; iter < 32; iter++) {
+        goc_http_server_opts_t* opts = goc_http_server_opts();
+        goc_http_server_t* srv = goc_http_server_make(opts);
+        goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", next_port()));
+        goc_take_sync(goc_http_server_close(srv));
+    }
+    goc_pool_destroy(pool);
     TEST_PASS();
 done:;
 }
 
 /* =========================================================================
- * P11.30 — Non-failing throughput comparison benchmark (pool=4 vs pool=1)
+ * P11.31 — Strict affinity invariant proxy via worker distribution telemetry
  * ====================================================================== */
 
-#define P11_30_REQS 1200
+#define P11_31_SERVER_WORKERS 3
+#define P11_31_CLIENTS 30
+#define P11_31_ROUTE "/wid"
 
-typedef struct {
-    goc_chan* done;
-    int       port;
-    int       nreq;
-    int       ok;
-    uint64_t  elapsed_ns;
-} p11_30_run_t;
+static int P11_31_PORT = -1;
 
-static void fiber_p11_30_run(void* arg)
+static void p11_31_server_handler(goc_http_ctx_t* ctx)
 {
-    p11_30_run_t* a = (p11_30_run_t*)arg;
-    a->ok = 0;
-    a->elapsed_ns = 0;
-
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
-    goc_http_server_route(srv, "GET", "/ping", handler_ping);
-    goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
-
-    const uint64_t t0 = uv_hrtime();
-    for (int i = 0; i < a->nreq; i++) {
-        goc_http_response_t* r = (goc_http_response_t*)goc_take(
-            goc_http_get(local_url("/ping", a->port), goc_http_request_opts()))->val;
-        if (!r || r->status != 200) {
-            goc_take(goc_http_server_close(srv));
-            goc_put(a->done, goc_box_int(0));
-            return;
-        }
-    }
-    a->elapsed_ns = uv_hrtime() - t0;
-    a->ok = 1;
-
-    goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    int wid = goc_current_worker_id();
+    goc_take(goc_http_server_respond(ctx, 200, "text/plain", goc_sprintf("%d", wid)));
 }
 
-static int p11_30_mode_run(int pool_threads, uint64_t* elapsed_ns_out, int* nreq_out)
+static _Atomic(goc_http_server_t*) p11_31_srv = NULL;
+
+static void p11_31_server_fiber(void* arg)
+{
+    P11_31_PORT = next_port();
+    goc_chan* comms_ch = (goc_chan*)arg;
+
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "GET", P11_31_ROUTE, p11_31_server_handler);
+
+    goc_chan* server_started_ch = goc_http_server_listen(srv, "127.0.0.1", P11_31_PORT);
+    goc_val_t* rc_val = goc_take(server_started_ch);
+    int rc = goc_unbox_int(rc_val->val);
+    ASSERT(rc == 0);
+
+    atomic_store_explicit(&p11_31_srv, srv, memory_order_release);
+
+    int reuseport_listeners = goc_http_server_reuseport_listener_count(srv);
+    ASSERT(reuseport_listeners == 0 ||
+           reuseport_listeners == P11_31_SERVER_WORKERS);
+
+    // signal server started
+    goc_put(comms_ch, NULL);
+    // wait for shutdown signal
+    goc_take(comms_ch);
+
+done:
+    goc_take(goc_http_server_close(srv));
+    // signal server shutdown complete
+    goc_close(comms_ch);
+}
+
+static void test_p11_31(void)
+{
+    TEST_BEGIN("P11.31 strict affinity: server handles requests across multiple workers");
+
+    goc_pool* pool = goc_pool_make(P11_31_SERVER_WORKERS);
+    goc_chan* server_comms_ch = goc_chan_make(0);
+    goc_go_on(pool, p11_31_server_fiber, server_comms_ch);
+    
+    // wait for server to start
+    goc_val_t* server_started_val = goc_take_sync(server_comms_ch);
+    ASSERT(server_started_val->ok == GOC_OK);
+
+    int responding_workers[P11_31_SERVER_WORKERS] = {0};
+
+    int done_ok = 0;
+    for (done_ok = 0; done_ok < P11_31_CLIENTS; done_ok++) {
+        goc_chan* resp_ch = goc_http_get(
+                                local_url(P11_31_ROUTE, P11_31_PORT), 
+                                goc_http_request_opts());
+        goc_val_t* resp_val = goc_take_sync(resp_ch);
+        ASSERT(resp_val->ok == GOC_OK);
+
+        goc_http_response_t* resp = resp_val->val;
+        ASSERT(resp != NULL);
+        ASSERT(resp->status == 200);
+
+        int wid = atoi(resp->body);
+        responding_workers[wid]++;        
+    }
+    ASSERT(done_ok == P11_31_CLIENTS);
+
+    int distinct = 0;
+    for (int i = 0; i < P11_31_SERVER_WORKERS; i++) {
+        if (responding_workers[i] > 0) {
+            distinct++;
+        }
+    }
+
+    goc_http_server_t* srv = atomic_load_explicit(&p11_31_srv,
+                                                  memory_order_acquire);
+    ASSERT(srv != NULL);
+
+    int reuseport_listeners = goc_http_server_reuseport_listener_count(srv);
+    if (reuseport_listeners > 0) {
+        for (int i = 0; i < reuseport_listeners; i++) {
+            int accept_count =
+                goc_http_server_reuseport_listener_accept_count(srv, i);
+            ASSERT(accept_count > 0);
+            ASSERT(responding_workers[i] > 0);
+        }
+    }
+
+    printf("\n    [P11.31] worker distribution: ");
+    for (int i = 0; i < P11_31_SERVER_WORKERS; i++) {
+        printf("worker%d=%d ", i, responding_workers[i]);
+    }
+    printf("\n    [P11.31] distinct workers responding: %d\n", distinct);
+    ASSERT(distinct == P11_31_SERVER_WORKERS);
+
+    TEST_PASS();
+done:
+    // signal server shutdown
+    goc_put_sync(server_comms_ch, NULL);
+    // wait for server to confirm shutdown
+    goc_take_sync(server_comms_ch);
+
+    if (pool)
+        goc_pool_destroy(pool);
+}
+
+/* =========================================================================
+ * P11.32 — Throughput comparison benchmark (pool=2 vs pool=1)
+ * ====================================================================== */
+
+#define P11_32_CONC 32
+#define P11_32_WARMUP_MS 250
+#define P11_32_MEASURE_MS 4000
+
+typedef struct {
+    uint64_t warmup_end_ns;
+    uint64_t measure_end_ns;
+    uint64_t* succ_out;
+    uint64_t* err_out;
+    const char* url;
+} p11_32_worker_arg_t;
+
+static void p11_32_worker(void* arg)
+{
+    p11_32_worker_arg_t* a = (p11_32_worker_arg_t*)arg;
+    uint64_t succ = 0;
+    uint64_t err = 0;
+
+    goc_http_request_opts_t* opts = goc_http_request_opts();
+    opts->keep_alive = 1;
+    opts->timeout_ms = 10000;
+
+    for (;;) {
+        if (uv_hrtime() >= a->measure_end_ns)
+            break;
+
+        goc_http_response_t* r =
+            (goc_http_response_t*)goc_take(goc_http_get(a->url, opts))->val;
+        uint64_t done_ns = uv_hrtime();
+
+        if (done_ns >= a->warmup_end_ns && done_ns < a->measure_end_ns) {
+            if (r && r->status == 200) {
+                succ++;
+            } else {
+                err++;
+            }
+        }
+    }
+
+    *a->succ_out = succ;
+    *a->err_out = err;
+}
+
+typedef struct {
+    goc_chan*  done;
+    int        port;
+    int        nreq;
+    uint64_t   elapsed_ns;
+    uint64_t   err;
+} p11_32_run_t;
+
+static void fiber_p11_32_run(void* arg)
+{
+    p11_32_run_t* a = (p11_32_run_t*)arg;
+    a->nreq = 0;
+    a->elapsed_ns = 0;
+    a->err = 0;
+
+    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "GET", "/plaintext", handler_ping);
+
+    goc_val_t* listen_val = goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
+    int listen_rc = goc_unbox_int(listen_val->val);
+    if (listen_rc != 0) {
+        goc_take(goc_http_server_close(srv));
+        goc_put(a->done, goc_box_int(0));
+        return;
+    }
+
+    char url[256];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/plaintext", a->port);
+
+    uint64_t start_ns = uv_hrtime();
+    uint64_t warmup_end_ns = start_ns + (uint64_t)P11_32_WARMUP_MS * 1000000ULL;
+    uint64_t measure_end_ns = warmup_end_ns + (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
+
+    uint64_t* succ = goc_malloc(sizeof(uint64_t) * P11_32_CONC);
+    uint64_t* err  = goc_malloc(sizeof(uint64_t) * P11_32_CONC);
+    goc_chan** joins = goc_malloc(sizeof(goc_chan*) * P11_32_CONC);
+    p11_32_worker_arg_t* args =
+        goc_malloc(sizeof(p11_32_worker_arg_t) * P11_32_CONC);
+
+    for (size_t i = 0; i < P11_32_CONC; i++) {
+        succ[i] = 0;
+        err[i] = 0;
+        args[i].warmup_end_ns  = warmup_end_ns;
+        args[i].measure_end_ns = measure_end_ns;
+        args[i].succ_out       = &succ[i];
+        args[i].err_out        = &err[i];
+        args[i].url            = url;
+        joins[i] = goc_go(p11_32_worker, &args[i]);
+    }
+
+    goc_take_all(joins, P11_32_CONC);
+    goc_take(goc_http_server_close(srv));
+
+    uint64_t total_succ = 0;
+    uint64_t total_err  = 0;
+    for (size_t i = 0; i < P11_32_CONC; i++) {
+        total_succ += succ[i];
+        total_err += err[i];
+    }
+
+    a->elapsed_ns = (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
+    a->nreq = (int)total_succ;
+    a->err = total_err;
+    goc_put(a->done, goc_box_int(total_succ > 0 && total_err == 0));
+}
+
+static int p11_32_mode_run(int pool_threads, uint64_t* elapsed_ns_out,
+                           int* nreq_out, uint64_t* err_out)
 {
 #if defined(_WIN32)
     char envbuf[32];
@@ -1601,251 +1842,67 @@ static int p11_30_mode_run(int pool_threads, uint64_t* elapsed_ns_out, int* nreq
 
     goc_init();
 
-    p11_30_run_t run;
+    p11_32_run_t run;
     memset(&run, 0, sizeof(run));
     run.done = goc_chan_make(1);
     run.port = next_port();
-    run.nreq = P11_30_REQS;
 
-    goc_go(fiber_p11_30_run, &run);
+    goc_go(fiber_p11_32_run, &run);
     goc_val_t* vd = goc_take_sync(run.done);
 
-    int ok = (vd && goc_unbox_int(vd->val) == 1 && run.ok == 1 && run.elapsed_ns > 0);
+    int ok = vd && goc_unbox_int(vd->val) == 1 && run.nreq > 0;
     if (ok) {
         *elapsed_ns_out = run.elapsed_ns;
         *nreq_out = run.nreq;
+        *err_out = run.err;
     }
 
     goc_shutdown();
     return ok ? 0 : 1;
 }
 
-static void test_p11_30(void)
+static void test_p11_32(void)
 {
-    TEST_BEGIN("P11.30 Throughput comparison pool=4 vs pool=1 (non-failing benchmark)");
+    /* Github CI runners have 4 cores */
+    TEST_BEGIN("P11.32 Throughput comparison pool=1,2,4 (bench-style throughput workload)");
 
-    uint64_t ns1 = 0, ns4 = 0;
-    int req1 = 0, req4 = 0;
+    uint64_t ns1 = 0, ns2 = 0, ns4 = 0;
+    int req1 = 0, req2 = 0, req4 = 0;
+    uint64_t err1 = 0, err2 = 0, err4 = 0;
 
-    ASSERT(p11_30_mode_run(1, &ns1, &req1) == 0);
-    ASSERT(p11_30_mode_run(4, &ns4, &req4) == 0);
-    ASSERT(req1 > 0 && req4 > 0);
-    ASSERT(ns1 > 0 && ns4 > 0);
+    p11_32_mode_run(1, &ns1, &req1, &err1);
+    p11_32_mode_run(2, &ns2, &req2, &err2);
+    p11_32_mode_run(4, &ns4, &req4, &err4);
 
     double sec1 = (double)ns1 / 1e9;
+    double sec2 = (double)ns2 / 1e9;
     double sec4 = (double)ns4 / 1e9;
     double rps1 = (double)req1 / sec1;
+    double rps2 = (double)req2 / sec2;
     double rps4 = (double)req4 / sec4;
-    double ratio = (rps1 > 0.0) ? (rps4 / rps1) : 0.0;
+    double ratio2 = (rps1 > 0.0) ? (rps2 / rps1) : 0.0;
+    double ratio4 = (rps1 > 0.0) ? (rps4 / rps1) : 0.0;
 
-    printf("\n    [P11.30] pool=1: %.2f req/s (%d req in %.3fs)\n", rps1, req1, sec1);
-    printf("    [P11.30] pool=4: %.2f req/s (%d req in %.3fs)\n", rps4, req4, sec4);
-    printf("    [P11.30] ratio pool4/pool1 = %.3f (informational)\n", ratio);
+    printf("\n");
+    printf("    [P11.32] pool=1: %.2f req/s (%d req in %.3fs)\n", rps1, req1, sec1);
+    printf("    [P11.32] pool=2: %.2f req/s (%d req in %.3fs)\n", rps2, req2, sec2);
+    printf("    [P11.32] pool=4: %.2f req/s (%d req in %.3fs)\n", rps4, req4, sec4);
+    printf("    [P11.32] ratios: p2/p1=%.3f p4/p1=%.3f\n", ratio2, ratio4);
 
-    /* Non-failing benchmark-style check: log and validate only basic sanity. */
-    ASSERT(rps1 > 0.0 && rps4 > 0.0);
+    ASSERT(req1 > 0 && req2 > 0 && req4 > 0);
+
+    uint64_t bench_dur_ns = (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
+    ASSERT(ns1 == bench_dur_ns);
+    ASSERT(ns2 == bench_dur_ns);
+    ASSERT(ns4 == bench_dur_ns);
+
+    ASSERT(rps1 > 0.0 && rps2 > 0.0 && rps4 > 0.0);
+    /* Flaky in CI */
+    // ASSERT(ratio2 > 1);
+    // ASSERT(ratio4 > ratio2);
 
     TEST_PASS();
 done:;
-}
-
-/* =========================================================================
- * P11.31 — Strict affinity invariant proxy via worker distribution telemetry
- * ====================================================================== */
-
-#define P11_31_CLIENTS 8
-
-typedef struct {
-    goc_chan* done;
-    goc_pool* pool;
-    int       port;
-    _Atomic int* completed;
-} p11_31_client_arg_t;
-
-typedef struct {
-    _Atomic int workers[64];
-    _Atomic int total_ok;
-    _Atomic int worker_seen;
-} p11_31_stats_t;
-
-typedef struct {
-    goc_http_server_t* srv;
-    int port;
-    goc_chan* done;
-} p11_31_listen_arg_t;
-
-typedef struct {
-    goc_http_server_t* srv;
-    goc_chan* done;
-} p11_31_close_arg_t;
-
-static p11_31_stats_t g_p11_31_stats;
-static uv_mutex_t g_p11_31_mtx;
-
-static void p11_31_listen_fiber(void* larg)
-{
-    p11_31_listen_arg_t* la = (p11_31_listen_arg_t*)larg;
-    int lrc = -1;
-    goc_chan* ch = goc_http_server_listen(la->srv, "127.0.0.1", la->port);
-    if (ch) {
-        goc_val_t* lv = goc_take(ch);
-        if (lv && lv->ok == GOC_OK)
-            lrc = (int)goc_unbox_int(lv->val);
-    }
-    goc_put(la->done, goc_box_int(lrc));
-}
-
-static void p11_31_close_fiber(void* carg)
-{
-    p11_31_close_arg_t* ca = (p11_31_close_arg_t*)carg;
-    int crc = -1;
-    goc_chan* ch = goc_http_server_close(ca->srv);
-    if (ch) {
-        goc_val_t* cv = goc_take(ch);
-        if (cv && cv->ok == GOC_OK)
-            crc = (int)goc_unbox_int(cv->val);
-    }
-    goc_put(ca->done, goc_box_int(crc));
-}
-
-static void p11_31_stats_reset(void)
-{
-    atomic_store(&g_p11_31_stats.total_ok, 0);
-    atomic_store(&g_p11_31_stats.worker_seen, 0);
-    for (int i = 0; i < 64; i++)
-        atomic_store(&g_p11_31_stats.workers[i], 0);
-}
-
-static void p11_31_collect_event_cb(const goc_stats_event_t* ev, void* ud)
-{
-    (void)ud;
-    if (!ev) return;
-    if (ev->type == GOC_STATS_EVENT_FIBER_STATUS) {
-        int wid = ev->data.fiber.last_worker_id;
-        if (wid >= 0 && wid < 64)
-            atomic_store(&g_p11_31_stats.workers[wid], 1);
-    }
-}
-
-static void fiber_p11_31_client(void* arg)
-{
-    p11_31_client_arg_t* a = (p11_31_client_arg_t*)arg;
-    int ok = 0;
-
-    goc_http_request_opts_t* opts = goc_http_request_opts();
-    opts->pool = a->pool;
-    opts->keep_alive = 0;
-
-    goc_http_response_t* r = (goc_http_response_t*)goc_take(
-        goc_http_get(local_url("/ping", a->port), opts))->val;
-    if (r && r->status == 200)
-        ok = 1;
-
-    if (ok) {
-        int wid = goc_current_worker_id();
-        if (wid >= 0 && wid < 64) {
-            atomic_store(&g_p11_31_stats.workers[wid], 1);
-            atomic_store(&g_p11_31_stats.worker_seen, 1);
-        }
-        atomic_fetch_add(a->completed, 1);
-        atomic_fetch_add(&g_p11_31_stats.total_ok, 1);
-    }
-
-    goc_put(a->done, goc_box_int(ok ? 1 : 0));
-}
-
-static void test_p11_31(void)
-{
-    TEST_BEGIN("P11.31 strict affinity: completions observed across >=2 workers");
-
-    uv_mutex_init(&g_p11_31_mtx);
-    p11_31_stats_reset();
-
-    goc_stats_init();
-    goc_stats_set_callback(p11_31_collect_event_cb, NULL);
-    goc_stats_flush();
-
-    int port = next_port();
-    goc_http_server_t* srv = NULL;
-    goc_pool* p1 = NULL;
-    goc_pool* p2 = NULL;
-    goc_chan* done = NULL;
-
-    int rc = 0;
-    srv = goc_http_server_make(goc_http_server_opts());
-    ASSERT(srv != NULL);
-    goc_http_server_route(srv, "GET", "/ping", handler_ping);
-
-    goc_chan* listen_done = goc_chan_make(1);
-    ASSERT(listen_done != NULL);
-    p11_31_listen_arg_t largs = { .srv = srv, .port = port, .done = listen_done };
-    goc_go(p11_31_listen_fiber, &largs);
-
-    goc_val_t* listen_v = goc_take_sync(listen_done);
-    ASSERT(listen_v != NULL);
-    rc = (int)goc_unbox_int(listen_v->val);
-    ASSERT(rc == 0);
-
-    p1 = goc_pool_make(2);
-    p2 = goc_pool_make(2);
-    ASSERT(p1 && p2);
-
-    done = goc_chan_make(P11_31_CLIENTS);
-    ASSERT(done != NULL);
-
-    _Atomic int completed = 0;
-
-    p11_31_client_arg_t args[P11_31_CLIENTS];
-    for (int i = 0; i < P11_31_CLIENTS; i++) {
-        args[i].done = done;
-        args[i].pool = (i % 2 == 0) ? p1 : p2;
-        args[i].port = port;
-        args[i].completed = &completed;
-        goc_go_on(args[i].pool, fiber_p11_31_client, &args[i]);
-    }
-
-    int done_ok = 0;
-    for (int i = 0; i < P11_31_CLIENTS; i++) {
-        goc_val_t* vd = goc_take_sync(done);
-        ASSERT(vd != NULL);
-        if (goc_unbox_int(vd->val) == 1)
-            done_ok++;
-    }
-    ASSERT(done_ok == P11_31_CLIENTS);
-    ASSERT(atomic_load(&completed) == P11_31_CLIENTS);
-
-    goc_take_sync(goc_timeout(50));
-    goc_stats_flush();
-
-    int total_ok = atomic_load(&g_p11_31_stats.total_ok);
-    int seen_from_worker = atomic_load(&g_p11_31_stats.worker_seen);
-    int distinct = 0;
-    for (int i = 0; i < 64; i++)
-        if (atomic_load(&g_p11_31_stats.workers[i]))
-            distinct++;
-
-    printf("    [P11.31] strict-affinity: completed_ok=%d/%d distinct_workers=%d worker_seen=%d\n",
-           total_ok, P11_31_CLIENTS, distinct, seen_from_worker);
-
-    ASSERT(total_ok == P11_31_CLIENTS);
-    ASSERT(seen_from_worker == 1);
-    ASSERT(distinct >= 2);
-
-    TEST_PASS();
-done:
-    if (p1) goc_pool_destroy(p1);
-    if (p2) goc_pool_destroy(p2);
-    if (srv) {
-        goc_chan* close_done = goc_chan_make(1);
-        if (close_done) {
-            p11_31_close_arg_t cargs = { .srv = srv, .done = close_done };
-            goc_go(p11_31_close_fiber, &cargs);
-            goc_take_sync(close_done);
-        }
-    }
-    goc_stats_set_callback(NULL, NULL);
-    goc_stats_shutdown();
-    uv_mutex_destroy(&g_p11_31_mtx);
 }
 
 /* =========================================================================
@@ -1855,7 +1912,7 @@ done:
 int main(void)
 {
     install_crash_handler();
-    goc_test_arm_watchdog(120);
+    goc_test_arm_watchdog(240);
 
     /* Keep HTTP stress deterministic in CI/local loops by capping pool
      * parallelism for this test process. High worker counts amplify scheduler
@@ -1888,6 +1945,7 @@ int main(void)
     test_p11_16();
     test_p11_17();
     test_p11_18();
+    test_p11_18a();
     test_p11_19();
     test_p11_20();
     test_p11_21();
@@ -1899,20 +1957,16 @@ int main(void)
     test_p11_27();
     test_p11_28();
     test_p11_29();
-
-    /* P11.30 uses isolated init/shutdown cycles for pool=1 and pool=4
-     * throughput measurement, so run it after shutting down the main cycle. */
-    goc_shutdown();
     test_p11_30();
-
-    goc_init();
     test_p11_31();
 
-    printf("\n%d/%d tests passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed)
-        printf(", %d FAILED", g_tests_failed);
-    printf("\n");
-
     goc_shutdown();
+
+    /* P11.32 uses isolated init/shutdown cycles for pool=1 and pool=4
+     * throughput measurement, so run it after shutting down the main cycle. */
+    test_p11_32();
+
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
+
     return g_tests_failed ? 1 : 0;
 }

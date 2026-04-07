@@ -8,6 +8,12 @@
 
 typedef struct goc_entry goc_entry;   /* forward declaration; full definition in internal.h */
 
+typedef enum {
+    GOC_CHAN_OPEN = 0,
+    GOC_CHAN_CLOSE_REQUESTED = 1,
+    GOC_CHAN_CLOSING = 2,
+} goc_chan_close_state_t;
+
 struct goc_chan {
     void**       buf;
     size_t       buf_size;
@@ -21,7 +27,8 @@ struct goc_chan {
     uv_mutex_t*  lock;         /* plain malloc; not GC-heap (libuv constraint) */
     int          closed;
     size_t       dead_count;
-    _Atomic int  close_guard;  /* CAS 0→1 to serialise close; prevents double-close races */
+    _Atomic int  close_guard;  /* one of goc_chan_close_state_t */
+    const char*  dbg_tag;      /* optional debug tag for log correlation */
     /* Telemetry counters — incremented with memory_order_relaxed; read at close time */
     _Atomic uint64_t taker_scans;     /* times a take arm scanned this channel in alts */
     _Atomic uint64_t putter_scans;    /* times a put arm scanned this channel in alts */

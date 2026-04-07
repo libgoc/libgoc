@@ -21,6 +21,9 @@
 
 #include <stddef.h>
 #include <stdatomic.h>
+#if defined(_WIN32)
+#  include <winsock2.h>
+#endif
 #include <uv.h>
 #include "internal.h"   /* goc_entry */
 

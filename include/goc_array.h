@@ -16,7 +16,7 @@
  * goc_realloc). No manual free() is required or permitted. Arrays and their
  * backing buffers are collected automatically when unreachable.
  *
- * See ARRAY.md for design rationale and full API documentation.
+ * See docs/ARRAY.md for design rationale and full API documentation.
  */
 
 #ifndef GOC_ARRAY_H

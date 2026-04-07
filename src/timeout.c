@@ -41,13 +41,15 @@ static void on_cancel_timer(void* arg)
 {
     goc_timeout_timer_ctx* tctx = (goc_timeout_timer_ctx*)arg;
     int state = atomic_load_explicit(&tctx->start_state, memory_order_acquire);
+    int cancel = atomic_load_explicit(&tctx->cancel_requested, memory_order_acquire);
 
     GOC_DBG("on_cancel_timer: tctx=%p ch=%p state=%d cancel=%d\n",
-            (void*)tctx, (void*)tctx->ch, state,
-            atomic_load_explicit(&tctx->cancel_requested, memory_order_acquire));
+            (void*)tctx, (void*)tctx->ch, state, cancel);
 
-    if (state != 1)
+    if (state != 1) {
+        GOC_DBG("on_cancel_timer: skipping remove because start_state=%d\n", state);
         return;
+    }
 
     atomic_store_explicit(&tctx->start_state, 2, memory_order_release);
     goc_timer_manager_remove(goc_global_timer_mgr(), tctx);
@@ -69,7 +71,10 @@ static void on_timeout_channel_closed(void* ud)
 
 void goc_timeout_ctx_expire(goc_timeout_timer_ctx* tctx)
 {
-    GOC_DBG("goc_timeout_ctx_expire: tctx=%p ch=%p\n", (void*)tctx, (void*)tctx->ch);
+    int state = atomic_load_explicit(&tctx->start_state, memory_order_acquire);
+    int cancel = atomic_load_explicit(&tctx->cancel_requested, memory_order_acquire);
+    GOC_DBG("goc_timeout_ctx_expire: tctx=%p ch=%p start_state=%d cancel_requested=%d\n",
+            (void*)tctx, (void*)tctx->ch, state, cancel);
     atomic_fetch_add_explicit(&g_timeout_expirations, 1, memory_order_relaxed);
     goc_close(tctx->ch);
     /* start_state is set to 2 by the caller (manager) before invoking this. */

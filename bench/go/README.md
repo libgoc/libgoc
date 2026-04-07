@@ -10,7 +10,7 @@ and mirror those in `bench/libgoc/bench.c` for a direct performance comparison.
 make run
 
 # Multi-pool testing — runs with GOMAXPROCS = 1, 2, 4, 8
-make run-all
+make run all=1
 ```
 
 ## Benchmarks
@@ -35,6 +35,6 @@ All benchmarks produce a single line per run:
 
 ## Multi-Pool Testing
 
-`make run-all` tests performance at different `GOMAXPROCS` settings (GOMAXPROCS = 1, 2, 4, 8).
+`make run all=1` tests performance at different `GOMAXPROCS` settings (GOMAXPROCS = 1, 2, 4, 8).
 
 3 runs of this benchmark can be found in [bench/logs/go.log](../logs/go.log).

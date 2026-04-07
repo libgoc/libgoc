@@ -32,6 +32,8 @@ jobs:
           - { os: ubuntu-latest,  cmake_flags: "",                   name: "Ubuntu (canary)" }
           - { os: macos-latest,   cmake_flags: "",                   name: "macOS (canary)" }
           - { os: windows-latest, cmake_flags: "",                   name: "Windows (canary)" }
+          # Linux fallback path without SO_REUSEPORT
+          - { os: ubuntu-latest,  cmake_flags: "-DGOC_HTTP_REUSEPORT=0", name: "Ubuntu (no reuseport)" }
           # Virtual memory mode - Ubuntu only
           - { os: ubuntu-latest,  cmake_flags: "-DLIBGOC_VMEM=ON",  name: "Ubuntu (vmem)" }
 
@@ -64,16 +66,29 @@ jobs:
           path: ${{ env.BDWGC_PREFIX }}
           key: bdwgc-${{ env.BDWGC_VERSION }}-ubuntu-latest
 
-      - name: Build Boehm GC from source (Linux)
-        if: runner.os == 'Linux' && steps.cache-bdwgc.outputs.cache-hit != 'true'
+      - name: Build or validate Boehm GC from source (Linux)
+        if: runner.os == 'Linux'
         run: |
+          if [ -f "${{ env.BDWGC_PREFIX }}/lib/libgc.a" ]; then
+            echo "Cached Boehm GC static archive found; skipping rebuild."
+            exit 0
+          fi
+
+          echo "Cached Boehm GC is invalid or missing libgc.a; building from source."
+          rm -rf "${{ env.BDWGC_PREFIX }}"
+          mkdir -p "${{ env.BDWGC_PREFIX }}"
           wget -q https://github.com/ivmai/bdwgc/releases/download/v${{ env.BDWGC_VERSION }}/gc-${{ env.BDWGC_VERSION }}.tar.gz
           tar xf gc-${{ env.BDWGC_VERSION }}.tar.gz
           cd gc-${{ env.BDWGC_VERSION }}
           ./configure --enable-threads=posix --enable-thread-local-alloc \
-                      --enable-shared --prefix=${{ env.BDWGC_PREFIX }}
+                      --disable-shared --enable-static --prefix=${{ env.BDWGC_PREFIX }}
           make -j$(nproc)
           make install
+          if [ ! -f "${{ env.BDWGC_PREFIX }}/lib/libgc.a" ]; then
+            echo "ERROR: Boehm GC install did not produce libgc.a"
+            ls -l "${{ env.BDWGC_PREFIX }}/lib"
+            exit 1
+          fi
           # Alias so pkg-config finds bdw-gc-threaded; baked into the cached
           # prefix so nothing needs to touch the cache dir after restore.
           cp ${{ env.BDWGC_PREFIX }}/lib/pkgconfig/bdw-gc.pc \
@@ -90,25 +105,57 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: 1
         run: |
           pkg-config --modversion libuv
           pkg-config --modversion bdw-gc-threaded
+          pkg-config --static --libs libuv
+          pkg-config --static --libs bdw-gc-threaded
+
+      - name: Debug static pkg-config on Linux
+        if: runner.os == 'Linux'
+        env:
+          PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: 1
+        run: |
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+          echo "BDWGC_PREFIX=${{ env.BDWGC_PREFIX }}"
+          pkg-config --variable=libdir bdw-gc-threaded
+          PKG_CONFIG_ALL_STATIC=1 pkg-config --static --libs bdw-gc-threaded
+          ls -l "${{ env.BDWGC_PREFIX }}/lib"
+          ls -l "${{ env.BDWGC_PREFIX }}/lib/pkgconfig"
+          ls -l "${{ env.BDWGC_PREFIX }}"/*.pc || true
 
       - name: Configure & Build (Linux)
         if: runner.os == 'Linux'
         run: |
           set -x
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(nproc)
         timeout-minutes: 2
         env:
           PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
+          PKG_CONFIG_ALL_STATIC: 1
+
+      - name: Verify static linkage (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if [ ! -f build/libgoc.a ]; then
+            echo 'libgoc.a was not built'
+            exit 1
+          fi
+          if ! ar t build/libgoc.a >/dev/null 2>&1; then
+            echo 'build/libgoc.a is not a valid static archive'
+            exit 1
+          fi
+          if readelf -d build/test_p10_io | grep -E 'Shared library: \[.*(libuv|libgc)'; then
+            echo 'Unexpected dynamic libuv/libgc dependency found'
+            exit 1
+          fi
 
       - name: Test (Linux)
         if: runner.os == 'Linux'
         run: ctest --test-dir build --output-on-failure --timeout 60
-        env:
-          LD_LIBRARY_PATH: ${{ env.BDWGC_PREFIX }}/lib
 
       # ---- macOS -------------------------------------------------------
 
@@ -126,17 +173,39 @@ jobs:
 
       - name: Verify dependencies (macOS)
         if: runner.os == 'macOS'
+        env:
+          PKG_CONFIG_ALL_STATIC: 1
         run: |
           pkg-config --modversion libuv
           pkg-config --modversion bdw-gc-threaded
+          pkg-config --static --libs libuv
+          pkg-config --static --libs bdw-gc-threaded
 
       - name: Configure & Build (macOS)
         if: runner.os == 'macOS'
         run: |
           set -x
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON -DLIBGOC_DEBUG=OFF ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(sysctl -n hw.ncpu)
         timeout-minutes: 5
+        env:
+          PKG_CONFIG_ALL_STATIC: 1
+
+      - name: Verify static linkage (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [ ! -f build/libgoc.a ]; then
+            echo 'libgoc.a was not built'
+            exit 1
+          fi
+          if ! ar t build/libgoc.a >/dev/null 2>&1; then
+            echo 'build/libgoc.a is not a valid static archive'
+            exit 1
+          fi
+          if otool -L build/test_p10_io | grep -E 'libuv.*\.dylib|libgc.*\.dylib'; then
+            echo 'Unexpected dynamic libuv/libgc dependency found'
+            exit 1
+          fi
 
       - name: Test (macOS)
         if: runner.os == 'macOS'
@@ -172,14 +241,35 @@ jobs:
           if [ ! -f "$PKGDIR/bdw-gc-threaded.pc" ]; then
             cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
           fi
+          pkg-config --static --libs libuv
+          pkg-config --static --libs bdw-gc-threaded
 
       - name: Configure & Build (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(nproc)
         timeout-minutes: 10
+        env:
+          PKG_CONFIG_ALL_STATIC: 1
+
+      - name: Verify static linkage (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          if [ ! -f build/libgoc.a ]; then
+            echo 'libgoc.a was not built'
+            exit 1
+          fi
+          if ! ar t build/libgoc.a >/dev/null 2>&1; then
+            echo 'build/libgoc.a is not a valid static archive'
+            exit 1
+          fi
+          if objdump -p build/test_p10_io.exe 2>/dev/null | grep -E 'DLL Name: .*libuv|DLL Name: .*gc'; then
+            echo 'Unexpected dynamic libuv/libgc dependency found'
+            exit 1
+          fi
 
       - name: Test (Windows)
         if: runner.os == 'Windows'

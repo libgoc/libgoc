@@ -28,6 +28,9 @@
  *         (the predicate is true only inside a fiber body)
  *   P1.5  goc_realloc() grows a GC allocation preserving existing data,
  *         and shrinks it without corrupting surviving bytes
+ *   P1.6  goc_sprintf() returns a non-NULL GC-managed formatted string
+ *   P1.7  goc_sprintf() with an empty format string returns ""
+ *   P1.8  goc_sprintf() handles a large output (> typical stack buffer)
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -159,10 +162,6 @@ static void test_p1_5(void) {
 done:;
 }
 
-/* =========================================================================
- * Phase 1 — String helpers
- * ====================================================================== */
-
 /*
  * P1.6 — goc_sprintf() returns a non-NULL GC-managed string
  */
@@ -233,12 +232,7 @@ int main(void) {
 
     goc_shutdown();
 
-    printf("=========================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

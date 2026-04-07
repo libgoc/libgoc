@@ -17,7 +17,7 @@ run_checked() {
 	tee -a "$log_file" <"$pipe_path" &
 	tee_pid=$!
 
-	if "$@" >"$pipe_path" 2>&1; then
+	if stdbuf -oL -eL "$@" >"$pipe_path" 2>&1; then
 		cmd_status=0
 	else
 		cmd_status=$?
@@ -32,28 +32,34 @@ run_checked() {
 	fi
 }
 
-find logs -type f -name '*.log' -exec truncate -s 0 {} +
+rm -f logs/go.log
 
 i=0
 while [ "$i" -lt 3 ]; do
-	run_checked logs/go.log make -C go run-all
+	run_checked logs/go.log make -C go run all=1
 	i=$((i + 1))
 done
 
-i=0
-while [ "$i" -lt 3 ]; do
-	run_checked logs/clojure.log make -C clojure run-all
-	i=$((i + 1))
-done
+rm -f logs/clojure.log
 
 i=0
 while [ "$i" -lt 3 ]; do
-	run_checked logs/canary.log make -C libgoc build run-all
+	run_checked logs/clojure.log make -C clojure run all=1
 	i=$((i + 1))
 done
 
+rm -f logs/canary.log
+
 i=0
 while [ "$i" -lt 3 ]; do
-	run_checked logs/vmem.log make -C libgoc LIBGOC_VMEM=ON BUILD_DIR=../../build-bench-vmem build run-all
+	run_checked logs/canary.log make -C libgoc build run all=1
+	i=$((i + 1))
+done
+
+rm -f logs/vmem.log
+
+i=0
+while [ "$i" -lt 3 ]; do
+	run_checked logs/vmem.log make -C libgoc vmem=1 BUILD_DIR=../../build-bench-vmem build run all=1
 	i=$((i + 1))
 done

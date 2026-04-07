@@ -50,6 +50,11 @@
  *   P2.8  Join channel (fiber side): goc_take() on the join channel from a
  *         second fiber parks that fiber until the target fiber returns, then
  *         delivers ok == GOC_CLOSED
+ *   P2.9  Fiber scheduling: a fiber that yields while waiting for a parked
+ *         child must resume and observe the child’s join channel closing
+ *   P2.10 Fiber scheduling: a busy root fiber that repeatedly polls while
+ *         waiting for a parked child must not starve the child or prevent
+ *         the child from reaching the parked state
  *
  * Notes:
  *   - goc_init() is called once in main() before any test runs.
@@ -63,6 +68,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <uv.h>
 
@@ -516,6 +522,126 @@ static void test_p2_8(void) {
 done:;
 }
 
+/* --- P2.9: fiber scheduling while waiting for a parked child ------------- */
+
+static _Atomic(size_t) s_p2_9_parked = 0;
+
+static void p2_9_idle_fn(void* arg) {
+    goc_chan* park = (goc_chan*)arg;
+    atomic_fetch_add_explicit(&s_p2_9_parked, 1, memory_order_release);
+    goc_take(park);
+}
+
+static void p2_9_root_fn(void* arg) {
+    done_t* done = (done_t*)arg;
+    goc_chan* park = goc_chan_make(0);
+    ASSERT(park != NULL);
+
+    atomic_store_explicit(&s_p2_9_parked, 0, memory_order_release);
+    goc_chan* join = goc_go(p2_9_idle_fn, park);
+    ASSERT(join != NULL);
+
+    uint64_t start = uv_hrtime();
+    while (atomic_load_explicit(&s_p2_9_parked, memory_order_acquire) < 1) {
+        if (uv_hrtime() - start > 1000000000ULL) {
+            ASSERT(false); /* timed out waiting for parked fiber */
+        }
+        goc_yield();
+    }
+
+    goc_close(park);
+    goc_val_t* v = goc_take(join);
+    ASSERT(v->ok == GOC_CLOSED);
+
+    done_signal(done);
+
+done:
+    done_signal(done);
+}
+
+/*
+ * P2.9 — goc_go() launches a root fiber that yields while waiting for a child
+ * fiber to park on a rendezvous channel.  The root fiber must resume once the
+ * channel is closed and observe the child's join channel close normally.
+ */
+ static void test_p2_9(void) {
+    TEST_BEGIN("P2.9  fiber scheduling: goc_go root fiber yields while waiting for parked child");
+    done_t done;
+    done_init(&done);
+
+    goc_chan* root_join = goc_go(p2_9_root_fn, &done);
+    ASSERT(root_join != NULL);
+
+    done_wait(&done);
+
+    goc_val_t* v = goc_take_sync(root_join);
+    ASSERT(v->ok == GOC_CLOSED);
+
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
+/* --- P2.10: fiber scheduling while waiting for a parked child ------------- */
+
+static _Atomic(size_t) s_p2_10_parked = 0;
+
+static void p2_10_child_fn(void* arg) {
+    goc_chan* park = (goc_chan*)arg;
+    atomic_fetch_add_explicit(&s_p2_10_parked, 1, memory_order_release);
+    goc_take(park);
+}
+
+static void p2_10_root_fn(void* arg) {
+    done_t* done = (done_t*)arg;
+    goc_chan* park = goc_chan_make(0);
+    ASSERT(park != NULL);
+
+    atomic_store_explicit(&s_p2_10_parked, 0, memory_order_release);
+    goc_chan* join = goc_go(p2_10_child_fn, park);
+    ASSERT(join != NULL);
+
+    uint64_t start = uv_hrtime();
+    while (atomic_load_explicit(&s_p2_10_parked, memory_order_acquire) < 1) {
+        if (uv_hrtime() - start > 1000000000ULL) {
+            ASSERT(false); /* timed out waiting for parked child */
+        }
+        /* Busy-spin intentionally without goc_yield() to expose scheduler
+         * wakeup regressions when an internal enqueue posts work to the
+         * current worker's local deque. */
+    }
+
+    goc_close(park);
+    goc_val_t* v = goc_take(join);
+    ASSERT(v->ok == GOC_CLOSED);
+
+done:
+    done_signal(done);
+}
+
+/*
+ * P2.10 — goc_go() launches a root fiber that busy-spins while waiting for a child
+ * fiber to park on a rendezvous channel.  The root fiber must not starve the child
+ * and the child must reach the parked state.
+ */
+static void test_p2_10(void) {
+    TEST_BEGIN("P2.10 fiber scheduling: busy-root fiber must not starve parked child");
+    done_t done;
+    done_init(&done);
+
+    goc_chan* root_join = goc_go(p2_10_root_fn, &done);
+    ASSERT(root_join != NULL);
+
+    done_wait(&done);
+
+    goc_val_t* v = goc_take_sync(root_join);
+    ASSERT(v->ok == GOC_CLOSED);
+
+    done_destroy(&done);
+    TEST_PASS();
+done:;
+}
+
 /* =========================================================================
  * main
  *
@@ -541,16 +667,13 @@ int main(void) {
     test_p2_6();
     test_p2_7();
     test_p2_8();
+    test_p2_9();
+    test_p2_10();
     printf("\n");
 
     goc_shutdown();
 
-    printf("========================================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

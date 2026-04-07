@@ -35,7 +35,7 @@
 #ifndef GOC_TEST_HARNESS_H
 #define GOC_TEST_HARNESS_H
 
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if defined(__linux__)
 #  define _GNU_SOURCE
 #endif
 
@@ -54,6 +54,11 @@
 #    include <execinfo.h>
 #    define GOC_HAVE_EXECINFO 1
 #  endif
+#endif
+
+#ifdef LIBGOC_DEBUG
+void goc_dbg_flush(void);
+void goc_dbg_flush_signal_safe(void);
 #endif
 
 /* =========================================================================
@@ -83,8 +88,17 @@ extern int g_tests_run;
 extern int g_tests_passed;
 extern int g_tests_failed;
 
+#define REPORT(run, passed, failed)                            \
+    do {                                                     \
+        printf("\n==============================\n");           \
+        printf("%d/%d tests passed", (passed), (run));       \
+        if ((failed) > 0)                                     \
+            printf(", %d FAILED", (failed));               \
+        printf("\n");                                     \
+    } while (0)
+
 #if !defined(_WIN32)
-#  define GOC_TEST_WATCHDOG_REARM() alarm(30)
+#  define GOC_TEST_WATCHDOG_REARM() alarm(60)
 #else
 #  define GOC_TEST_WATCHDOG_REARM() ((void)0)
 #endif
@@ -190,6 +204,9 @@ static void crash_handler(int sig) {
     n = backtrace(frames, GOC_BACKTRACE_MAX);
     backtrace_symbols_fd(frames, n, STDERR_FILENO);
 
+#ifdef LIBGOC_DEBUG
+    goc_dbg_flush_signal_safe();
+#endif
     GOC_STATS_DRAIN();
 
     struct sigaction sa = { .sa_handler = SIG_DFL };
@@ -209,6 +226,9 @@ static void watchdog_handler(int sig) {
             "\n*** watchdog timeout (SIGALRM) — possible hang or deadlock ***\n");
 #endif
 
+#ifdef LIBGOC_DEBUG
+    goc_dbg_flush_signal_safe();
+#endif
     GOC_STATS_DRAIN();
 
     /* Terminate via SIGABRT so CTest records a failure and a core is dumped. */
@@ -219,6 +239,9 @@ static void watchdog_handler(int sig) {
 }
 
 static inline void install_crash_handler(void) {
+#ifdef LIBGOC_DEBUG
+    atexit(goc_dbg_flush);
+#endif
     struct sigaction sa;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESETHAND;
@@ -241,12 +264,18 @@ static inline void goc_test_arm_watchdog(unsigned secs) {
 static void crash_handler(int sig) {
     fprintf(stderr, "\n*** signal %d ***\n", sig);
     fflush(stderr);
+#ifdef LIBGOC_DEBUG
+    goc_dbg_flush_signal_safe();
+#endif
     GOC_STATS_DRAIN();
     signal(sig, SIG_DFL);
     raise(sig);
 }
 
 static inline void install_crash_handler(void) {
+#ifdef LIBGOC_DEBUG
+    atexit(goc_dbg_flush);
+#endif
     signal(SIGSEGV, crash_handler);
     signal(SIGABRT, crash_handler);
     signal(SIGTERM, crash_handler);

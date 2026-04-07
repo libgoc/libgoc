@@ -6,6 +6,61 @@ set -o pipefail
 BUILD_DIR="${BUILD_DIR:-build}"
 LOG_FILE="${LOG_FILE:-test.log}"
 WATCH_MODE="${WATCH:-0}"
+DEBUG_BUILD="0"
+VMEM="0"
+if [[ "$(uname -s)" == "Linux" ]]; then
+    REUSEPORT_DEFAULT=1
+else
+    REUSEPORT_DEFAULT=0
+fi
+REUSEPORT="$REUSEPORT_DEFAULT"
+
+usage() {
+    echo "Usage: $0 [-dbg <0|1>] [-rp <0|1>] [-vmem <0|1>]"
+    echo "  -dbg  Build with LIBGOC_DEBUG=ON when 1, OFF when 0. Default: 0."
+    echo "  -rp   Build with GOC_HTTP_REUSEPORT=1 when 1, otherwise 0. Default: $REUSEPORT_DEFAULT."
+    echo "  -vmem Build with LIBGOC_VMEM=ON when 1, OFF when 0. Default: 0."
+    exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -dbg)
+            shift
+            if [[ $# -eq 0 || ! "$1" =~ ^[01]$ ]]; then
+                echo "Error: -dbg requires 0 or 1."
+                usage
+            fi
+            DEBUG_BUILD="$1"
+            shift
+            ;;
+        -rp)
+            shift
+            if [[ $# -eq 0 || ! "$1" =~ ^[01]$ ]]; then
+                echo "Error: -rp requires 0 or 1."
+                usage
+            fi
+            REUSEPORT="$1"
+            shift
+            ;;
+        -vmem)
+            shift
+            if [[ $# -eq 0 || ! "$1" =~ ^[01]$ ]]; then
+                echo "Error: -vmem requires 0 or 1."
+                usage
+            fi
+            VMEM="$1"
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Error: Unknown option '$1'."
+            usage
+            ;;
+    esac
+done
 
 # Truncate and stream all output (stdout+stderr) to console and log file.
 exec > >(tee "$LOG_FILE") 2>&1
@@ -15,7 +70,10 @@ FAILED_TESTS=()
 configure_build() {
     cmake -S . -B "$BUILD_DIR" \
         -DGOC_ENABLE_STATS=ON \
-        -DLIBGOC_DEBUG=ON
+        -DLIBGOC_STATIC_DEPENDENCIES=ON \
+        -DLIBGOC_DEBUG="$DEBUG_BUILD" \
+        -DGOC_HTTP_REUSEPORT="$REUSEPORT" \
+        -DLIBGOC_VMEM="$VMEM"
 }
 
 build_project() {
@@ -94,12 +152,17 @@ run_cycle() {
     return $?
 }
 
-rm -rf "$BUILD_DIR"
+debug_status="OFF"
+if [[ "$DEBUG_BUILD" == "1" ]]; then
+    debug_status="ON"
+fi
 
 echo "== libgoc test runner =="
 echo "Build dir : $BUILD_DIR"
 echo "Log file  : $LOG_FILE"
-echo "Debug     : LIBGOC_DEBUG=ON"
+echo "Debug     : LIBGOC_DEBUG=$debug_status"
+echo "Reuseport : GOC_HTTP_REUSEPORT=$REUSEPORT"
+echo "VMEM      : LIBGOC_VMEM=$VMEM"
 echo "Watch mode: $WATCH_MODE"
 
 last_status=0

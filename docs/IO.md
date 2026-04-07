@@ -94,25 +94,34 @@ rather than to the global `g_loop`. This allows threadpool-backed I/O issued
 from pool-worker fibers to be dispatched and completed without round-tripping
 through the central event-loop thread.
 
-Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) must reach the
-loop thread. The core TCP path (read_start/stop, write, tcp_connect, handle
-init/close, tcp_server_make) dispatches via `post_on_loop()` (MPSC callback
-queue, no per-call `uv_async_t`). All other operations (write2, shutdown,
-pipe_connect, UDP, signals, TTY, FS events/polls) also use `post_on_loop()`.
-Both paths are safe to call from fiber or OS-thread context.
+Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) must run on the
+loop thread that owns the handle. All wrappers use `dispatch_on_handle_loop`,
+which selects the appropriate path automatically:
+
+- **Same-worker fast path** — when the calling fiber owns the handle's loop,
+  the operation is performed directly (zero cross-thread hops).
+- **Cross-worker path** — when the handle's loop belongs to a different worker,
+  the task is posted to that worker's MPSC task queue via `post_on_handle_loop`.
+- **Global loop path** — handles initialised outside a worker fiber live on
+  `g_loop` and use the existing `post_on_loop()` MPSC callback queue.
+
+All paths are safe to call from fiber or OS-thread context.
 
 Handle initialisation (`uv_tcp_init`, `uv_pipe_init`, `uv_udp_init`, etc.)
-modifies internal loop state and must reach the event loop thread. Use the
+is performed on the calling worker's own `uv_loop_t` when called from a pool
+worker fiber (worker-affine handles). Handles initialised from outside a worker
+fiber (e.g. from `main`) are placed on `g_loop`. `goc_io_fs_event_init` and
+`goc_io_fs_poll_init` always use `g_loop` regardless of context. Use the
 provided init helpers (`goc_io_tcp_init`, `goc_io_pipe_init`, `goc_io_udp_init`,
 `goc_io_tty_init`, `goc_io_signal_init`, `goc_io_fs_event_init`,
-`goc_io_fs_poll_init`, `goc_io_process_spawn`) — they dispatch to the loop
-thread and register the handle automatically:
+`goc_io_fs_poll_init`, `goc_io_process_spawn`) — they select the correct loop
+and register the handle automatically:
 
 ```c
 uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
 int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
 // ... later:
-goc_io_handle_close((uv_handle_t*)tcp, NULL);  /* unregisters automatically */
+goc_take(goc_io_handle_close((uv_handle_t*)tcp));
 ```
 
 See [GC handle lifetime management](#11-gc-handle-lifetime-management) for full details.
@@ -321,7 +330,7 @@ typedef struct {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_io_read_start` | `goc_chan* goc_io_read_start(uv_stream_t* stream)` | Begin receiving data from a stream. Returns a channel that delivers `goc_io_read_t*` values, one per read callback. The channel is closed on EOF or unrecoverable error; the last delivered value carries the error code in `nread`. Call `goc_io_read_stop()` to stop before EOF. Safe from any context. |
+| `goc_io_read_start` | `goc_chan* goc_io_read_start(uv_stream_t* stream)` | Begin receiving data from a stream. Returns a channel that delivers `goc_io_read_t*` values, one per read callback. The channel is closed on EOF or unrecoverable error; the last delivered value carries the error code in `nread`. If the stream is already closing or the loop is shutting down, the channel may deliver a single `UV_ECANCELED` error immediately. Call `goc_io_read_stop()` to stop before EOF. Safe from any context. |
 | `goc_io_read_stop` | `int goc_io_read_stop(uv_stream_t* stream)` | Dispatch `uv_read_stop()` to the event loop thread and close the read channel. Returns 0; the stop takes effect asynchronously. Safe from any context. |
 
 ```c
@@ -565,7 +574,7 @@ handle in a GC-visible root array for the duration of its libuv lifetime.
 |---|---|---|
 | `goc_io_handle_register` | `void goc_io_handle_register(uv_handle_t* handle)` | Pin a GC-allocated handle as a GC root. Only needed if you call `uv_*_init` yourself (e.g. from the loop thread). Safe from any context. |
 | `goc_io_handle_unregister` | `void goc_io_handle_unregister(uv_handle_t* handle)` | Remove the handle from the root array. Call from inside your `uv_close` callback. Safe from any context. |
-| `goc_io_handle_close` | `void goc_io_handle_close(uv_handle_t* handle, uv_close_cb cb)` | Dispatch `uv_close` to the loop thread and automatically unregister on completion, then forward to `cb` (may be NULL). Safe from any context. Overwrites `handle->data` from the loop thread before calling `uv_close`. |
+| `goc_io_handle_close` | `goc_chan* goc_io_handle_close(uv_handle_t* handle)` | Dispatch `uv_close` to the loop thread, unregister the handle automatically on completion, and return a join channel that closes after the handle has finished closing. Safe from any context. Overwrites `handle->data` from the loop thread before calling `uv_close`. |
 
 **Example — TCP handle from fiber context**
 
@@ -580,7 +589,7 @@ static void tcp_fiber(void* _) {
 
     /* ... connect, read, write ... */
 
-    goc_io_handle_close((uv_handle_t*)tcp, NULL);
+    goc_take(goc_io_handle_close((uv_handle_t*)tcp));
 }
 ```
 

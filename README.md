@@ -15,8 +15,6 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - **C developers** who want a Go-style concurrency runtime without switching to Go.
 - **Language implementors** targeting C/C++ as a compilation target, or writing multithreaded interpreters.
 
-> ⚠️ Experimental software! Don't use it for anything serious yet!
-
 **Dependencies:**
 
 | | |
@@ -32,13 +30,13 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - Windows (x86-64)
 
 **Helper libraries:**
-- [Async I/O](./IO.md)
-- [Async HTTP Client/Server](./HTTP.md)
-- [Dynamic Array](./ARRAY.md)
-- [Telemetry](./TELEMETRY.md)
+- [Async I/O](./docs/IO.md)
+- [Async HTTP Client/Server](./docs/HTTP.md)
+- [Dynamic Array](./docs/ARRAY.md)
+- [Telemetry](./docs/TELEMETRY.md)
 
 **Also see:**
-- [Design Doc](./DESIGN.md)
+- [Design Doc](./docs/DESIGN.md)
 - [Benchmarks](/bench/README.md)
 
 ---
@@ -67,8 +65,8 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [RW mutexes](#rw-mutexes)
   - [Thread pool](#thread-pool)
   - [Scheduler loop access](#scheduler-loop-access)
-  - [Async I/O →](./IO.md)
-  - [HTTP Client/Server →](./HTTP.md)
+  - [Async I/O →](./docs/IO.md)
+  - [HTTP Client/Server →](./docs/HTTP.md)
 - [Best Practices](#best-practices)
 - [Benchmarks](#benchmarks)
 - [Building and Testing](#building-and-testing)
@@ -77,7 +75,6 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [Linux](#linux)
   - [Windows](#windows)
   - [Build types](#build-types)
-  - [Shared library](#shared-library)
   - [Code coverage](#code-coverage)
   - [Sanitizers](#sanitizers)
 
@@ -309,14 +306,12 @@ int main(void) {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_malloc` | `void* goc_malloc(size_t n)` | Allocate `n` bytes on the GC-managed heap. No `free` required — the collector reclaims unreachable memory automatically. Backed by `GC_malloc` internally. |
+| `goc_malloc` | `void* goc_malloc(size_t n)` | Allocate `n` bytes on the GC-managed heap. No `free` required — the collector reclaims unreachable memory automatically. Backed by `GC_malloc` internally. Aborts on allocation failure and never returns `NULL`. |
 
 ```c
 my_obj_t* obj = goc_malloc(sizeof(my_obj_t));
 // obj is automatically collected when no longer reachable
 ```
-
-> **Note:** libuv handles (`uv_timer_t`, `uv_async_t`, etc.) must be allocated with `goc_malloc` and registered via `goc_io_handle_register`. This pins them in a GC-visible root array so they are not collected while libuv holds an internal reference.
 
 ---
 
@@ -489,7 +484,7 @@ These functions may suspend the calling fiber. **Call only from inside a fiber**
 |---|---|---|
 | `goc_take` | `goc_val_t* goc_take(goc_chan* ch)` | Receive the next value from `ch`. Blocks until a value is available or the channel is closed. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
 | `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
-| `goc_take_all` | `goc_val_t** goc_take_all(goc_chan** chs, size_t n)` | Receive from every channel in `chs[0..n-1]` in order, suspending on each one in turn. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must only be called from a fiber. |
+| `goc_take_all` | `goc_val_t** goc_take_all(goc_chan** chs, size_t n)` | Receive from each channel in `chs[0..n-1]` in order, then wait for all results. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must only be called from a fiber. |
 
 ---
 
@@ -501,7 +496,7 @@ Blocks the calling OS thread (not a fiber). Calling these from a fiber is a runt
 |---|---|---|
 | `goc_take_sync` | `goc_val_t* goc_take_sync(goc_chan* ch)` | Receive a value, blocking the OS thread. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. |
 | `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
-| `goc_take_all_sync` | `goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)` | Receive from every channel in `chs[0..n-1]` in order, blocking the OS thread on each one in turn. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take_sync` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must not be called from a fiber. |
+| `goc_take_all_sync` | `goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)` | Receive from each channel in `chs[0..n-1]` in order, then block the OS thread until all results are ready. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take_sync` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must not be called from a fiber. |
 
 ---
 
@@ -620,7 +615,7 @@ goc_close(w);          /* release */
 
 The default pool is created by `goc_init` with `max(4, hardware_concurrency)` worker threads. This can be overridden by setting the `GOC_POOL_THREADS` environment variable to a positive integer before calling `goc_init`. Invalid values (non-numeric, zero, or negative) are silently ignored and the default is used.
 
-Pass `-DLIBGOC_DEBUG=ON` to CMake to enable verbose `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O, and HTTP layers at compile time. Off by default.
+Pass `-DLIBGOC_DEBUG=ON` to CMake to enable verbose timestamped `[GOC_DBG]` diagnostic output to `stderr` from the scheduler, I/O, and HTTP layers at compile time. In debug builds, output is buffered in-process and must be flushed explicitly via `goc_dbg_flush()` (normal exit) or `goc_dbg_flush_signal_safe()` (from a signal handler); neither fires automatically. Off by default.
 
 ```c
 typedef enum {
@@ -661,7 +656,7 @@ if (goc_pool_destroy_timeout(io_pool, 2000) == GOC_DRAIN_TIMEOUT) {
 
 ### Async I/O
 
-See [IO.md](./IO.md) for the full `goc_io` API reference.
+See [IO.md](./docs/IO.md) for the full `goc_io` API reference.
 
 ---
 
@@ -669,7 +664,7 @@ See [IO.md](./IO.md) for the full `goc_io` API reference.
 
 libgoc ships an HTTP/1.1 server and client built on `goc_io` TCP and the vendored [picohttpparser](https://github.com/h2o/picohttpparser) (MIT). It integrates with the fiber scheduler and has no additional runtime dependencies beyond libuv.
 
-See [HTTP.md](./HTTP.md) for the full `goc_http` API reference.
+See [HTTP.md](./docs/HTTP.md) for the full `goc_http` API reference.
 
 ---
 
@@ -710,7 +705,28 @@ Benchmark suites for Go and libgoc live under [`bench/`](./bench/README.md). The
 
 ## Building and Testing
 
-libgoc ships with a comprehensive, phased test suite covering the full public API. See the [Testing section in the Design Doc](./DESIGN.md#testing) for a breakdown of the test phases and what each one covers.
+**Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases).
+
+libgoc ships with a comprehensive, phased test suite covering the full public API. See the [Testing section in the Design Doc](./docs/DESIGN.md#testing) for a breakdown of the test phases and what each one covers.
+
+**`test.sh`** — Full build + test runner with optional watch mode:
+
+```sh
+./test.sh              # build and run all tests
+WATCH=1 ./test.sh      # rebuild and rerun on any src/include/tests change
+./test.sh -dbg 1       # enable verbose [GOC_DBG] output
+```
+
+Options: `-dbg <0|1>`, `-rp <0|1>` (SO_REUSEPORT for HTTP tests), `-vmem <0|1>`. Output is streamed to console and `test.log`. In watch mode, only previously-failing tests are rerun on the next change.
+
+**`run_test_loop.sh`** — Stress a single test for flakiness detection:
+
+```sh
+./run_test_loop.sh tests/test_p06_thread_pool.c           # run up to 20 times
+./run_test_loop.sh tests/test_p06_thread_pool.c -max-tries 100 -trace 1
+```
+
+Builds only the named target, runs it in a loop, and exits on the first failure. Each run is timestamped; log path is printed on exit.
 
 ### Prerequisites
 
@@ -723,6 +739,8 @@ libgoc ships with a comprehensive, phased test suite covering the full public AP
 | minicoro | vendored (`vendor/minicoro/`); instantiated via `src/minicoro.c` |
 
 A C11 compiler is required: GCC or Clang on Linux/macOS; MinGW-w64 GCC via MSYS2 UCRT64 on Windows.
+
+libgoc is built to link statically against `libuv` and Boehm GC. Ensure static versions of those dependencies are available to `pkg-config` before configuring.
 
 ---
 
@@ -738,7 +756,8 @@ PKGDIR="$(brew --prefix)/lib/pkgconfig"
 [ -f "$PKGDIR/bdw-gc-threaded.pc" ] || cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
 
 # 2. Configure
-cmake -B build
+export PKG_CONFIG_ALL_STATIC=1
+cmake -B build -DLIBGOC_STATIC_DEPENDENCIES=ON
 
 # 3. Build
 cmake --build build
@@ -765,7 +784,7 @@ sudo apt install cmake libuv1-dev libatomic-ops-dev pkg-config build-essential
 # Build Boehm GC from source instead:
 wget https://github.com/ivmai/bdwgc/releases/download/v8.2.6/gc-8.2.6.tar.gz
 tar xf gc-8.2.6.tar.gz && cd gc-8.2.6
-./configure --enable-threads=posix --enable-thread-local-alloc --enable-shared --prefix=/usr/local
+./configure --enable-threads=posix --enable-thread-local-alloc --disable-shared --enable-static --prefix=/usr/local
 make -j$(nproc) && sudo make install && sudo ldconfig && cd ..
 
 # The source build does not always generate a bdw-gc-threaded.pc pkg-config alias.
@@ -780,7 +799,8 @@ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
 # echo 'export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH' >> ~/.bashrc
 
 # 2. Configure
-cmake -B build
+export PKG_CONFIG_ALL_STATIC=1
+cmake -B build -DLIBGOC_STATIC_DEPENDENCIES=ON
 
 # 3. Build
 cmake --build build
@@ -811,7 +831,8 @@ PKGDIR="/ucrt64/lib/pkgconfig"
 [ -f "$PKGDIR/bdw-gc-threaded.pc" ] || cp "$PKGDIR/bdw-gc.pc" "$PKGDIR/bdw-gc-threaded.pc"
 
 # 3. Configure and build everything (library + tests)
-cmake -B build
+export PKG_CONFIG_ALL_STATIC=1
+cmake -B build -DLIBGOC_STATIC_DEPENDENCIES=ON
 cmake --build build --parallel $(nproc)
 
 # 4. Run tests
@@ -855,17 +876,15 @@ cmake -B build -DLIBGOC_STACK_SIZE=131072   # 128 KB
 
 ---
 
-### Shared library
+### Installation and pkg-config
 
-A shared library target (`goc_shared`) is available via `-DLIBGOC_SHARED=ON`. It produces `libgoc.so` (Linux), `libgoc.dylib` (macOS), or `libgoc.dll` (Windows) alongside the default static library.
+`libgoc` is installed as a static archive plus headers. The install step writes a `libgoc.pc` pkg-config file to `<prefix>/lib/pkgconfig/`, so downstream projects can locate and link `libgoc` without knowing its install prefix.
 
 ```sh
-cmake -B build -DLIBGOC_SHARED=ON
+cmake -B build
 cmake --build build
-sudo cmake --install build   # installs goc.h, goc_io.h, goc_array.h, libgoc.a, libgoc.so, and libgoc.pc
+sudo cmake --install build   # installs goc.h, goc_io.h, goc_array.h, libgoc.a, and libgoc.pc
 ```
-
-The install step writes a `libgoc.pc` pkg-config file to `<prefix>/lib/pkgconfig/`. Downstream projects can then locate and link libgoc without knowing its install prefix:
 
 ```sh
 # Compile and link a consumer with pkg-config

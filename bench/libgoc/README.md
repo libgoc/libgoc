@@ -10,8 +10,10 @@ build are required to run them.
 - C11 compiler (GCC or Clang)
 - CMake ≥ 3.20
 - pkg-config
-- libuv
-- Threaded Boehm GC (`bdw-gc-threaded`)
+- libuv (static libraries available)
+- Threaded Boehm GC (`bdw-gc-threaded`, static libraries available)
+
+`bench-libgoc` is built to link statically against `libuv` and Boehm GC, so the benchmark requires the static archives for those dependencies to be available to `pkg-config`.
 
 ## Building and Running
 
@@ -25,23 +27,15 @@ make build
 make run
 
 # Multi-pool testing (GOC_POOL_THREADS = 1, 2, 4, 8)
-make run-all
+make run all=1
 ```
 
 ### vmem mode (virtual-memory-backed stacks — opt-in)
 
 ```sh
 # Build and run benchmarks against a vmem libgoc build
-make LIBGOC_VMEM=ON BUILD_DIR=../../build-bench-vmem build run-all
+make vmem=1 BUILD_DIR=../../build-bench-vmem build run all=1
 ```
-
-In all builds, libgoc now throttles the number of simultaneously materialised
-fibers per pool by default (`GOC_MAX_LIVE_FIBERS`, default
-`floor(0.6 × (available_hardware_memory / fiber_stack_size))`).
-The `0.6` factor keeps roughly
-40% headroom for GC/runtime overhead while still pushing
-high throughput. Set `GOC_MAX_LIVE_FIBERS=0` to disable the throttle, or pick
-an explicit positive cap for repeatable stress testing.
 
 ## Benchmarks
 
@@ -79,7 +73,7 @@ HTTP server throughput: <requests> requests in <ms>ms (<rate> req/s, <errors> er
 
 ## Multi-Pool Testing
 
-`make run-all` tests performance at different `GOC_POOL_THREADS` settings (1, 2, 4, 8).
+`make run all=1` tests performance at different `GOC_POOL_THREADS` settings (1, 2, 4, 8).
 
 3 runs of canary benchmarks can be found in [bench/logs/canary.log](../logs/canary.log).
 

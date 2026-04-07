@@ -529,7 +529,7 @@ done:;
 
 static void p8_10_put_sync_from_fiber(void* arg) {
     goc_chan* ch = (goc_chan*)arg;
-    goc_put_sync(ch, goc_box_uint(0xBEEF));
+    goc_put_sync(ch, goc_box_uint(0xBEAD));
 }
 
 static void p8_10_child_fn(void* arg) {
@@ -638,12 +638,7 @@ int main(void) {
     printf("\n");
     goc_shutdown();
 
-    printf("=========================================================\n");
-    printf("Results: %d/%d passed", g_tests_passed, g_tests_run);
-    if (g_tests_failed > 0) {
-        printf(", %d FAILED", g_tests_failed);
-    }
-    printf("\n");
+    REPORT(g_tests_run, g_tests_passed, g_tests_failed);
 
     return (g_tests_failed == 0) ? 0 : 1;
 }

@@ -11,19 +11,29 @@ endif()
 # ---------------------------------------------------------------------------
 # Build options
 # ---------------------------------------------------------------------------
-option(LIBGOC_SHARED      "Build a shared library (libgoc.so / .dylib / .dll)" OFF)
 option(LIBGOC_VMEM        "Use minicoro virtual memory allocator (off by default; canary-protected stacks are the default)" OFF)
 option(LIBGOC_ASAN        "Build an instrumented copy of goc with AddressSanitizer" OFF)
 option(LIBGOC_TSAN        "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE    "Instrument goc and tests for code coverage" OFF)
+option(LIBGOC_STATIC_DEPENDENCIES "Link libuv and bdwgc statically" ON)
 option(LIBGOC_SERVER      "Build the goc_http HTTP/1.1 library" ON)
 option(GOC_ENABLE_STATS   "Enable telemetry / statistics collection (goc_stats)" OFF)
 option(LIBGOC_DEBUG       "Enable compile-time GOC_DBG diagnostic logging" OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(GOC_HTTP_REUSEPORT_DEFAULT ON)
+else()
+    set(GOC_HTTP_REUSEPORT_DEFAULT OFF)
+endif()
+option(GOC_HTTP_REUSEPORT  "Compile-time override for HTTP SO_REUSEPORT support" ${GOC_HTTP_REUSEPORT_DEFAULT})
 set(LIBGOC_STACK_SIZE "0" CACHE STRING "Default fiber stack size in bytes (0 = let minicoro decide)")
 
 # ---------------------------------------------------------------------------
 # Mutual-exclusion guards
 # ---------------------------------------------------------------------------
+if(LIBGOC_SHARED)
+    message(FATAL_ERROR "Shared library builds are no longer supported. Remove -DLIBGOC_SHARED or build libgoc as a static library only.")
+endif()
+
 if(LIBGOC_ASAN AND LIBGOC_TSAN)
     message(FATAL_ERROR "LIBGOC_ASAN and LIBGOC_TSAN are mutually exclusive. "
                         "Configure them in separate build directories.")
@@ -40,8 +50,85 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(PkgConfig REQUIRED)
 
+if(LIBGOC_STATIC_DEPENDENCIES)
+    # Force pkg-config to resolve static dependencies for libuv and bdwgc.
+    # This is the intended build mode for libgoc.a: no runtime shared
+    # dependency on libuv or Boehm GC.
+    set(ENV{PKG_CONFIG_ALL_STATIC} 1)
+    message(STATUS "Static dependency linking enabled for libuv and bdw-gc.")
+else()
+    message(STATUS "Static dependency linking disabled; pkg-config may select shared libs.")
+endif()
+
 pkg_check_modules(LIBUV REQUIRED IMPORTED_TARGET libuv)
 pkg_check_modules(BDWGC REQUIRED IMPORTED_TARGET bdw-gc-threaded)
+
+if(LIBGOC_STATIC_DEPENDENCIES)
+    function(goc_find_static_pkg_archive pkg_name archive_name archive_var libs_var)
+        execute_process(COMMAND pkg-config --variable=libdir ${pkg_name}
+                        RESULT_VARIABLE PKG_LIBDIR_RESULT
+                        OUTPUT_VARIABLE PKG_LIBDIR
+                        ERROR_VARIABLE PKG_LIBDIR_ERROR
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_STRIP_TRAILING_WHITESPACE)
+        if(NOT PKG_LIBDIR_RESULT EQUAL 0)
+            message(FATAL_ERROR "Could not resolve ${pkg_name} libdir: ${PKG_LIBDIR_ERROR}")
+        endif()
+
+        execute_process(COMMAND pkg-config --static --libs ${pkg_name}
+                        RESULT_VARIABLE PKG_STATIC_RESULT
+                        OUTPUT_VARIABLE PKG_STATIC_LIBS
+                        ERROR_VARIABLE PKG_STATIC_ERROR
+                        OUTPUT_STRIP_TRAILING_WHITESPACE
+                        ERROR_STRIP_TRAILING_WHITESPACE)
+        if(NOT PKG_STATIC_RESULT EQUAL 0)
+            message(FATAL_ERROR "Static ${pkg_name} dependency check failed: ${PKG_STATIC_ERROR}")
+        endif()
+
+        set(CANDIDATE_LIBDIRS ${PKG_LIBDIR})
+        string(REGEX MATCHALL "-L[^ ]+" PKG_LIB_DIR_FLAGS "${PKG_STATIC_LIBS}")
+        foreach(lib_dir_flag IN LISTS PKG_LIB_DIR_FLAGS)
+            string(REGEX REPLACE "^-L" "" libdir "${lib_dir_flag}")
+            list(APPEND CANDIDATE_LIBDIRS "${libdir}")
+        endforeach()
+        list(REMOVE_DUPLICATES CANDIDATE_LIBDIRS)
+
+        set(FOUND_ARCHIVE "")
+        string(REGEX MATCHALL "[^ ]*${archive_name}" ARCHIVE_PATHS "${PKG_STATIC_LIBS}")
+        foreach(cand IN LISTS ARCHIVE_PATHS)
+            if(EXISTS "${cand}")
+                set(FOUND_ARCHIVE "${cand}")
+                break()
+            endif()
+        endforeach()
+
+        foreach(libdir IN LISTS CANDIDATE_LIBDIRS)
+            if(FOUND_ARCHIVE)
+                break()
+            endif()
+            string(CONCAT candidate "${libdir}/" "${archive_name}")
+            if(EXISTS "${candidate}")
+                set(FOUND_ARCHIVE "${candidate}")
+            endif()
+        endforeach()
+
+        if(NOT FOUND_ARCHIVE)
+            message(FATAL_ERROR "Could not find static ${pkg_name} archive ${archive_name} in any of: ${CANDIDATE_LIBDIRS}")
+        endif()
+
+        set(${archive_var} "${FOUND_ARCHIVE}" PARENT_SCOPE)
+        set(${libs_var} "${PKG_STATIC_LIBS}" PARENT_SCOPE)
+    endfunction()
+
+    goc_find_static_pkg_archive(libuv libuv.a LIBUV_STATIC_ARCHIVE LIBUV_STATIC_LIBS)
+    goc_find_static_pkg_archive(bdw-gc-threaded libgc.a BDWGC_STATIC_ARCHIVE BDWGC_STATIC_LIBS)
+
+    string(REPLACE "-luv" "${LIBUV_STATIC_ARCHIVE}" LIBUV_STATIC_LINK_FLAGS_TMP "${LIBUV_STATIC_LIBS}")
+    string(REPLACE "-lgc" "${BDWGC_STATIC_ARCHIVE}" LIBUV_STATIC_LINK_FLAGS_TMP "${LIBUV_STATIC_LINK_FLAGS_TMP}")
+    string(REPLACE "-lgc" "${BDWGC_STATIC_ARCHIVE}" BDWGC_STATIC_LINK_FLAGS_TMP "${BDWGC_STATIC_LIBS}")
+    separate_arguments(LIBUV_STATIC_LINK_FLAGS UNIX_COMMAND "${LIBUV_STATIC_LINK_FLAGS_TMP}")
+    separate_arguments(BDWGC_STATIC_LINK_FLAGS UNIX_COMMAND "${BDWGC_STATIC_LINK_FLAGS_TMP}")
+endif()
 
 # picohttpparser is vendored under vendor/picohttpparser — no external package needed.
 
@@ -61,6 +148,7 @@ set(GOC_SOURCES
     src/wsdq.c
     src/goc_array.c
     src/goc_io.c
+    src/goc_debug.c
 )
 
 if(GOC_ENABLE_STATS)
@@ -96,11 +184,17 @@ function(goc_configure_target target_name)
     else()
         target_compile_definitions(${target_name} PRIVATE GC_THREADS GC_PTHREADS)
     endif()
-    target_link_libraries(${target_name}
-        PUBLIC
-            PkgConfig::LIBUV
-            PkgConfig::BDWGC
-    )
+
+    if(LIBGOC_STATIC_DEPENDENCIES)
+        target_include_directories(${target_name} PUBLIC ${LIBUV_INCLUDE_DIRS} ${BDWGC_INCLUDE_DIRS})
+        target_link_libraries(${target_name} PUBLIC ${LIBUV_STATIC_LINK_FLAGS} ${BDWGC_STATIC_LINK_FLAGS})
+    else()
+        target_link_libraries(${target_name}
+            PUBLIC
+                PkgConfig::LIBUV
+                PkgConfig::BDWGC
+        )
+    endif()
 endfunction()
 
 # minicoro.c must NOT be compiled with -DGC_THREADS (the TLS variable
@@ -132,28 +226,13 @@ endif()
 if(LIBGOC_DEBUG)
     target_compile_definitions(goc PRIVATE LIBGOC_DEBUG)
 endif()
+if(GOC_HTTP_REUSEPORT)
+    target_compile_definitions(goc PRIVATE GOC_HTTP_REUSEPORT)
+else()
+    target_compile_definitions(goc PRIVATE GOC_HTTP_REUSEPORT=0)
+endif()
 target_compile_definitions(goc PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 
-# ---------------------------------------------------------------------------
-# Optional shared library: goc_shared  (-DLIBGOC_SHARED=ON)
-# ---------------------------------------------------------------------------
-if(LIBGOC_SHARED)
-    add_library(goc_shared SHARED ${GOC_SOURCES})
-    goc_configure_target(goc_shared)
-    set_target_properties(goc_shared PROPERTIES OUTPUT_NAME goc)
-    if(LIBGOC_VMEM)
-        target_compile_definitions(goc_shared PRIVATE LIBGOC_VMEM_ENABLED)
-    endif()
-    if(GOC_ENABLE_STATS)
-        target_compile_definitions(goc_shared PRIVATE GOC_ENABLE_STATS)
-    endif()
-    if(LIBGOC_DEBUG)
-        target_compile_definitions(goc_shared PRIVATE LIBGOC_DEBUG)
-    endif()
-    target_compile_definitions(goc_shared PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
-endif()
-
-# ---------------------------------------------------------------------------
 # Optional: AddressSanitizer  (-DLIBGOC_ASAN=ON)
 # ---------------------------------------------------------------------------
 if(LIBGOC_ASAN)
@@ -169,6 +248,11 @@ if(LIBGOC_ASAN)
     endif()
     if(LIBGOC_DEBUG)
         target_compile_definitions(goc_asan PRIVATE LIBGOC_DEBUG)
+    endif()
+    if(GOC_HTTP_REUSEPORT)
+        target_compile_definitions(goc_asan PRIVATE GOC_HTTP_REUSEPORT)
+    else()
+        target_compile_definitions(goc_asan PRIVATE GOC_HTTP_REUSEPORT=0)
     endif()
     target_compile_definitions(goc_asan PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 endif()
@@ -189,6 +273,11 @@ if(LIBGOC_TSAN)
     endif()
     if(LIBGOC_DEBUG)
         target_compile_definitions(goc_tsan PRIVATE LIBGOC_DEBUG)
+    endif()
+    if(GOC_HTTP_REUSEPORT)
+        target_compile_definitions(goc_tsan PRIVATE GOC_HTTP_REUSEPORT)
+    else()
+        target_compile_definitions(goc_tsan PRIVATE GOC_HTTP_REUSEPORT=0)
     endif()
     target_compile_definitions(goc_tsan PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
 endif()
@@ -243,6 +332,11 @@ foreach(test_src IN LISTS TEST_SOURCES)
             if(LIBGOC_DEBUG)
                 target_compile_definitions(goc_stats_instrumented PRIVATE LIBGOC_DEBUG)
             endif()
+            if(GOC_HTTP_REUSEPORT)
+                target_compile_definitions(goc_stats_instrumented PRIVATE GOC_HTTP_REUSEPORT)
+            else()
+                target_compile_definitions(goc_stats_instrumented PRIVATE GOC_HTTP_REUSEPORT=0)
+            endif()
         endif()
         set(GOC_LINK_TARGET goc_stats_instrumented)
     endif()
@@ -251,11 +345,15 @@ foreach(test_src IN LISTS TEST_SOURCES)
 
     target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro)
 
-    target_link_libraries(${test_name} PRIVATE
-        ${GOC_LINK_TARGET}
-        PkgConfig::LIBUV
-        PkgConfig::BDWGC
-    )
+    if(LIBGOC_STATIC_DEPENDENCIES)
+        target_link_libraries(${test_name} PRIVATE ${GOC_LINK_TARGET})
+    else()
+        target_link_libraries(${test_name} PRIVATE
+            ${GOC_LINK_TARGET}
+            PkgConfig::LIBUV
+            PkgConfig::BDWGC
+        )
+    endif()
 
     # Propagate the vmem mode flag so tests can conditionally skip behaviour
     # that only applies to canary mode (e.g. P8.1 stack-overflow detection).
@@ -308,7 +406,7 @@ if(LIBGOC_COVERAGE)
 endif()
 
 # ---------------------------------------------------------------------------
-# Install rules (used with -DLIBGOC_SHARED=ON)
+# Install rules
 # ---------------------------------------------------------------------------
 include(GNUInstallDirs)
 
@@ -321,12 +419,6 @@ install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_sta
 if(LIBGOC_SERVER)
     install(FILES include/goc_http.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-endif()
-if(LIBGOC_SHARED)
-    install(TARGETS goc_shared
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()
 

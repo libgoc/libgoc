@@ -30,6 +30,9 @@
 #include <gc.h>
 #include "wsdq.h"
 
+/* Forward declarations for targeted debug logging. */
+extern void (*g_http_client_fiber_ptr)(void*);
+
 /* =========================================================================
  * goc_wsdq — Chase–Lev circular work-stealing deque
  * ====================================================================== */
@@ -71,7 +74,14 @@ void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry) {
     goc_entry** buf = atomic_load_explicit(&dq->buf, memory_order_relaxed);
     size_t cap = dq->capacity;
 
-    if (b - t >= cap) {
+    if (b < t) {
+        GOC_DBG("wsdq_push_bottom: normalizing empty deque b=%zu t=%zu cap=%zu\n",
+                b, t, cap);
+        b = t;
+    }
+    size_t size = (b >= t) ? (b - t) : 0;
+
+    if (size >= cap) {
         /* Grow: allocate 2× buffer, copy live entries with modular indexing,
          * swap under steal_lock to prevent thieves reading the freed buffer. */
         size_t new_cap = cap * 2;
@@ -94,6 +104,12 @@ void wsdq_push_bottom(goc_wsdq* dq, goc_entry* entry) {
     /* Release store: makes the slot write above visible to steal_top callers
      * that load bottom with acquire. */
     atomic_store_explicit(&dq->bottom, b + 1, memory_order_release);
+    if (entry && g_http_client_fiber_ptr && entry->fn == g_http_client_fiber_ptr) {
+        size_t t2 = atomic_load_explicit(&dq->top, memory_order_acquire);
+        size_t new_size = (b + 1 >= t2) ? (b + 1 - t2) : 0;
+        GOC_DBG("wsdq_push_bottom: http_client_fiber entry=%p b=%zu t=%zu cap=%zu size=%zu\n",
+                (void*)entry, b, t2, cap, new_size);
+    }
 }
 
 goc_entry* wsdq_pop_bottom(goc_wsdq* dq) {
@@ -113,16 +129,27 @@ goc_entry* wsdq_pop_bottom(goc_wsdq* dq) {
      * a spurious non-empty result and bottom corruption. */
     if (old_b <= t) {
         /* Deque was empty before the decrement (or a thief raced ahead).
-         * Restore bottom to its pre-decrement value and return NULL. */
-        atomic_store_explicit(&dq->bottom, old_b, memory_order_relaxed);
+         * Restore bottom to at least top and return NULL. */
+        size_t restore_b = (old_b < t) ? t : old_b;
+        atomic_store_explicit(&dq->bottom, restore_b, memory_order_relaxed);
+        GOC_DBG("wsdq_pop_bottom: empty deque old_b=%zu t=%zu cap=%zu restore_b=%zu\n",
+                old_b, t, cap, restore_b);
         return NULL;
     }
 
     size_t new_b = old_b - 1;  /* safe: old_b > t >= 0, so old_b >= 1 */
     goc_entry* entry = buf[new_b % cap];
+    if (entry && g_http_client_fiber_ptr && entry->fn == g_http_client_fiber_ptr) {
+        GOC_DBG("wsdq_pop_bottom: http_client_fiber candidate entry=%p new_b=%zu t=%zu cap=%zu\n",
+                (void*)entry, new_b, t, cap);
+    }
 
     if (new_b > t) {
         /* More than one element: no race with thieves on this slot. */
+        if (entry && g_http_client_fiber_ptr && entry->fn == g_http_client_fiber_ptr) {
+            GOC_DBG("wsdq_pop_bottom: http_client_fiber popped entry=%p\n",
+                    (void*)entry);
+        }
         return entry;
     }
 
@@ -155,6 +182,10 @@ goc_entry* wsdq_steal_top(goc_wsdq* dq) {
     size_t cap = dq->capacity;
 
     goc_entry* entry = buf[t % cap];
+    if (entry && g_http_client_fiber_ptr && entry->fn == g_http_client_fiber_ptr) {
+        GOC_DBG("wsdq_steal_top: http_client_fiber candidate entry=%p t=%zu b=%zu cap=%zu\n",
+                (void*)entry, t, b, cap);
+    }
 
     /* CAS on top: interacts with pop_bottom's CAS in the last-element race.
      * Without a CAS, if pop_bottom wins the owner-side CAS on top between our

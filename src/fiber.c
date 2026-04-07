@@ -62,9 +62,15 @@ void* goc_current_fiber(void) {
 
 static void fiber_trampoline(mco_coro* co) {
     goc_entry* entry = (goc_entry*)mco_get_user_data(co);
+    GOC_DBG("fiber_trampoline: starting fn=%p entry=%p arg=%p pool=%p id=%llu\n",
+            (void*)(uintptr_t)entry->fn,
+            (void*)entry,
+            entry->fn_arg,
+            (void*)entry->pool,
+            (unsigned long long)entry->id);
     entry->fn(entry->fn_arg);
     /* Telemetry: fiber finished */
-    GOC_STATS_FIBER_STATUS(entry->id, 0, goc_pool_id(entry->pool), GOC_FIBER_COMPLETED);
+    GOC_STATS_FIBER_STATUS(entry->id, goc_current_worker_id(), goc_pool_id(entry->pool), GOC_FIBER_COMPLETED);
     goc_close(entry->join_ch);
 }
 
@@ -94,8 +100,7 @@ goc_entry* goc_fiber_entry_create(goc_pool* pool,
     /* 4. Create the coroutine. */
     mco_result rc = mco_create(&entry->coro, &desc);
     if (rc != MCO_SUCCESS) {
-        fprintf(stderr, "libgoc: mco_create failed (%d)\n", rc);
-        abort();
+        ABORT("mco_create failed (%d)\n", rc);
     }
 
     /* 5. Register the fiber stack so BDW-GC scans it while the fiber is
@@ -137,6 +142,22 @@ goc_chan* goc_go_on(goc_pool* pool, void (*fn)(void*), void* arg) {
     pool_submit_spawn(pool, fn, arg, join_ch);
 
     /* 3. Return the join channel to the caller immediately. */
+    return join_ch;
+}
+
+/* ---------------------------------------------------------------------------
+ * goc_go_on_worker — launch a fiber on a specific worker within a pool
+ * --------------------------------------------------------------------------- */
+goc_chan* goc_go_on_worker(goc_pool* pool,
+                            size_t worker_idx,
+                            void (*fn)(void*),
+                            void* arg) {
+    goc_chan* join_ch = goc_chan_make(0);
+    if (!pool) {
+        goc_close(join_ch);
+        return join_ch;
+    }
+    pool_submit_spawn_to_worker(pool, worker_idx, fn, arg, join_ch);
     return join_ch;
 }
 
