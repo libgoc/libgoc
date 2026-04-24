@@ -958,4 +958,4 @@ ctest --test-dir build-tsan --output-on-failure
 
 ---
 
-*(C) Divyansh Prakash, 2026*
+*(C) Divyansh Prakash, 2026 | [MIT License](./LICENSE)*
