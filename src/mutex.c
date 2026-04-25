@@ -215,12 +215,12 @@ static void mutex_on_lock_channel_closed(void* ud)
 
 static goc_chan* mutex_lock_request(goc_mutex* mx, int is_writer)
 {
-    goc_mutex_waiter* w = goc_malloc(sizeof(goc_mutex_waiter));
+    goc_mutex_waiter* w = goc_new(goc_mutex_waiter);
     w->gate = goc_chan_make(1);
     w->is_writer = is_writer;
     w->next = NULL;
 
-    goc_mutex_release_ctx* ctx = goc_malloc(sizeof(goc_mutex_release_ctx));
+    goc_mutex_release_ctx* ctx = goc_new(goc_mutex_release_ctx);
     ctx->mx = mx;
     ctx->waiter = w;
     ctx->is_writer = is_writer;
@@ -266,7 +266,7 @@ static goc_chan* mutex_lock_request(goc_mutex* mx, int is_writer)
 
 goc_mutex* goc_mutex_make(void)
 {
-    goc_mutex* mx = goc_malloc(sizeof(goc_mutex));
+    goc_mutex* mx = goc_new(goc_mutex);
     mx->lock = malloc(sizeof(uv_mutex_t));
     uv_mutex_init(mx->lock);
 

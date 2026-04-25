@@ -138,12 +138,13 @@ static void player_fn(void* arg) {
         goc_val_t* v = goc_take(a->recv);
         if (v->ok != GOC_OK)
             return;
-        size_t n = (size_t)goc_unbox_uint(v->val);
-        if (n >= a->rounds) {
+        size_t* n = v->val;
+        if (*n >= a->rounds) {
             goc_close(a->send);
             return;
         }
-        goc_put(a->send, goc_box_uint(n + 1));
+        (*n)++;
+        goc_put(a->send, n);
     }
 }
 
@@ -164,7 +165,7 @@ static void bench_ping_pong(size_t ping_rounds) {
     goc_chan* j2 = goc_go(player_fn, &args_ab);
 
     uint64_t t0 = uv_hrtime();
-    goc_put(a, goc_box_uint(0));
+    goc_put_boxed(size_t, a, 0);
     goc_take(j1);
     goc_take(j2);
     uint64_t t1 = uv_hrtime();
@@ -213,12 +214,13 @@ static void ring_node_fn(void* arg) {
             goc_close(a->send);
             return;
         }
-        size_t n = (size_t)goc_unbox_uint(v->val);
-        if (n == 0) {
+        size_t* n =  v->val;
+        if (*n == 0) {
             goc_close(a->send);
             return;
         }
-        goc_put(a->send, goc_box_uint(n - 1));
+        (*n)--;
+        goc_put(a->send, n);
     }
 }
 
@@ -234,21 +236,21 @@ static void bench_ring(size_t ring_nodes, size_t ring_hops) {
 
     /* Create one channel per node; node i reads from channels[i] and
      * writes to channels[(i+1) % ring_nodes]. */
-    goc_chan** channels = goc_malloc(sizeof(goc_chan*) * ring_nodes);
+    goc_chan** channels = goc_new_n(goc_chan*, ring_nodes);
     for (size_t i = 0; i < ring_nodes; i++) {
         channels[i] = goc_chan_make(0);
     }
 
-    goc_chan** joins = goc_malloc(sizeof(goc_chan*) * ring_nodes);
+    goc_chan** joins = goc_new_n(goc_chan*, ring_nodes);
     for (size_t i = 0; i < ring_nodes; i++) {
-        ring_node_args_t* args = goc_malloc(sizeof(ring_node_args_t));
+        ring_node_args_t* args = goc_new(ring_node_args_t);
         args->recv = channels[i];
         args->send = channels[(i + 1) % ring_nodes];
         joins[i] = goc_go(ring_node_fn, args);
     }
 
     uint64_t t0 = uv_hrtime();
-    goc_put(channels[0], goc_box_uint(ring_hops));
+    goc_put_boxed(size_t, channels[0], ring_hops);
     goc_take_all(joins, ring_nodes);
     uint64_t t1 = uv_hrtime();
 
@@ -320,7 +322,7 @@ typedef struct {
 static void fan_in_fn(void* arg) {
     fan_in_args_t* a = (fan_in_args_t*)arg;
 
-    goc_alt_op_t* ops    = goc_malloc(sizeof(goc_alt_op_t) * a->workers);
+    goc_alt_op_t* ops    = goc_new_n(goc_alt_op_t, a->workers);
     size_t      n_active = a->workers;
     for (size_t i = 0; i < a->workers; i++) {
         ops[i].ch      = a->outs[i];
@@ -357,19 +359,19 @@ static void bench_fan_in(size_t workers, size_t tasks) {
         return;
 
     goc_chan*  in   = goc_chan_make(0);
-    goc_chan** outs = goc_malloc(sizeof(goc_chan*) * workers);
-    goc_chan** worker_joins = goc_malloc(sizeof(goc_chan*) * workers);
+    goc_chan** outs = goc_new_n(goc_chan*, workers);
+    goc_chan** worker_joins = goc_new_n(goc_chan*, workers);
 
     for (size_t i = 0; i < workers; i++) {
         outs[i] = goc_chan_make(0);
-        fan_out_worker_args_t* args = goc_malloc(sizeof(fan_out_worker_args_t));
+        fan_out_worker_args_t* args = goc_new(fan_out_worker_args_t);
         args->in  = in;
         args->out = outs[i];
         worker_joins[i] = goc_go(fan_out_worker_fn, args);
     }
 
     goc_chan*      done     = goc_chan_make(0);
-    fan_in_args_t* fan_args = goc_malloc(sizeof(fan_in_args_t));
+    fan_in_args_t* fan_args = goc_new(fan_in_args_t);
     fan_args->outs    = outs;
     fan_args->workers = workers;
     fan_args->tasks   = tasks;
@@ -378,7 +380,7 @@ static void bench_fan_in(size_t workers, size_t tasks) {
 
     uint64_t t0 = uv_hrtime();
     for (size_t i = 0; i < tasks; i++)
-        goc_put(in, goc_box_uint(i));
+        goc_put_boxed(size_t, in, i);
     goc_close(in);
 
     goc_take(done);
@@ -423,7 +425,7 @@ static void idle_fn(void* arg) {
  */
 static void bench_spawn_idle(size_t count) {
     goc_chan*  park  = goc_chan_make(0);
-    goc_chan** joins = goc_malloc(sizeof(goc_chan*) * count);
+    goc_chan** joins = goc_new_n(goc_chan*, count);
 
     uint64_t t0 = uv_hrtime();
     for (size_t i = 0; i < count; i++)
@@ -472,7 +474,7 @@ typedef struct {
 static void generate_fn(void* arg) {
     generate_args_t* a = (generate_args_t*)arg;
     for (size_t i = 2; i <= a->max; i++) {
-        if (goc_put(a->out, goc_box_uint(i)) != GOC_OK)
+        if (goc_put_boxed(size_t, a->out, i) != GOC_OK)
             return;
     }
     goc_close(a->out);
@@ -496,9 +498,9 @@ static void filter_fn(void* arg) {
             goc_close(a->out);
             return;
         }
-        size_t n = (size_t)goc_unbox_uint(v->val);
-        if (n % a->prime != 0)
-            goc_put(a->out, goc_box_uint(n));
+        size_t* n = v->val;
+        if (*n % a->prime != 0)
+            goc_put(a->out, n);
     }
 }
 
@@ -518,7 +520,7 @@ static void sieve_fn(void* arg) {
     sieve_args_t* a = (sieve_args_t*)arg;
 
     goc_chan*        gen_out  = goc_chan_make(0);
-    generate_args_t* gen_args = goc_malloc(sizeof(generate_args_t));
+    generate_args_t* gen_args = goc_new(generate_args_t);
     gen_args->out = gen_out;
     gen_args->max = a->max;
     goc_go(generate_fn, gen_args);
@@ -530,11 +532,11 @@ static void sieve_fn(void* arg) {
         goc_val_t* v = goc_take(ch);
         if (v->ok != GOC_OK)
             break;
-        size_t prime = (size_t)goc_unbox_uint(v->val);
+        size_t prime = goc_unbox(size_t, v->val);
         count++;
 
         goc_chan*      next  = goc_chan_make(0);
-        filter_args_t* fargs = goc_malloc(sizeof(filter_args_t));
+        filter_args_t* fargs = goc_new(filter_args_t);
         fargs->in    = ch;
         fargs->out   = next;
         fargs->prime = prime;
@@ -542,7 +544,7 @@ static void sieve_fn(void* arg) {
         ch = next;
     }
 
-    goc_put(a->result_ch, goc_box_uint(count));
+    goc_put_boxed(size_t, a->result_ch, count);
 }
 
 /*
@@ -553,7 +555,7 @@ static void sieve_fn(void* arg) {
  */
 static void bench_prime_sieve(size_t max) {
     goc_chan*     result_ch = goc_chan_make(0);
-    sieve_args_t* args      = goc_malloc(sizeof(sieve_args_t));
+    sieve_args_t* args      = goc_new(sieve_args_t);
     args->max       = max;
     args->result_ch = result_ch;
 
@@ -562,7 +564,7 @@ static void bench_prime_sieve(size_t max) {
     goc_val_t* r = goc_take(result_ch);
     uint64_t t1 = uv_hrtime();
 
-    size_t count = (size_t)goc_unbox_uint(r->val);
+    size_t count = goc_unbox(size_t, r->val);
     double s     = (double)(t1 - t0) / 1e9;
     int    ms    = (int)(s * 1000);
     double rate  = (double)count / s;
@@ -698,7 +700,7 @@ static void bench_http_ping_pong(size_t rounds) {
     if (g_http_pp.warmup < 100)
         g_http_pp.warmup = 100;
     g_http_pp.total      = g_http_pp.warmup + g_http_pp.measured;
-    g_http_pp.lat_ns     = (uint64_t*)goc_malloc(sizeof(uint64_t) * g_http_pp.measured);
+    g_http_pp.lat_ns     = (uint64_t*)goc_new_n(uint64_t, g_http_pp.measured);
     g_http_pp.t_meas_start = 0;
     g_http_pp.t_meas_end   = 0;
 
@@ -731,7 +733,7 @@ static void bench_http_ping_pong(size_t rounds) {
     int    ms   = (int)(s * 1000);
     double rate = (double)g_http_pp.measured / s;
 
-    uint64_t* sorted = (uint64_t*)goc_malloc(sizeof(uint64_t) * g_http_pp.measured);
+    uint64_t* sorted = (uint64_t*)goc_new_n(uint64_t, g_http_pp.measured);
     memcpy(sorted, g_http_pp.lat_ns, sizeof(uint64_t) * g_http_pp.measured);
     qsort(sorted, g_http_pp.measured, sizeof(uint64_t), cmp_u64);
 
@@ -821,11 +823,11 @@ static void bench_http_server_throughput(size_t concurrency,
     uint64_t warmup_end_ns = start_ns + (uint64_t)warmup_ms * 1000000ull;
     uint64_t measure_end_ns = warmup_end_ns + (uint64_t)measure_ms * 1000000ull;
 
-    uint64_t* succ = (uint64_t*)goc_malloc(sizeof(uint64_t) * concurrency);
-    uint64_t* err  = (uint64_t*)goc_malloc(sizeof(uint64_t) * concurrency);
-    goc_chan** joins = (goc_chan**)goc_malloc(sizeof(goc_chan*) * concurrency);
+    uint64_t* succ = (uint64_t*)goc_new_n(uint64_t, concurrency);
+    uint64_t* err  = (uint64_t*)goc_new_n(uint64_t, concurrency);
+    goc_chan** joins = (goc_chan**)goc_new_n(goc_chan*, concurrency);
     http_tp_worker_args_t* args =
-        (http_tp_worker_args_t*)goc_malloc(sizeof(http_tp_worker_args_t) * concurrency);
+        (http_tp_worker_args_t*)goc_new_n(http_tp_worker_args_t, concurrency);
 
     for (size_t i = 0; i < concurrency; i++) {
         succ[i] = 0;

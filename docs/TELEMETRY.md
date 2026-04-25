@@ -66,10 +66,10 @@
 
 | `goc_stats_worker_status_t` | Value | Meaning                       |
 |---------------------------|-------|-------------------------------|
-| `GOC_WORKER_CREATED`      | `0`   | Thread started                |
-| `GOC_WORKER_RUNNING`      | `1`   | Picked up a fiber to execute  |
-| `GOC_WORKER_IDLE`         | `2`   | No work; sleeping on semaphore|
-| `GOC_WORKER_STOPPED`      | `3`   | Thread exiting                |
+| `GOC_WORKER_CREATED`      | `0`   | Thread started                              |
+| `GOC_WORKER_RUNNING`      | `1`   | Picked up a fiber to execute                |
+| `GOC_WORKER_IDLE`         | `2`   | No work; blocked in `uv_run(UV_RUN_ONCE)`   |
+| `GOC_WORKER_STOPPED`      | `3`   | Thread exiting                              |
 
 ### Fiber Events (`GOC_STATS_EVENT_FIBER_STATUS`)
 | Field            | Type  | Description                         |
@@ -222,8 +222,8 @@ After `goc_stats_init()`, all events are printed to stdout by the built-in defau
 [goc_stats] FIBER @ 1748000000005000000: id=0 last_worker=0 last_pool=0 status=1
 [goc_stats] WORKER @ 1748000000006000000: id=0 pool=0 status=2 pending=0
 [goc_stats] POOL @ 1748000000007000000: pool=0 status=1 threads=2
-[goc_stats] WORKER @ 1748000000008000000: id=0 pool=0 status=3 pending=0
-[goc_stats] WORKER @ 1748000000009000000: id=1 pool=0 status=3 pending=0
+[goc_stats] WORKER @ 1748000000008000000: id=0 pool=0 status=3 pending=0 steals=1/3
+[goc_stats] WORKER @ 1748000000009000000: id=1 pool=0 status=3 pending=0 steals=0/2
 ```
 
 See the [Event Types](#event-types) tables for status enum values.

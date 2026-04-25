@@ -232,14 +232,14 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     goc_alts_result_t immediate = alts_try_immediate(ops, indices, n_nondefault);
     if (immediate.ch != NULL) {
-        goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+        goc_alts_result_t* res = goc_new(goc_alts_result_t);
         *res = immediate;
         return res;
     }
 
     /* Default arm fires if no non-default arm was immediately ready. */
     if (default_idx != (size_t)-1) {
-        goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+        goc_alts_result_t* res = goc_new(goc_alts_result_t);
         res->ch    = ops[default_idx].ch; /* NULL for GOC_ALT_DEFAULT arms */
         res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
         return res;
@@ -249,13 +249,13 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
     /* Phase 3 — Prepare park                                              */
     /* ------------------------------------------------------------------ */
     /* Allocate one entry per non-default arm and a shared fired flag.     */
-    goc_entry **entries   = goc_malloc(n_nondefault * sizeof(goc_entry *));
-    _Atomic int *fired_flag = goc_malloc(sizeof(_Atomic int));
+    goc_entry **entries   = goc_new_n(goc_entry *, n_nondefault);
+    _Atomic int *fired_flag = goc_new(_Atomic int);
     atomic_store_explicit(fired_flag, 0, memory_order_relaxed);
 
     for (size_t si = 0; si < n_nondefault; si++) {
         size_t i = indices[si];
-        goc_entry *e = goc_malloc(sizeof(goc_entry));
+        goc_entry *e = goc_new(goc_entry);
 
         e->kind            = GOC_FIBER;
         e->cancelled       = 0;
@@ -330,7 +330,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
                 return res;
             }
@@ -338,7 +338,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
                 return res;
             }
@@ -346,7 +346,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
                 return res;
             }
@@ -359,7 +359,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
                 return res;
             }
@@ -367,7 +367,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
                 return res;
             }
@@ -375,7 +375,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
                 for (size_t j = n_unique; j-- > 0; )
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
                 return res;
             }
@@ -444,7 +444,7 @@ goc_alts_result_t* goc_alts(goc_alt_op_t *ops, size_t n) {
             (void*)ops[winner->arm_idx].ch,
             (int)winner->ok);
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
-    goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+    goc_alts_result_t* res = goc_new(goc_alts_result_t);
     res->ch    = ops[winner->arm_idx].ch;
     res->value = (goc_val_t){ .val = result_val, .ok = winner->ok };
     return res;
@@ -476,13 +476,13 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
     /* ------------------------------------------------------------------ */
     goc_alts_result_t immediate = alts_try_immediate(ops, indices, n_nondefault);
     if (immediate.ch != NULL) {
-        goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+        goc_alts_result_t* res = goc_new(goc_alts_result_t);
         *res = immediate;
         return res;
     }
 
     if (default_idx != (size_t)-1) {
-        goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+        goc_alts_result_t* res = goc_new(goc_alts_result_t);
         res->ch    = ops[default_idx].ch; /* NULL for GOC_ALT_DEFAULT arms */
         res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
         return res;
@@ -494,13 +494,13 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
     goc_sync_t shared_sync;
     goc_sync_init(&shared_sync);
 
-    goc_entry **entries    = goc_malloc(n_nondefault * sizeof(goc_entry *));
-    _Atomic int *fired_flag = goc_malloc(sizeof(_Atomic int));
+    goc_entry **entries    = goc_new_n(goc_entry *, n_nondefault);
+    _Atomic int *fired_flag = goc_new(_Atomic int);
     atomic_store_explicit(fired_flag, 0, memory_order_relaxed);
 
     for (size_t si = 0; si < n_nondefault; si++) {
         size_t i = indices[si];
-        goc_entry *e = goc_malloc(sizeof(goc_entry));
+        goc_entry *e = goc_new(goc_entry);
 
         e->kind             = GOC_SYNC;
         e->cancelled        = 0;
@@ -577,7 +577,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
                 return res;
             }
@@ -586,7 +586,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = val, .ok = GOC_OK };
                 return res;
             }
@@ -595,7 +595,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
                 return res;
             }
@@ -609,7 +609,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_CLOSED };
                 return res;
             }
@@ -618,7 +618,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
                 return res;
             }
@@ -627,7 +627,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
                     uv_mutex_unlock(sorted_chans[j]->lock);
                 if (n > GOC_ALTS_STACK_THRESHOLD) free(sorted_chans);
                 goc_sync_destroy(&shared_sync);
-                goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+                goc_alts_result_t* res = goc_new(goc_alts_result_t);
                 res->ch = ch; res->value = (goc_val_t){ .val = NULL, .ok = GOC_OK };
                 return res;
             }
@@ -687,7 +687,7 @@ goc_alts_result_t* goc_alts_sync(goc_alt_op_t *ops, size_t n) {
     }
 
     void *result_val = (winner->result_slot) ? *winner->result_slot : NULL;
-    goc_alts_result_t* res = goc_malloc(sizeof(goc_alts_result_t));
+    goc_alts_result_t* res = goc_new(goc_alts_result_t);
     res->ch    = ops[winner->arm_idx].ch;
     res->value = (goc_val_t){ .val = result_val, .ok = winner->ok };
     return res;

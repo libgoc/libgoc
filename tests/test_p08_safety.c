@@ -319,7 +319,7 @@ static void p8_3_child_fn(void* arg) {
     (void)arg;
     goc_chan* ch = goc_chan_make(1);
     /* Call goc_put from a bare OS thread — must abort(). */
-    goc_put(ch, goc_box_uint(0xCAFE));
+    goc_put_boxed(unsigned int, ch, 0xCAFE);
     /* Unreachable. */
 }
 
@@ -525,11 +525,11 @@ static void test_p8_9(void) {
 done:;
 }
 
-/* --- P8.10: goc_put_sync() from fiber context → abort() --------------- */
+/* --- P8.10: goc_put_sync_boxed(unsigned int, ) from fiber context → abort() --------------- */
 
 static void p8_10_put_sync_from_fiber(void* arg) {
     goc_chan* ch = (goc_chan*)arg;
-    goc_put_sync(ch, goc_box_uint(0xBEAD));
+    goc_put_sync_boxed(unsigned int, ch, 0xBEAD);
 }
 
 static void p8_10_child_fn(void* arg) {

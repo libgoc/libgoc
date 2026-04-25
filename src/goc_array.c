@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include "internal.h"
 #include "../include/goc.h"
 #include "../include/goc_array.h"
@@ -75,7 +76,7 @@ static void array_grow(goc_array* arr, int grow_for_head)
                      ? GOC_ARRAY_INIT_CAP
                      : arr->cap * 2;
 
-    void** new_data = (void**)goc_malloc(new_cap * sizeof(void*));
+    void** new_data = (void**)goc_new_n(void*, new_cap);
 
     /* Place existing elements so the "useful" end has more headroom. */
     size_t slack = new_cap - arr->len;
@@ -106,13 +107,13 @@ static void array_grow(goc_array* arr, int grow_for_head)
 
 goc_array* goc_array_make(size_t initial_cap)
 {
-    goc_array* arr = (goc_array*)goc_malloc(sizeof(goc_array));
+    goc_array* arr = (goc_array*)goc_new(goc_array);
 
     size_t cap = (initial_cap < GOC_ARRAY_INIT_CAP)
                  ? GOC_ARRAY_INIT_CAP
                  : initial_cap;
 
-    arr->data = (void**)goc_malloc(cap * sizeof(void*));
+    arr->data = (void**)goc_new_n(void*, cap);
     arr->head = cap / 4;  /* start with 1/4 cap head headroom */
     arr->len  = 0;
     arr->cap  = cap;
@@ -122,13 +123,38 @@ goc_array* goc_array_make(size_t initial_cap)
 
 goc_array* goc_array_from(void** items, size_t n)
 {
-    goc_array* arr = goc_array_make(n);
+    goc_array* arr = (goc_array*)goc_new(goc_array);
+    arr->data = items;
+    arr->head = 0;
+    arr->len  = n;
+    arr->cap  = n;
+    return arr;
+}
 
-    if (n > 0) {
-        memcpy(arr->data + arr->head, items, n * sizeof(void*));
-        arr->len = n;
+goc_array* goc_array_copy(const goc_array* arr)
+{
+    if (arr->len == 0) {
+        return goc_array_make(0);
     }
 
+    void** buf = goc_new_n(void*, arr->len);
+    memcpy(buf, arr->data + arr->head, arr->len * sizeof(void*));
+    return goc_array_from(buf, arr->len);
+}
+
+/**
+ * Internal helper for goc_array_of_boxed.
+ */
+goc_array* _goc_array_of_boxed_impl(const void* elems,
+                                       size_t elem_size,
+                                       size_t n)
+{
+    goc_array* arr = goc_array_make(n);
+    for (size_t i = 0; i < n; i++) {
+        goc_array_push(arr,
+                       _goc_box_impl((const char*)elems + i * elem_size,
+                                     elem_size));
+    }
     return arr;
 }
 
@@ -242,7 +268,7 @@ goc_array* goc_array_slice(const goc_array* arr, size_t start, size_t end)
         ABORT("goc_array_slice: invalid range [%zu, %zu) (len=%zu)\n", start, end, arr->len);
     }
 
-    goc_array* s = (goc_array*)goc_malloc(sizeof(goc_array));
+    goc_array* s = (goc_array*)goc_new(goc_array);
     s->data = arr->data;             /* shared backing buffer */
     s->head = arr->head + start;
     s->len  = end - start;
@@ -274,19 +300,17 @@ goc_array* goc_array_from_str(const char* s)
     }
     size_t n = strlen(s);
     goc_array* arr = goc_array_make(n);
-    for (size_t i = 0; i < n; i++) {
-        goc_array_push(arr, goc_box_int((unsigned char)s[i]));
-    }
+    for (size_t i = 0; i < n; i++)
+        goc_array_push_boxed(char, arr, s[i]);
     return arr;
 }
 
 char* goc_array_to_str(const goc_array* arr)
 {
     size_t n = goc_array_len(arr);
-    char* buf = (char*)goc_malloc(n + 1);
-    for (size_t i = 0; i < n; i++) {
-        buf[i] = (char)(unsigned char)goc_unbox_int(goc_array_get(arr, i));
-    }
+    char* buf = goc_new_n(char, n + 1);
+    for (size_t i = 0; i < n; i++)
+        buf[i] = goc_array_get_unboxed(char, arr, i);
     buf[n] = '\0';
     return buf;
 }

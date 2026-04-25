@@ -211,7 +211,8 @@ typedef struct {
     const char*  path;        /* request path, e.g. "/api/ping"             */
     const char*  query;       /* query string without '?', or "" if absent  */
     goc_array*   headers;     /* goc_array of goc_http_header_t*            */
-    goc_array*   body;        /* request body bytes; empty goc_array if none*/
+    const char*  body;        /* request body bytes (null-terminated); "" if none */
+    size_t       body_len;    /* byte length of body (excluding null terminator)  */
     void*        user_data;   /* set by middleware; NULL by default         */
 } goc_http_ctx_t;
 
@@ -280,17 +281,17 @@ typedef struct {
 |---|---|---|
 | `goc_http_server_opts` | `goc_http_server_opts_t* goc_http_server_opts(void)` | Allocate and return a default options struct. `middleware` defaults to NULL. |
 | `goc_http_server_make` | `goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)` | Allocate and initialise a server from `opts`. Returns a GC-managed pointer. Never returns NULL (aborts on failure). |
-| `goc_http_server_listen` | `goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port)` | Bind and start listening on `host:port`. On Linux with SO_REUSEPORT and a pool of size ≥ 2, creates one listener per worker for kernel-level load balancing. Falls back to a single listener otherwise. Returns a channel that delivers `goc_box_int(rc)` once all listeners are ready (rc == 0 = ready; rc < 0 = first libuv error). Always `goc_take()` the channel before sending requests. |
+| `goc_http_server_listen` | `goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port)` | Bind and start listening on `host:port`. On Linux with SO_REUSEPORT and a pool of size ≥ 2, creates one listener per worker for kernel-level load balancing. Falls back to a single listener otherwise. Returns a channel that delivers `goc_box(int, rc)` once all listeners are ready (rc == 0 = ready; rc < 0 = first libuv error). Always `goc_take()` the channel before sending requests. |
 | `goc_http_server_reuseport_listener_count` | `int goc_http_server_reuseport_listener_count(goc_http_server_t* srv)` | Return the number of active SO_REUSEPORT listener slots for the server. Returns 0 on single-listener mode or if `srv` is NULL. |
 | `goc_http_server_reuseport_listener_accept_count` | `int goc_http_server_reuseport_listener_accept_count(goc_http_server_t* srv, int slot)` | Return the number of accepted connections handled by the given reuseport listener slot. Meaningful only when `GOC_ENABLE_STATS` is enabled; otherwise returns 0. Returns 0 for single-listener mode or invalid slot numbers. |
-| `goc_http_server_close` | `goc_chan* goc_http_server_close(goc_http_server_t* srv)` | Gracefully stop accepting new connections and drain in-flight requests. Returns a channel delivering `goc_box_int(0)` when shutdown is complete. Safe from any context. |
+| `goc_http_server_close` | `goc_chan* goc_http_server_close(goc_http_server_t* srv)` | Gracefully stop accepting new connections and drain in-flight requests. Returns a channel delivering `goc_box(int, 0)` when shutdown is complete. Safe from any context. |
 
 ```c
 goc_http_server_opts_t* opts = goc_http_server_opts();
 goc_http_server_t* srv = goc_http_server_make(opts);
 goc_chan* ready = goc_http_server_listen(srv, "0.0.0.0", 8080);
 goc_val_t* ready_val = goc_take(ready);
-int rc = (int)goc_unbox_int(ready_val->val);
+int rc = (int)goc_unbox(int, ready_val->val);
 if (rc < 0) { /* handle error */ }
 
 // ... run until done ...
@@ -346,14 +347,14 @@ void my_handler(goc_http_ctx_t* ctx) {
 Exactly one of these **must** be called before the handler fiber returns.
 Calling more than one, or returning without calling either, is undefined behaviour.
 
-Each function returns a channel that delivers `goc_box_int(rc)` (rc == 0 on
+Each function returns a channel that delivers `goc_box(int, rc)` (rc == 0 on
 success, negative libuv error code on failure) once the response has been
 flushed by libuv. `goc_take` it to wait for the flush before doing further
 work that depends on the client having received the response.
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_http_server_respond` | `goc_chan* goc_http_server_respond(goc_http_ctx_t* ctx, int status, const char* content_type, const char* body)` | Send a complete response. `body` is a null-terminated string. `content_type` may be NULL to default to `"text/plain"`. Returns a channel delivering `goc_box_int(0)` on flush. |
+| `goc_http_server_respond` | `goc_chan* goc_http_server_respond(goc_http_ctx_t* ctx, int status, const char* content_type, const char* body)` | Send a complete response. `body` is a null-terminated string. `content_type` may be NULL to default to `"text/plain"`. Returns a channel delivering `goc_box(int, 0)` on flush. |
 | `goc_http_server_respond_buf` | `goc_chan* goc_http_server_respond_buf(goc_http_ctx_t* ctx, int status, const char* content_type, const char* buf, size_t len)` | Same as `goc_http_server_respond` but for arbitrary bytes. Use for binary or pre-serialised payloads. |
 | `goc_http_server_respond_error` | `goc_chan* goc_http_server_respond_error(goc_http_ctx_t* ctx, int status, const char* message)` | Send an error response with `text/plain` body. Convenience wrapper around `goc_http_server_respond`. |
 

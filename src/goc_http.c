@@ -122,10 +122,10 @@ static void goc_http_listen_ready_forward(void* arg)
     goc_http_listen_ready_forward_arg_t* f =
         (goc_http_listen_ready_forward_arg_t*)arg;
     goc_val_t* v = goc_http_chan_take(f->internal_ready_ch);
-    int rc = UV_ECANCELED;
+    int* rc = goc_box(int, UV_ECANCELED);
     if (v && v->ok == GOC_OK)
-        rc = goc_unbox_int(v->val);
-    goc_http_chan_put(f->ready_ch, goc_box_int(rc));
+        rc = v->val;
+    goc_http_chan_put(f->ready_ch, rc);
     goc_close(f->ready_ch);
     free(f);
 }
@@ -430,16 +430,14 @@ static const char* http_status_str(int code)
 goc_http_server_opts_t* goc_http_server_opts(void)
 {
     goc_http_server_opts_t* o =
-        (goc_http_server_opts_t*)goc_malloc(sizeof(goc_http_server_opts_t));
-    memset(o, 0, sizeof(*o));
+        (goc_http_server_opts_t*)goc_new(goc_http_server_opts_t);
     return o;
 }
 
 goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)
 {
     goc_http_server_t* srv =
-        (goc_http_server_t*)goc_malloc(sizeof(goc_http_server_t));
-    memset(srv, 0, sizeof(*srv));
+        (goc_http_server_t*)goc_new(goc_http_server_t);
 
     srv->middleware = opts ? opts->middleware : NULL;
     srv->close_ch   = goc_chan_make(0);
@@ -450,7 +448,7 @@ goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)
 
     srv->cap_routes = 8;
     srv->routes     =
-        (goc_route_t*)goc_malloc(srv->cap_routes * sizeof(goc_route_t));
+        (goc_route_t*)goc_new_n(goc_route_t, srv->cap_routes);
 
     return srv;
 }
@@ -480,7 +478,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
         addrlen = sizeof(struct sockaddr_in6);
     }
     if (r < 0) {
-        goc_http_chan_put(ready_ch, goc_box_int(r));
+        goc_http_chan_put(ready_ch, goc_box(int, r));
         goc_close(ready_ch);
         return ready_ch;
     }
@@ -503,14 +501,12 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
                 "goc_http_server_listen: SO_REUSEPORT path using %zu listeners\n",
                 nw);
         srv->n_listeners          = nw;
-        srv->listener_tcps        = (uv_tcp_t**)goc_malloc(nw * sizeof(uv_tcp_t*));
-        srv->listener_accept_chs  = (goc_chan**)goc_malloc(nw * sizeof(goc_chan*));
+        srv->listener_tcps        = (uv_tcp_t**)goc_new_n(uv_tcp_t*, nw);
+        srv->listener_accept_chs  = (goc_chan**)goc_new_n(goc_chan*, nw);
 #if GOC_ENABLE_STATS
         srv->listener_accept_counts =
             (atomic_int*)malloc(nw * sizeof(atomic_int));
 #endif
-        memset(srv->listener_tcps,       0, nw * sizeof(uv_tcp_t*));
-        memset(srv->listener_accept_chs, 0, nw * sizeof(goc_chan*));
 #if GOC_ENABLE_STATS
         for (size_t i = 0; i < nw; i++) {
             atomic_init(&srv->listener_accept_counts[i], 0);
@@ -522,7 +518,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
         for (size_t i = 0; i < nw; i++) {
             slot_ready_chs[i] = goc_chan_make(1);
             reuseport_accept_arg_t* a =
-                (reuseport_accept_arg_t*)goc_malloc(sizeof(reuseport_accept_arg_t));
+                (reuseport_accept_arg_t*)goc_new(reuseport_accept_arg_t);
             a->srv           = srv;
             a->addr          = addr;
             a->addrlen       = addrlen;
@@ -538,7 +534,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
         int first_err = 0;
         for (size_t i = 0; i < nw; i++) {
             goc_val_t* v = goc_http_chan_take(slot_ready_chs[i]);
-            int rc = (v && v->ok == GOC_OK) ? goc_unbox_int(v->val) : UV_ECANCELED;
+            int rc = (v && v->ok == GOC_OK) ? goc_unbox(int, v->val) : UV_ECANCELED;
             if (rc < 0 && first_err == 0)
                 first_err = rc;
         }
@@ -568,7 +564,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
             GOC_DBG(
                     "goc_http_server_listen: reuseport listeners ready first_err=%d\n",
                     first_err);
-            goc_http_chan_put(ready_ch, goc_box_int(first_err));
+            goc_http_chan_put(ready_ch, goc_box(int, first_err));
             goc_close(ready_ch);
             return ready_ch;
         }
@@ -576,16 +572,16 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
 #endif
 
     /* Single-listener fallback (pool_size == 1 or no SO_REUSEPORT). */
-    srv->tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
-    r = goc_unbox_int(goc_http_chan_take(goc_io_tcp_init(srv->tcp))->val);
+    srv->tcp = (uv_tcp_t*)goc_new(uv_tcp_t);
+    r = goc_unbox(int, goc_http_chan_take(goc_io_tcp_init(srv->tcp))->val);
     if (r < 0) {
         srv->tcp = NULL;
-        goc_http_chan_put(ready_ch, goc_box_int(r));
+        goc_http_chan_put(ready_ch, goc_box(int, r));
         goc_close(ready_ch);
         return ready_ch;
     }
 
-    r = goc_unbox_int(
+    r = goc_unbox(int, 
             goc_http_chan_take(goc_io_tcp_bind(srv->tcp,
                                      (const struct sockaddr*)&addr))->val);
     if (r < 0) {
@@ -594,7 +590,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
             (void*)srv->tcp, r);
         goc_io_handle_close((uv_handle_t*)srv->tcp);
         srv->tcp = NULL;
-        goc_http_chan_put(ready_ch, goc_box_int(r));
+        goc_http_chan_put(ready_ch, goc_box(int, r));
         goc_close(ready_ch);
         return ready_ch;
     }
@@ -602,7 +598,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
     GOC_DBG(
             "goc_http_server_listen: tcp_bind succeeded tcp=%p, creating accept_ch\n",
             (void*)srv->tcp);
-    /* Start listening; internal_ready_ch will receive goc_box_int(0) when uv_listen
+    /* Start listening; internal_ready_ch will receive goc_box(int, 0) when uv_listen
      * has been called on the event-loop thread, or UV_ECANCELED if that channel
      * closes unexpectedly. */
     goc_chan* internal_ready_ch = goc_chan_make(1);
@@ -760,7 +756,7 @@ goc_chan* goc_http_server_close(goc_http_server_t* srv)
     gc_handle_unregister(srv);
 
     GOC_DBG("goc_http_server_close: completed srv=%p\n", (void*)srv);
-    goc_http_chan_put(ch, goc_box_int(0));
+    goc_http_chan_put(ch, goc_box(int, 0));
     goc_close(ch);
     return ch;
 }
@@ -775,7 +771,7 @@ void goc_http_server_route(goc_http_server_t* srv, const char* method,
     if (srv->n_routes >= srv->cap_routes) {
         size_t       new_cap = srv->cap_routes * 2;
         goc_route_t* nr      =
-            (goc_route_t*)goc_malloc(new_cap * sizeof(goc_route_t));
+            (goc_route_t*)goc_new_n(goc_route_t, new_cap);
         memcpy(nr, srv->routes, srv->n_routes * sizeof(goc_route_t));
         srv->routes     = nr;
         srv->cap_routes = new_cap;
@@ -862,10 +858,10 @@ static void reuseport_accept_loop_fiber(void* arg)
             (void*)close_ch, (void*)slot_ready_ch);
 
     /* Init TCP handle on this worker's own loop. */
-    uv_tcp_t* tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
-    int r = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+    uv_tcp_t* tcp = (uv_tcp_t*)goc_new(uv_tcp_t);
+    int r = goc_unbox(int, goc_take(goc_io_tcp_init(tcp))->val);
     if (r < 0) {
-        goc_http_chan_put(slot_ready_ch, goc_box_int(r));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, r));
         goc_close(slot_ready_ch);
         return;
     }
@@ -880,7 +876,7 @@ static void reuseport_accept_loop_fiber(void* arg)
                 "reuseport_accept_loop_fiber[%zu]: socket failed family=%d errno=%d\n",
                 slot, a->addr.ss_family, eno);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(-eno));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, -eno));
         goc_close(slot_ready_ch);
         return;
     }
@@ -891,7 +887,7 @@ static void reuseport_accept_loop_fiber(void* arg)
                 "reuseport_accept_loop_fiber[%zu]: socket failed family=%d errno=%d\n",
                 slot, a->addr.ss_family, eno);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(-eno));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, -eno));
         goc_close(slot_ready_ch);
         return;
     }
@@ -914,7 +910,7 @@ static void reuseport_accept_loop_fiber(void* arg)
                 slot, (unsigned long long)rawfd, eno);
         closesocket((SOCKET)rawfd);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(-eno));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, -eno));
         goc_close(slot_ready_ch);
         return;
     }
@@ -932,7 +928,7 @@ static void reuseport_accept_loop_fiber(void* arg)
                 slot, (int)rawfd, eno);
         close(rawfd);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(-eno));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, -eno));
         goc_close(slot_ready_ch);
         return;
     }
@@ -945,20 +941,20 @@ static void reuseport_accept_loop_fiber(void* arg)
                 slot, (void*)tcp, (int)rawfd, rc);
         close(rawfd);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(rc));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, rc));
         goc_close(slot_ready_ch);
         return;
     }
 
     /* Bind. */
-    r = goc_unbox_int(
+    r = goc_unbox(int, 
             goc_take(goc_io_tcp_bind(tcp, (const struct sockaddr*)&a->addr))->val);
     if (r < 0) {
         GOC_DBG(
                 "reuseport_accept_loop_fiber[%zu]: bind failed tcp=%p addr_family=%d rc=%d\n",
                 slot, (void*)tcp, a->addr.ss_family, r);
         goc_io_handle_close((uv_handle_t*)tcp);
-        goc_http_chan_put(slot_ready_ch, goc_box_int(r));
+        goc_http_chan_put(slot_ready_ch, goc_box(int, r));
         goc_close(slot_ready_ch);
         return;
     }
@@ -1050,7 +1046,7 @@ static void http_dispatch_conn(goc_http_server_t* srv, goc_pool* pool,
                                size_t target_worker, uv_tcp_t* conn,
                                goc_chan* close_ch, size_t slot)
 {
-    conn_arg_t* a = (conn_arg_t*)goc_malloc(sizeof(conn_arg_t));
+    conn_arg_t* a = (conn_arg_t*)goc_new(conn_arg_t);
     a->srv      = srv;
     a->conn     = conn;
     a->close_ch = close_ch;
@@ -1107,8 +1103,8 @@ static void accept_fd_transfer_fiber(void* arg)
     goc_chan*          close_ch = a->close_ch;
     free(a);
 
-    uv_tcp_t* tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
-    int r = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+    uv_tcp_t* tcp = (uv_tcp_t*)goc_new(uv_tcp_t);
+    int r = goc_unbox(int, goc_take(goc_io_tcp_init(tcp))->val);
     if (r < 0) {
         GOC_DBG("accept_fd_transfer_fiber: tcp_init failed rc=%d\n", r);
         sock_close_raw(raw_fd);
@@ -1118,7 +1114,7 @@ static void accept_fd_transfer_fiber(void* arg)
         return;
     }
 
-    r = goc_unbox_int(goc_take(goc_io_tcp_open(tcp, raw_fd))->val);
+    r = goc_unbox(int, goc_take(goc_io_tcp_open(tcp, raw_fd))->val);
     if (r < 0) {
         GOC_DBG("accept_fd_transfer_fiber: tcp_open failed rc=%d\n", r);
         sock_close_raw(raw_fd);
@@ -1609,7 +1605,7 @@ static void handle_conn_fiber(void* arg)
         goc_array* req_headers = goc_array_make(num_headers);
         for (size_t i = 0; i < num_headers; i++) {
             goc_http_header_t* hdr =
-                (goc_http_header_t*)goc_malloc(sizeof(goc_http_header_t));
+                (goc_http_header_t*)goc_new(goc_http_header_t);
             char* hname = (char*)goc_malloc(headers[i].name_len + 1);
             memcpy(hname, headers[i].name, headers[i].name_len);
             hname[headers[i].name_len] = '\0';
@@ -1627,13 +1623,12 @@ static void handle_conn_fiber(void* arg)
         if (content_length > 0 && act_body_len > (size_t)content_length)
             act_body_len = (size_t)content_length;
 
-        goc_array* body_arr = goc_array_make(act_body_len);
-        for (size_t i = 0; i < act_body_len; i++)
-            goc_array_push(body_arr,
-                           goc_box_int((unsigned char)buf[body_offset + i]));
+        char* body_buf = goc_malloc(act_body_len + 1);
+        memcpy(body_buf, buf + body_offset, act_body_len);
+        body_buf[act_body_len] = '\0';
 
         goc_req_wrapper_t* w =
-            (goc_req_wrapper_t*)goc_malloc(sizeof(goc_req_wrapper_t));
+            (goc_req_wrapper_t*)goc_new(goc_req_wrapper_t);
         w->conn          = conn;
         w->srv           = srv;
         w->handler       = handler;
@@ -1650,7 +1645,8 @@ static void handle_conn_fiber(void* arg)
                 req_iter,
                 body_end > head_consumed ? body_end - head_consumed : 0);
         w->ctx.headers   = req_headers;
-        w->ctx.body      = body_arr;
+        w->ctx.body      = body_buf;
+        w->ctx.body_len  = act_body_len;
         w->ctx.user_data = NULL;
 
         goc_http_ctx_t* ctx = &w->ctx;
@@ -1722,14 +1718,9 @@ const char* goc_http_server_header(goc_http_ctx_t* ctx, const char* name)
 
 const char* goc_http_server_body_str(goc_http_ctx_t* ctx)
 {
-    if (!ctx || !ctx->body || goc_array_len(ctx->body) == 0)
+    if (!ctx || !ctx->body || ctx->body_len == 0)
         return "";
-    size_t len = goc_array_len(ctx->body);
-    char*  buf = (char*)goc_malloc(len + 1);
-    for (size_t i = 0; i < len; i++)
-        buf[i] = (char)goc_unbox_int(goc_array_get(ctx->body, i));
-    buf[len] = '\0';
-    return buf;
+    return ctx->body;
 }
 
 /* =========================================================================
@@ -1817,8 +1808,7 @@ goc_chan* goc_http_server_respond_error(goc_http_ctx_t* ctx, int status,
 goc_http_request_opts_t* goc_http_request_opts(void)
 {
     goc_http_request_opts_t* o =
-        (goc_http_request_opts_t*)goc_malloc(sizeof(goc_http_request_opts_t));
-    memset(o, 0, sizeof(*o));
+        (goc_http_request_opts_t*)goc_new(goc_http_request_opts_t);
     return o;
 }
 
@@ -1924,8 +1914,7 @@ static int parse_response_head_buf(char* buf, size_t len,
 
     /* Allocate response. */
     goc_http_response_t* resp =
-        (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-    memset(resp, 0, sizeof(*resp));
+        (goc_http_response_t*)goc_new(goc_http_response_t);
     resp->headers = goc_array_make(8);
     *out_resp           = resp;
     *out_content_length = -1;
@@ -1964,7 +1953,7 @@ static int parse_response_head_buf(char* buf, size_t len,
             *out_content_length = (ssize_t)atol(value);
 
         goc_http_header_t* hdr =
-            (goc_http_header_t*)goc_malloc(sizeof(goc_http_header_t));
+            (goc_http_header_t*)goc_new(goc_http_header_t);
         hdr->name  = name;
         hdr->value = value;
         goc_array_push(resp->headers, hdr);
@@ -2904,11 +2893,11 @@ retry_connect:
         }
 
         /* --- TCP init + connect --- */
-        tcp = (uv_tcp_t*)goc_malloc(sizeof(uv_tcp_t));
+        tcp = (uv_tcp_t*)goc_new(uv_tcp_t);
         GOC_DBG("http_client_fiber[%llu]: tcp_init starting tcp=%p\n",
                 (unsigned long long)a->req_id,
                 (void*)tcp);
-        int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+        int rc = goc_unbox(int, goc_take(goc_io_tcp_init(tcp))->val);
         GOC_DBG("http_client_fiber[%llu]: tcp_init completed tcp=%p rc=%d\n",
                 (unsigned long long)a->req_id,
                 (void*)tcp,
@@ -2992,7 +2981,7 @@ retry_connect:
         }
 
         goc_close(connect_ch);
-        rc = goc_unbox_int(res->value.val);
+        rc = goc_unbox(int, res->value.val);
         GOC_DBG("http_client_fiber[%llu]: tcp_connect completed tcp=%p rc=%d\n",
                 (unsigned long long)a->req_id,
                 (void*)tcp,
@@ -3118,7 +3107,7 @@ retry_connect:
             (unsigned long long)a->req_id,
             (void*)tcp,
             req_len);
-    int rc = goc_unbox_int(
+    int rc = goc_unbox(int, 
         goc_take(goc_io_write((uv_stream_t*)tcp, &wb, 1))->val);
     GOC_DBG("http_client_fiber[%llu]: goc_io_write completed tcp=%p rc=%d\n",
             (unsigned long long)a->req_id,
@@ -3412,8 +3401,7 @@ deliver_error: {
     }
     free_buf(resp_buf);
     goc_http_response_t* r =
-        (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-    memset(r, 0, sizeof(*r));
+        (goc_http_response_t*)goc_new(goc_http_response_t);
     r->headers = goc_array_make(0);
     r->body    = "";
     GOC_DBG("http_client_fiber[%llu]: delivering error response ch=%p response=%p\n",
@@ -3461,8 +3449,7 @@ goc_chan* goc_http_request(const char* method, const char* url,
         GOC_DBG("goc_http_request: parse_url failed url=%s\n",
                 url ? url : "<null>");
         goc_http_response_t* r =
-            (goc_http_response_t*)goc_malloc(sizeof(goc_http_response_t));
-        memset(r, 0, sizeof(*r));
+            (goc_http_response_t*)goc_new(goc_http_response_t);
         r->headers = goc_array_make(0);
         r->body    = "";
         goc_put(ch, r);
@@ -3478,7 +3465,7 @@ goc_chan* goc_http_request(const char* method, const char* url,
     }
 
     http_client_arg_t* a =
-        (http_client_arg_t*)goc_malloc(sizeof(http_client_arg_t));
+        (http_client_arg_t*)goc_new(http_client_arg_t);
     a->req_id         = atomic_fetch_add_explicit(&g_http_client_req_seq, 1, memory_order_relaxed) + 1;
     a->method         = (char*)method;  /* caller's lifetime >= fiber */
     a->host           = host;
@@ -3533,7 +3520,7 @@ goc_chan* goc_http_request(const char* method, const char* url,
                     url, a->keep_alive);
             goc_close(ch);
             goc_chan* toch = goc_chan_make(1);
-            goc_http_response_t* r = goc_malloc(sizeof(goc_http_response_t));
+            goc_http_response_t* r = goc_new(goc_http_response_t);
             r->status = 408;
             r->headers = goc_array_make(0);
             r->body    = http_status_str(r->status);

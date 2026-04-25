@@ -149,11 +149,11 @@ static void test_p2_2(void) {
     ASSERT(ch != NULL);
     /* A buffered channel of capacity 16 should accept values without a taker.
      * Put 1 value synchronously from an OS thread to confirm buffering works. */
-    goc_status_t st = goc_put_sync(ch, goc_box_uint(42));
+    goc_status_t st = goc_put_sync_boxed(unsigned int, ch, 42);
     ASSERT(st == GOC_OK);
     goc_val_t* v = goc_take_sync(ch);
     ASSERT(v->ok == GOC_OK);
-    ASSERT(goc_unbox_uint(v->val) == 42);
+    ASSERT(goc_unbox(unsigned int, v->val) == 42);
     goc_close(ch);
     TEST_PASS();
 done:;

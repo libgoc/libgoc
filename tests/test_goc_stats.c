@@ -26,7 +26,9 @@
  *   S2.3  goc_pool_make() emits GOC_WORKER_CREATED per thread
  *   S2.4  Pool creation and destruction events
  *   S3.1  Channel open/close events via API
- *   S3.2  Buffered channel: buf_size and item_count after put/take
+ *   S3.2  Buffered channel: buf_size and item_count after put/takeS3.5  channel close event carries non-zero compaction_runs/entries_removed FAIL
+    Assertion failed: close_ev != NULL
+    /home/divyansh/repos/libgoc/tests/test_goc_stats.c:629
  *   S3.3  Multiple fibers and channels: all events unique and present
  *   S3.4  close event carries non-zero taker_scans/putter_scans
  *   S3.5  close event carries non-zero compaction_runs/entries_removed
@@ -592,7 +594,7 @@ static void s3_5_fiber_2(void* ub) {
 static void test_s3_5(void) {
     TEST_BEGIN("S3.5  channel close event carries non-zero compaction_runs/entries_removed");
     goc_chan* ch = goc_chan_make(0);
-    int ch_id = goc_unbox_int(ch);
+    int ch_id = (int)(intptr_t)ch;
     drain_pending_events();
     
     // Spawn enough fibers parked on the channel 

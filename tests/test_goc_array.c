@@ -21,6 +21,9 @@
  *   A7   concat produces correct combined array; originals unchanged
  *   A8   slice produces correct subarray view; original unchanged
  *   A9   from / to_c C-array interop round-trip
+ *   A9b  goc_array_of constructs inline pointer arrays
+ *   A9c  goc_array_of_boxed boxes scalar values automatically
+ *   A9d  goc_array_copy returns an independent shallow copy
  *   A10  to_c returns NULL for an empty array
  *   A11  concat / slice on empty arrays
  *   A12  goc_array_from with n=0 produces an empty array
@@ -65,11 +68,11 @@ static void test_array_push_get(void) {
     TEST_BEGIN("A2   push / get / len");
     goc_array* arr = goc_array_make(0);
     for (int i = 0; i < 16; i++) {
-        goc_array_push(arr, goc_box_int(i));
+        goc_array_push_boxed(int, arr, i);
     }
     ASSERT(goc_array_len(arr) == 16);
     for (int i = 0; i < 16; i++) {
-        ASSERT(goc_unbox_int(goc_array_get(arr, (size_t)i)) == i);
+        ASSERT(goc_array_get_unboxed(int, arr, i) == i);
     }
     TEST_PASS();
 done:;
@@ -81,13 +84,62 @@ done:;
 static void test_array_set(void) {
     TEST_BEGIN("A3   set overwrites element at index");
     goc_array* arr = goc_array_make(0);
-    goc_array_push(arr, goc_box_int(1));
-    goc_array_push(arr, goc_box_int(2));
-    goc_array_push(arr, goc_box_int(3));
-    goc_array_set(arr, 1, goc_box_int(99));
-    ASSERT(goc_unbox_int(goc_array_get(arr, 0)) == 1);
-    ASSERT(goc_unbox_int(goc_array_get(arr, 1)) == 99);
-    ASSERT(goc_unbox_int(goc_array_get(arr, 2)) == 3);
+    goc_array_push_boxed(int, arr, 1);
+    goc_array_push_boxed(int, arr, 2);
+    goc_array_push_boxed(int, arr, 3);
+    goc_array_set_boxed(int, arr, 1, 99);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 1);
+    ASSERT(goc_array_get_unboxed(int, arr, 1) == 99);
+    ASSERT(goc_array_get_unboxed(int, arr, 2) == 3);
+    TEST_PASS();
+done:;
+}
+
+static void test_array_push_boxed(void) {
+    TEST_BEGIN("A3b  goc_array_push_boxed appends a boxed scalar");
+    goc_array* arr = goc_array_make(0);
+    goc_array_push_boxed(int, arr, 42);
+    ASSERT(goc_array_len(arr) == 1);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 42);
+    TEST_PASS();
+done:;
+}
+
+static void test_array_push_head_boxed(void) {
+    TEST_BEGIN("A3c  goc_array_push_head_boxed prepends a boxed scalar");
+    goc_array* arr = goc_array_make(0);
+    goc_array_push_head_boxed(int, arr, 7);
+    ASSERT(goc_array_len(arr) == 1);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 7);
+    TEST_PASS();
+done:;
+}
+
+static void test_array_set_boxed(void) {
+    TEST_BEGIN("A3d  goc_array_set_boxed overwrites a boxed scalar");
+    goc_array* arr = goc_array_of_boxed(int, 1, 2, 3);
+    goc_array_set_boxed(int, arr, 1, 99);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 1);
+    ASSERT(goc_array_get_unboxed(int, arr, 1) == 99);
+    ASSERT(goc_array_get_unboxed(int, arr, 2) == 3);
+    TEST_PASS();
+done:;
+}
+
+static void test_array_pop_unboxed(void) {
+    TEST_BEGIN("A4b  goc_array_pop_unboxed returns the tail scalar unboxed");
+    goc_array* arr = goc_array_of_boxed(int, 10, 20, 30);
+    ASSERT(goc_array_pop_unboxed(int, arr) == 30);
+    ASSERT(goc_array_len(arr) == 2);
+    TEST_PASS();
+done:;
+}
+
+static void test_array_pop_head_unboxed(void) {
+    TEST_BEGIN("A5b  goc_array_pop_head_unboxed returns the head scalar unboxed");
+    goc_array* arr = goc_array_of_boxed(int, 10, 20, 30);
+    ASSERT(goc_array_pop_head_unboxed(int, arr) == 10);
+    ASSERT(goc_array_len(arr) == 2);
     TEST_PASS();
 done:;
 }
@@ -98,12 +150,12 @@ done:;
 static void test_array_pop(void) {
     TEST_BEGIN("A4   pop returns tail elements in LIFO order");
     goc_array* arr = goc_array_make(0);
-    goc_array_push(arr, goc_box_int(10));
-    goc_array_push(arr, goc_box_int(20));
-    goc_array_push(arr, goc_box_int(30));
-    ASSERT(goc_unbox_int(goc_array_pop(arr)) == 30);
-    ASSERT(goc_unbox_int(goc_array_pop(arr)) == 20);
-    ASSERT(goc_unbox_int(goc_array_pop(arr)) == 10);
+    goc_array_push_boxed(int, arr, 10);
+    goc_array_push_boxed(int, arr, 20);
+    goc_array_push_boxed(int, arr, 30);
+    ASSERT(goc_array_pop_unboxed(int, arr) == 30);
+    ASSERT(goc_array_pop_unboxed(int, arr) == 20);
+    ASSERT(goc_array_pop_unboxed(int, arr) == 10);
     ASSERT(goc_array_len(arr) == 0);
     TEST_PASS();
 done:;
@@ -117,13 +169,13 @@ done:;
 static void test_array_push_pop_head(void) {
     TEST_BEGIN("A5   push_head / pop_head — FIFO from head");
     goc_array* arr = goc_array_make(0);
-    goc_array_push_head(arr, goc_box_int(3));
-    goc_array_push_head(arr, goc_box_int(2));
-    goc_array_push_head(arr, goc_box_int(1));
+    goc_array_push_head_boxed(int, arr, 3);
+    goc_array_push_head_boxed(int, arr, 2);
+    goc_array_push_head_boxed(int, arr, 1);
     ASSERT(goc_array_len(arr) == 3);
-    ASSERT(goc_unbox_int(goc_array_pop_head(arr)) == 1);
-    ASSERT(goc_unbox_int(goc_array_pop_head(arr)) == 2);
-    ASSERT(goc_unbox_int(goc_array_pop_head(arr)) == 3);
+    ASSERT(goc_array_pop_head_unboxed(int, arr) == 1);
+    ASSERT(goc_array_pop_head_unboxed(int, arr) == 2);
+    ASSERT(goc_array_pop_head_unboxed(int, arr) == 3);
     ASSERT(goc_array_len(arr) == 0);
     TEST_PASS();
 done:;
@@ -141,13 +193,13 @@ static void test_array_grow(void) {
     const int N = 64;
     /* interleave: push_head i, push i+N */
     for (int i = 0; i < N; i++) {
-        goc_array_push_head(arr, goc_box_int(N - 1 - i));
-        goc_array_push(arr, goc_box_int(N + i));
+        goc_array_push_head_boxed(int, arr, N - 1 - i);
+        goc_array_push_boxed(int, arr, N + i);
     }
     ASSERT(goc_array_len(arr) == (size_t)(N * 2));
     /* arr should now contain [0, 1, ..., 2N-1] */
     for (int i = 0; i < N * 2; i++) {
-        ASSERT(goc_unbox_int(goc_array_get(arr, (size_t)i)) == i);
+        ASSERT(goc_array_get_unboxed(int, arr, i) == i);
     }
     TEST_PASS();
 done:;
@@ -160,16 +212,16 @@ static void test_array_concat(void) {
     TEST_BEGIN("A7   concat produces correct combined array");
     goc_array* a = goc_array_make(0);
     goc_array* b = goc_array_make(0);
-    goc_array_push(a, goc_box_int(1));
-    goc_array_push(a, goc_box_int(2));
-    goc_array_push(b, goc_box_int(3));
-    goc_array_push(b, goc_box_int(4));
+    goc_array_push_boxed(int, a, 1);
+    goc_array_push_boxed(int, a, 2);
+    goc_array_push_boxed(int, b, 3);
+    goc_array_push_boxed(int, b, 4);
     goc_array* c = goc_array_concat(a, b);
     ASSERT(goc_array_len(c) == 4);
-    ASSERT(goc_unbox_int(goc_array_get(c, 0)) == 1);
-    ASSERT(goc_unbox_int(goc_array_get(c, 1)) == 2);
-    ASSERT(goc_unbox_int(goc_array_get(c, 2)) == 3);
-    ASSERT(goc_unbox_int(goc_array_get(c, 3)) == 4);
+    ASSERT(goc_array_get_unboxed(int, c, 0) == 1);
+    ASSERT(goc_array_get_unboxed(int, c, 1) == 2);
+    ASSERT(goc_array_get_unboxed(int, c, 2) == 3);
+    ASSERT(goc_array_get_unboxed(int, c, 3) == 4);
     /* originals are unchanged */
     ASSERT(goc_array_len(a) == 2);
     ASSERT(goc_array_len(b) == 2);
@@ -184,13 +236,13 @@ static void test_array_slice(void) {
     TEST_BEGIN("A8   slice produces correct subarray view");
     goc_array* arr = goc_array_make(0);
     for (int i = 0; i < 8; i++) {
-        goc_array_push(arr, goc_box_int(i));
+        goc_array_push_boxed(int, arr, i);
     }
     goc_array* s = goc_array_slice(arr, 2, 5);
     ASSERT(goc_array_len(s) == 3);
-    ASSERT(goc_unbox_int(goc_array_get(s, 0)) == 2);
-    ASSERT(goc_unbox_int(goc_array_get(s, 1)) == 3);
-    ASSERT(goc_unbox_int(goc_array_get(s, 2)) == 4);
+    ASSERT(goc_array_get_unboxed(int, s, 0) == 2);
+    ASSERT(goc_array_get_unboxed(int, s, 1) == 3);
+    ASSERT(goc_array_get_unboxed(int, s, 2) == 4);
     /* original is unchanged */
     ASSERT(goc_array_len(arr) == 8);
     TEST_PASS();
@@ -203,10 +255,10 @@ done:;
 static void test_array_c_interop(void) {
     TEST_BEGIN("A9   from/to_c C-array interop round-trip");
     void* src[4] = {
-        goc_box_int(10),
-        goc_box_int(20),
-        goc_box_int(30),
-        goc_box_int(40),
+        goc_box(int, 10),
+        goc_box(int, 20),
+        goc_box(int, 30),
+        goc_box(int, 40),
     };
     goc_array* arr = goc_array_from(src, 4);
     ASSERT(goc_array_len(arr) == 4);
@@ -214,8 +266,63 @@ static void test_array_c_interop(void) {
     void** c = goc_array_to_c(arr);
     ASSERT(c != NULL);
     for (int i = 0; i < 4; i++) {
-        ASSERT(goc_unbox_int(c[i]) == goc_unbox_int(src[i]));
+        ASSERT(goc_unbox(int, c[i]) == goc_unbox(int, src[i]));
     }
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A9b — goc_array_of constructs inline pointer arrays
+ */
+static void test_array_with(void) {
+    TEST_BEGIN("A9b  goc_array_of builds an array from inline pointers");
+    void* a = goc_box(int, 10);
+    void* b = goc_box(int, 20);
+    void* c = goc_box(int, 30);
+
+    goc_array* arr = goc_array_of(a, b, c);
+    ASSERT(goc_array_len(arr) == 3);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 10);
+    ASSERT(goc_array_get_unboxed(int, arr, 1) == 20);
+    ASSERT(goc_array_get_unboxed(int, arr, 2) == 30);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A9c — goc_array_of_boxed boxes scalar values automatically
+ */
+static void test_array_with_boxed(void) {
+    TEST_BEGIN("A9c  goc_array_of_boxed boxes scalar values automatically");
+    goc_array* arr = goc_array_of_boxed(int, 10, 20, 30, 40);
+    ASSERT(goc_array_len(arr) == 4);
+    ASSERT(goc_array_get_unboxed(int, arr, 0) == 10);
+    ASSERT(goc_array_get_unboxed(int, arr, 3) == 40);
+    TEST_PASS();
+done:;
+}
+
+/*
+ * A9d — goc_array_copy returns an independent shallow copy
+ */
+static void test_array_copy(void) {
+    TEST_BEGIN("A9d  goc_array_copy returns an independent shallow copy");
+    goc_array* src = goc_array_of_boxed(int, 1, 2, 3);
+    goc_array* copy = goc_array_copy(src);
+
+    ASSERT(goc_array_len(copy) == goc_array_len(src));
+    ASSERT(goc_array_get(copy, 0) == goc_array_get(src, 0));
+    ASSERT(goc_array_get(copy, 1) == goc_array_get(src, 1));
+    ASSERT(goc_array_get(copy, 2) == goc_array_get(src, 2));
+
+    goc_array_push_boxed(int, copy, 4);
+    ASSERT(goc_array_len(copy) == 4);
+    ASSERT(goc_array_len(src) == 3);
+
+    goc_array_push_boxed(int, src, 5);
+    ASSERT(goc_array_len(src) == 4);
+    ASSERT(goc_array_len(copy) == 4);
     TEST_PASS();
 done:;
 }
@@ -238,14 +345,14 @@ static void test_array_empty_ops(void) {
     TEST_BEGIN("A11  concat / slice on empty arrays");
     goc_array* empty = goc_array_make(0);
     goc_array* a     = goc_array_make(0);
-    goc_array_push(a, goc_box_int(42));
+    goc_array_push_boxed(int, a, 42);
 
     goc_array* lhs = goc_array_concat(empty, a);
     goc_array* rhs = goc_array_concat(a, empty);
     ASSERT(goc_array_len(lhs) == 1);
-    ASSERT(goc_unbox_int(goc_array_get(lhs, 0)) == 42);
+    ASSERT(goc_array_get_unboxed(int, lhs, 0) == 42);
     ASSERT(goc_array_len(rhs) == 1);
-    ASSERT(goc_unbox_int(goc_array_get(rhs, 0)) == 42);
+    ASSERT(goc_array_get_unboxed(int, rhs, 0) == 42);
 
     goc_array* s = goc_array_slice(a, 0, 0);
     ASSERT(goc_array_len(s) == 0);
@@ -321,9 +428,9 @@ static void test_array_str_binary(void) {
     TEST_BEGIN("A16  goc_array_from_str stops at null terminator");
     /* Build an array with a zero byte in the middle by hand. */
     goc_array* arr = goc_array_make(3);
-    goc_array_push(arr, goc_box_int('a'));
-    goc_array_push(arr, goc_box_int(0));
-    goc_array_push(arr, goc_box_int('b'));
+    goc_array_push_boxed(int, arr, 'a');
+    goc_array_push_boxed(int, arr, 0);
+    goc_array_push_boxed(int, arr, 'b');
     ASSERT(goc_array_len(arr) == 3);
     char* s = goc_array_to_str(arr);
     /* The string has length 3 in terms of allocated bytes (a \0 b \0),
@@ -350,12 +457,20 @@ int main(void) {
     test_array_make();
     test_array_push_get();
     test_array_set();
+    test_array_push_boxed();
+    test_array_push_head_boxed();
+    test_array_set_boxed();
+    test_array_pop_unboxed();
+    test_array_pop_head_unboxed();
     test_array_pop();
     test_array_push_pop_head();
     test_array_grow();
     test_array_concat();
     test_array_slice();
     test_array_c_interop();
+    test_array_with();
+    test_array_with_boxed();
+    test_array_copy();
     test_array_to_c_empty();
     test_array_empty_ops();
     test_array_from_empty();

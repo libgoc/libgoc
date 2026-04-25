@@ -149,12 +149,12 @@ static void fiber_p10_1(void* arg)
                                     UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644);
     goc_val_t*  v  = goc_take(ch);
     if (!v || v->ok != GOC_OK) goto done;
-    uv_file fd = goc_unbox_int(v->val);
+    uv_file fd = goc_unbox(int, v->val);
     if (fd < 0) goto done;
     goc_take(goc_io_fs_close(fd));
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_1(void)
@@ -162,7 +162,7 @@ static void test_p10_1(void)
     TEST_BEGIN("P10.1  goc_io_fs_open opens a new file");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_1, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -179,17 +179,17 @@ static void fiber_p10_2(void* arg)
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH,
                                UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644));
     if (!vopen || vopen->ok != GOC_OK) goto done;
-    uv_file fd = goc_unbox_int(vopen->val);
+    uv_file fd = goc_unbox(int, vopen->val);
     if (fd < 0) goto done;
 
     goc_val_t* vwrite = goc_take(goc_io_fs_write(fd, CONTENT, CONTENT_LEN, -1));
-    ssize_t written = goc_unbox_int(vwrite->val);
+    ssize_t written = goc_unbox(int, vwrite->val);
     goc_take(goc_io_fs_close(fd));
     if (written != CONTENT_LEN) goto done;
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_2(void)
@@ -197,7 +197,7 @@ static void test_p10_2(void)
     TEST_BEGIN("P10.2  goc_io_fs_write writes correct byte count");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_2, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -212,7 +212,7 @@ static void fiber_p10_3(void* arg)
     int ok = 0;
     goc_val_t* vopen = goc_take(goc_io_fs_open(TMP_PATH, UV_FS_O_RDONLY, 0));
     if (!vopen || vopen->ok != GOC_OK) goto done;
-    uv_file fd = goc_unbox_int(vopen->val);
+    uv_file fd = goc_unbox(int, vopen->val);
     if (fd < 0) goto done;
 
     goc_val_t* vrd = goc_take(goc_io_fs_read(fd, CONTENT_LEN, 0));
@@ -223,7 +223,7 @@ static void fiber_p10_3(void* arg)
     if (memcmp(rres->buf, CONTENT, CONTENT_LEN) != 0) goto done;
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_3(void)
@@ -231,7 +231,7 @@ static void test_p10_3(void)
     TEST_BEGIN("P10.3  goc_io_fs_read reads back correct content");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_3, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -251,7 +251,7 @@ static void fiber_p10_4(void* arg)
     if ((int64_t)st->statbuf.st_size != CONTENT_LEN) goto done;
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_4(void)
@@ -259,7 +259,7 @@ static void test_p10_4(void)
     TEST_BEGIN("P10.4  goc_io_fs_stat reports correct file size");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_4, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -273,7 +273,7 @@ static void fiber_p10_5(void* arg)
     goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vren = goc_take(goc_io_fs_rename(TMP_PATH, TMP_PATH2));
-    int ren = goc_unbox_int(vren->val);
+    int ren = goc_unbox(int, vren->val);
     if (ren != 0) goto done;
 
     /* Old path should no longer exist */
@@ -289,7 +289,7 @@ static void fiber_p10_5(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_5(void)
@@ -297,7 +297,7 @@ static void test_p10_5(void)
     TEST_BEGIN("P10.5  goc_io_fs_rename renames file correctly");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_5, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -311,7 +311,7 @@ static void fiber_p10_6(void* arg)
     goc_chan* res_ch = arg;
     int ok = 0;
     goc_val_t* vul = goc_take(goc_io_fs_unlink(TMP_PATH2));
-    int ul = goc_unbox_int(vul->val);
+    int ul = goc_unbox(int, vul->val);
     if (ul != 0) goto done;
 
     /* File should no longer exist */
@@ -321,7 +321,7 @@ static void fiber_p10_6(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_6(void)
@@ -329,7 +329,7 @@ static void test_p10_6(void)
     TEST_BEGIN("P10.6  goc_io_fs_unlink deletes file, stat then fails");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_6, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -346,12 +346,12 @@ static void fiber_p10_7(void* arg)
                                    UV_FS_O_RDONLY, 0);
     goc_val_t*     v  = goc_take(ch);
     if (!v || v->ok != GOC_OK) goto done;
-    uv_file fd = goc_unbox_int(v->val);
+    uv_file fd = goc_unbox(int, v->val);
     /* result should be a negative error code */
     if (fd >= 0) goto done;
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_7(void)
@@ -359,7 +359,7 @@ static void test_p10_7(void)
     TEST_BEGIN("P10.7  goc_io_fs_open with invalid path returns error code");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_7, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -380,7 +380,7 @@ static void fiber_p10_8(void* arg)
     uv_freeaddrinfo(res->res);
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_8(void)
@@ -388,7 +388,7 @@ static void test_p10_8(void)
     TEST_BEGIN("P10.8  goc_io_getaddrinfo resolves \"localhost\"");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_8, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -412,7 +412,7 @@ static void fiber_p10_9(void* arg)
     /* Test passes regardless of status — we just need no crash */
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_9(void)
@@ -420,7 +420,7 @@ static void test_p10_9(void)
     TEST_BEGIN("P10.9  goc_io_getaddrinfo NULL node+service: no crash");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_9, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -458,18 +458,18 @@ static void fiber_p10_11(void* arg)
     goc_val_t* vsrc = goc_take(goc_io_fs_open(TMP_PATH,
                                UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_TRUNC, 0644));
     if (!vsrc || vsrc->ok != GOC_OK) goto done;
-    uv_file src_fd = goc_unbox_int(vsrc->val);
+    uv_file src_fd = goc_unbox(int, vsrc->val);
     if (src_fd < 0) goto done;
 
     goc_val_t* vwrite = goc_take(goc_io_fs_write(src_fd, CONTENT, CONTENT_LEN, -1));
-    ssize_t written = goc_unbox_int(vwrite->val);
+    ssize_t written = goc_unbox(int, vwrite->val);
     goc_take(goc_io_fs_close(src_fd));
     if (written != CONTENT_LEN) goto done;
 
     /* Reopen source for reading */
     goc_val_t* vsrc2 = goc_take(goc_io_fs_open(TMP_PATH, UV_FS_O_RDONLY, 0));
     if (!vsrc2 || vsrc2->ok != GOC_OK) goto done;
-    src_fd = goc_unbox_int(vsrc2->val);
+    src_fd = goc_unbox(int, vsrc2->val);
     if (src_fd < 0) goto done;
 
     /* Create destination file */
@@ -479,14 +479,14 @@ static void fiber_p10_11(void* arg)
         goc_take(goc_io_fs_close(src_fd));
         goto done;
     }
-    uv_file dst_fd = goc_unbox_int(vdst->val);
+    uv_file dst_fd = goc_unbox(int, vdst->val);
     if (dst_fd < 0) {
         goc_take(goc_io_fs_close(src_fd));
         goto done;
     }
 
     goc_val_t* vsf = goc_take(goc_io_fs_sendfile(dst_fd, src_fd, 0, (size_t)CONTENT_LEN));
-    ssize_t sf = goc_unbox_int(vsf->val);
+    ssize_t sf = goc_unbox(int, vsf->val);
     goc_take(goc_io_fs_close(src_fd));
     goc_take(goc_io_fs_close(dst_fd));
     if (sf != CONTENT_LEN) goto done;
@@ -494,7 +494,7 @@ static void fiber_p10_11(void* arg)
     /* Verify destination content */
     goc_val_t* vvfd = goc_take(goc_io_fs_open(TMP_PATH3, UV_FS_O_RDONLY, 0));
     if (!vvfd || vvfd->ok != GOC_OK) goto done;
-    uv_file verify_fd = goc_unbox_int(vvfd->val);
+    uv_file verify_fd = goc_unbox(int, vvfd->val);
     if (verify_fd < 0) goto done;
     goc_val_t* vrd = goc_take(goc_io_fs_read(verify_fd, CONTENT_LEN, 0));
     goc_take(goc_io_fs_close(verify_fd));
@@ -504,7 +504,7 @@ static void fiber_p10_11(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_11(void)
@@ -512,7 +512,7 @@ static void test_p10_11(void)
     TEST_BEGIN("P10.11 goc_io_fs_sendfile copies correct byte count");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_11, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     /* Cleanup */
     uv_fs_t req;
     uv_fs_unlink(goc_scheduler(), &req, TMP_PATH,  NULL); uv_fs_req_cleanup(&req);
@@ -545,7 +545,7 @@ static void fiber_p10_12(void* arg)
     goc_alts_result_t* result = goc_alts(ops, 2);
 
     if (result->ch != open_ch) goto done;   /* unexpected winner */
-    uv_file fd = goc_unbox_int(result->value.val);
+    uv_file fd = goc_unbox(int, result->value.val);
     if (fd < 0) goto done;
 
     goc_take(goc_io_fs_close(fd));
@@ -555,7 +555,7 @@ static void fiber_p10_12(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_12(void)
@@ -563,7 +563,7 @@ static void test_p10_12(void)
     TEST_BEGIN("P10.12 goc_io_fs_open works with goc_alts (select)");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_12, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     /* Cleanup */
     uv_fs_t req;
     uv_fs_unlink(goc_scheduler(), &req, TMP_PATH, NULL);
@@ -583,7 +583,7 @@ static void fiber_p10_13(void* arg)
 
     /* uv_async_init is the only uv_*_init documented as safe from any thread.
      * Raw async handles may be closed directly via goc_io_handle_close(). */
-    uv_async_t* h = goc_malloc(sizeof(uv_async_t));
+    uv_async_t* h = goc_new(uv_async_t);
     int rc = uv_async_init(goc_scheduler(), h, NULL);
     if (rc != 0) goto done;
 
@@ -591,7 +591,7 @@ static void fiber_p10_13(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_13(void)
@@ -599,7 +599,7 @@ static void test_p10_13(void)
     TEST_BEGIN("P10.13 goc_io_handle_close accepts raw uv_async_t handles");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_13, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -621,30 +621,30 @@ static void fiber_p10_14(void* arg)
     goc_chan* ready = NULL;
     goc_chan* timeout_ch = NULL;
 
-    server = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+    server = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(server))->val) != 0)
         goto done;
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    if (goc_unbox_int(
+    if (goc_unbox(int, 
             goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
         goto done;
 
     ready = goc_chan_make(1);
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take(ready);
-    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+    if (!vready || vready->ok != GOC_OK || goc_unbox(int, vready->val) != 0)
         goto done;
     goc_close(ready);
 
-    client = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+    client = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(client))->val) != 0)
         goto done;
 
     goc_val_t* vconn = goc_take(goc_io_tcp_connect(
         client, (const struct sockaddr*)&addr));
-    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox(int, vconn->val) != 0)
         goto done;
 
     goc_val_t* vacc = goc_take(accept_ch);
@@ -669,7 +669,7 @@ static void fiber_p10_14(void* arg)
 
     ok = 1;
 done:
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_14(void)
@@ -677,7 +677,7 @@ static void test_p10_14(void)
     TEST_BEGIN("P10.14 goc_io_read_start + goc_io_handle_close: pending read is canceled on close");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_14, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -697,7 +697,7 @@ static void fiber_p10_14_read_worker(void* arg)
 
     goc_val_t* vopen = goc_take(goc_io_fs_open(a->path, UV_FS_O_RDONLY, 0));
     if (!vopen || vopen->ok != GOC_OK) goto done;
-    uv_file fd = goc_unbox_int(vopen->val);
+    uv_file fd = goc_unbox(int, vopen->val);
     if (fd < 0) goto done;
 
     goc_val_t* vrd = goc_take(goc_io_fs_read(fd, a->expected_len, 0));
@@ -713,7 +713,7 @@ static void fiber_p10_14_read_worker(void* arg)
 done:
     if (ok)
         atomic_fetch_add_explicit(a->pass_count, 1, memory_order_acq_rel);
-    goc_put(a->done, goc_box_int(ok));
+    goc_put_boxed(int, a->done, ok);
 }
 
 static void fiber_p10_15_write_close(void* arg)
@@ -729,30 +729,30 @@ static void fiber_p10_15_write_close(void* arg)
     goc_chan* ready = NULL;
     goc_chan* timeout_ch = NULL;
 
-    server = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+    server = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(server))->val) != 0)
         goto done;
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    if (goc_unbox_int(
+    if (goc_unbox(int, 
             goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
         goto done;
 
     ready = goc_chan_make(1);
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take(ready);
-    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+    if (!vready || vready->ok != GOC_OK || goc_unbox(int, vready->val) != 0)
         goto done;
     goc_close(ready);
 
-    client = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+    client = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(client))->val) != 0)
         goto done;
 
     goc_val_t* vconn = goc_take(goc_io_tcp_connect(
         client, (const struct sockaddr*)&addr));
-    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox(int, vconn->val) != 0)
         goto done;
 
     goc_val_t* vacc = goc_take(accept_ch);
@@ -789,7 +789,7 @@ done:
         goc_io_handle_close((uv_handle_t*)peer);
     if (accept_ch)
         goc_close(accept_ch);
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_15(void)
@@ -797,7 +797,7 @@ static void test_p10_15(void)
     TEST_BEGIN("P10.15 write + goc_io_handle_close: pending write completes on close");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_15_write_close, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -879,8 +879,8 @@ static void test_p10_16(void)
 
     goc_val_t* r1 = goc_take_sync(done_a);
     goc_val_t* r2 = goc_take_sync(done_b);
-    ASSERT(r1 && goc_unbox_int(r1->val) == 1);
-    ASSERT(r2 && goc_unbox_int(r2->val) == 1);
+    ASSERT(r1 && goc_unbox(int, r1->val) == 1);
+    ASSERT(r2 && goc_unbox(int, r2->val) == 1);
     ASSERT(atomic_load_explicit(&pass_count, memory_order_acquire) == 2);
 
     goc_pool_destroy(pool);
@@ -920,7 +920,7 @@ static void fiber_p10_16_worker(void* arg)
     if (ok)
         atomic_fetch_add_explicit(a->success, 1, memory_order_acq_rel);
     if (atomic_fetch_add_explicit(a->completed, 1, memory_order_acq_rel) + 1 == P10_15_CALLS)
-        goc_put(a->done, goc_box_int(1));
+        goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p10_17(void)
@@ -945,7 +945,7 @@ static void test_p10_17(void)
         goc_go_on(pool, fiber_p10_16_worker, &arg);
 
     goc_val_t* vd = goc_take_sync(done);
-    ASSERT(vd && goc_unbox_int(vd->val) == 1);
+    ASSERT(vd && goc_unbox(int, vd->val) == 1);
 
     ASSERT(atomic_load_explicit(&completed, memory_order_acquire) == P10_15_CALLS);
     ASSERT(atomic_load_explicit(&success, memory_order_acquire) == P10_15_CALLS);
@@ -988,7 +988,7 @@ static void fiber_p10_16_timeout_worker(void* arg)
         ok = 1;
     }
 
-    goc_put(a->done, goc_box_int(ok));
+    goc_put_boxed(int, a->done, ok);
 }
 
 static void test_p10_18(void)
@@ -1038,8 +1038,8 @@ static void test_p10_18(void)
 
     goc_val_t* r1 = goc_take_sync(done_a);
     goc_val_t* r2 = goc_take_sync(done_b);
-    ASSERT(r1 && goc_unbox_int(r1->val) == 1);
-    ASSERT(r2 && goc_unbox_int(r2->val) == 1);
+    ASSERT(r1 && goc_unbox(int, r1->val) == 1);
+    ASSERT(r2 && goc_unbox(int, r2->val) == 1);
 
     int o_short = atomic_load_explicit(&order[0], memory_order_acquire);
     int o_long  = atomic_load_explicit(&order[1], memory_order_acquire);
@@ -1076,30 +1076,30 @@ static void fiber_p10_19(void* arg)
     goc_chan* rd = NULL;
     goc_chan* timeout_ch = NULL;
 
-    server = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+    server = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(server))->val) != 0)
         goto done;
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    if (goc_unbox_int(
+    if (goc_unbox(int, 
             goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
         goto done;
 
     ready = goc_chan_make(1);
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take(ready);
-    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+    if (!vready || vready->ok != GOC_OK || goc_unbox(int, vready->val) != 0)
         goto done;
     goc_close(ready);
 
-    client = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+    client = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(client))->val) != 0)
         goto done;
 
     goc_val_t* vconn = goc_take(goc_io_tcp_connect(
         client, (const struct sockaddr*)&addr));
-    if (!vconn || vconn->ok != GOC_OK || goc_unbox_int(vconn->val) != 0)
+    if (!vconn || vconn->ok != GOC_OK || goc_unbox(int, vconn->val) != 0)
         goto done;
 
     goc_val_t* vacc = goc_take(accept_ch);
@@ -1139,7 +1139,7 @@ done:
         goc_io_handle_close((uv_handle_t*)server);
     if (client)
         goc_io_handle_close((uv_handle_t*)client);
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_19(void)
@@ -1147,7 +1147,7 @@ static void test_p10_19(void)
     TEST_BEGIN("P10.19 goc_io_read_start + goc_io_read_stop: read stop closes the channel with EOF");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_19, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -1170,27 +1170,27 @@ static void fiber_p10_20(void* arg)
     goc_chan* rd = NULL;
     goc_chan* timeout_ch = NULL;
 
-    server = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(server))->val) != 0)
+    server = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(server))->val) != 0)
         goto done;
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    if (goc_unbox_int(
+    if (goc_unbox(int, 
             goc_take(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) != 0)
         goto done;
 
     ready = goc_chan_make(1);
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take(ready);
-    if (!vready || vready->ok != GOC_OK || goc_unbox_int(vready->val) != 0)
+    if (!vready || vready->ok != GOC_OK || goc_unbox(int, vready->val) != 0)
         goto done;
     goc_close(ready);
 
-    client = goc_malloc(sizeof(uv_tcp_t));
-    if (goc_unbox_int(goc_take(goc_io_tcp_init(client))->val) != 0)
+    client = goc_new(uv_tcp_t);
+    if (goc_unbox(int, goc_take(goc_io_tcp_init(client))->val) != 0)
         goto done;
-    if (goc_unbox_int(
+    if (goc_unbox(int, 
             goc_take(goc_io_tcp_connect(client, (const struct sockaddr*)&addr))->val) != 0)
         goto done;
 
@@ -1202,7 +1202,7 @@ static void fiber_p10_20(void* arg)
     rd = goc_io_read_start((uv_stream_t*)client);
 
     uv_buf_t buf = uv_buf_init("x", 1);
-    if (goc_unbox_int(goc_take(goc_io_write((uv_stream_t*)peer, &buf, 1))->val) != 0)
+    if (goc_unbox(int, goc_take(goc_io_write((uv_stream_t*)peer, &buf, 1))->val) != 0)
         goto done;
     goc_io_handle_close((uv_handle_t*)peer);
 
@@ -1243,7 +1243,7 @@ done:
         goc_io_handle_close((uv_handle_t*)server);
     if (client)
         goc_io_handle_close((uv_handle_t*)client);
-    goc_put(res_ch, goc_box_int(ok));
+    goc_put_boxed(int, res_ch, ok);
 }
 
 static void test_p10_20(void)
@@ -1251,7 +1251,7 @@ static void test_p10_20(void)
     TEST_BEGIN("P10.20 goc_io_read_start + goc_io_read_stop: active read stops and closes cleanly");
     goc_chan* res_ch = goc_chan_make(1);
     goc_go(fiber_p10_20, res_ch);
-    ASSERT(goc_unbox_int(goc_take_sync(res_ch)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(res_ch)->val));
     TEST_PASS();
 done:;
 }
@@ -1267,8 +1267,8 @@ static void test_p10_21a(void)
     uv_tcp_t* tcp = NULL;
     goc_chan* close_ch = NULL;
 
-    tcp = goc_malloc(sizeof(uv_tcp_t));
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(tcp))->val) == 0);
+    tcp = goc_new(uv_tcp_t);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_init(tcp))->val) == 0);
 
     tcp->data = (void*)(uintptr_t)0xDEADBEAD;
     goc_io_handle_close((uv_handle_t*)tcp);
@@ -1288,12 +1288,12 @@ static void test_p10_21b(void)
     uv_tcp_t* tcp_handle = NULL;
     goc_io_handle_t* wrapped = NULL;
 
-    tcp_handle = goc_malloc(sizeof(uv_tcp_t));
+    tcp_handle = goc_new(uv_tcp_t);
     ASSERT(tcp_handle != NULL);
 
     goc_val_t* v = goc_take_sync(goc_io_tcp_init(tcp_handle));
     ASSERT(v != NULL && v->ok == GOC_OK);
-    int rc = goc_unbox_int(v->val);
+    int rc = goc_unbox(int, v->val);
     ASSERT(rc == 0);
 
     wrapped = tcp_handle->data;
@@ -1330,10 +1330,10 @@ done:;
 static void fiber_p10_21c_client_init(void* arg)
 {
     p10_21c_init_arg_t* a = (p10_21c_init_arg_t*)arg;
-    a->client = goc_malloc(sizeof(uv_tcp_t));
+    a->client = goc_new(uv_tcp_t);
     ASSERT(a->client != NULL);
 
-    ASSERT(goc_unbox_int(goc_take(goc_io_tcp_init(a->client))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take(goc_io_tcp_init(a->client))->val) == 0);
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", a->port, &addr);
@@ -1341,10 +1341,10 @@ static void fiber_p10_21c_client_init(void* arg)
         goc_io_tcp_connect(
             a->client, 
             (const struct sockaddr*)&addr));
-    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox_int(vconn->val) == 0);
+    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox(int, vconn->val) == 0);
 
 done:
-    goc_put(a->done, goc_box_int(a->ok));
+    goc_put_boxed(int, a->done, a->ok);
 }
 
 static void test_p10_21c(void)
@@ -1359,19 +1359,19 @@ static void test_p10_21c(void)
     goc_chan* accept_ch = NULL;
     p10_21c_init_arg_t arg = { 0 };
 
-    server = goc_malloc(sizeof(uv_tcp_t));
+    server = goc_new(uv_tcp_t);
     ASSERT(server != NULL);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(server))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_init(server))->val) == 0);
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
 
     ready = goc_chan_make(1);
     goc_chan_set_debug_tag(ready, "P10_21c_ready_ch");
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take_sync(ready);
-    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox_int(vready->val) == 0);
+    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox(int, vready->val) == 0);
     goc_close(ready);
     ready = NULL;
 
@@ -1385,7 +1385,7 @@ static void test_p10_21c(void)
     arg.ok = 0;
     goc_go_on(pool, fiber_p10_21c_client_init, &arg);
     goc_val_t* vinit = goc_take_sync(arg.done);
-    ASSERT(vinit != NULL && goc_unbox_int(vinit->val) == 0);
+    ASSERT(vinit != NULL && goc_unbox(int, vinit->val) == 0);
 
     uv_tcp_t* client = arg.client;
     goc_val_t* vacc = goc_take_sync(accept_ch);
@@ -1432,15 +1432,15 @@ typedef struct {
 static void fiber_p10_21d_init(void* arg)
 {
     p10_21d_init_arg_t* a = (p10_21d_init_arg_t*)arg;
-    a->tcp = goc_malloc(sizeof(uv_tcp_t));
+    a->tcp = goc_new(uv_tcp_t);
     if (!a->tcp) {
-        goc_put(a->result_ch, goc_box_uint(0));
+        goc_put(a->result_ch, NULL);
         return;
     }
 
     goc_val_t* v = goc_take(goc_io_tcp_init(a->tcp));
-    if (!v || v->ok != GOC_OK || goc_unbox_int(v->val) != 0) {
-        goc_put(a->result_ch, goc_box_uint(0));
+    if (!v || v->ok != GOC_OK || goc_unbox(int, v->val) != 0) {
+        goc_put(a->result_ch, NULL);
         return;
     }
     goc_put(a->result_ch, a->tcp);
@@ -1460,7 +1460,7 @@ static void test_p10_21d(void)
     goc_val_t* v = goc_take_sync(result_ch);
     ASSERT(v && v->ok == GOC_OK);
 
-    uv_tcp_t* tcp = (uv_tcp_t*)goc_unbox_uint(v->val);
+    uv_tcp_t* tcp = (uv_tcp_t*)v->val;
     ASSERT(tcp != NULL);
 
     goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp));
@@ -1483,9 +1483,9 @@ static void test_p10_21e(void)
 {
     TEST_BEGIN("P10.21e repeated goc_io_handle_close calls on a wrapper handle are ignored");
 
-    uv_tcp_t* tcp_handle = goc_malloc(sizeof(uv_tcp_t));
+    uv_tcp_t* tcp_handle = goc_new(uv_tcp_t);
     ASSERT(tcp_handle != NULL);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(tcp_handle))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_init(tcp_handle))->val) == 0);
 
     goc_take_sync(goc_io_handle_close((uv_handle_t*)tcp_handle));
     for (int i = 0; i < 10; i++) {
@@ -1511,18 +1511,18 @@ typedef struct {
 static void fiber_p10_21f_init(void* arg)
 {
     p10_21f_init_arg_t* a = (p10_21f_init_arg_t*)arg;
-    a->async = goc_malloc(sizeof(uv_async_t));
+    a->async = goc_new(uv_async_t);
     if (!a->async) {
-        goc_put(a->result_ch, goc_box_uint(0));
+        goc_put(a->result_ch, NULL);
         return;
     }
 
     int rc = uv_async_init(goc_scheduler(), a->async, NULL);
     if (rc != 0) {
-        goc_put(a->result_ch, goc_box_uint(0));
+        goc_put(a->result_ch, NULL);
         return;
     }
-    goc_put(a->result_ch, goc_box_uint((uintptr_t)a->async));
+    goc_put(a->result_ch, a->async);
 }
 
 static void test_p10_21f(void)
@@ -1539,7 +1539,7 @@ static void test_p10_21f(void)
     goc_val_t* v = goc_take_sync(result_ch);
     ASSERT(v && v->ok == GOC_OK);
 
-    uv_async_t* async_handle = (uv_async_t*)(uintptr_t)goc_unbox_uint(v->val);
+    uv_async_t* async_handle = (uv_async_t*)v->val;
     ASSERT(async_handle != NULL);
 
     goc_take_sync(goc_io_handle_close((uv_handle_t*)async_handle));
@@ -1570,29 +1570,29 @@ static void test_p10_22(void)
     goc_chan* ready = NULL;
     goc_chan* accept_ch = NULL;
 
-    server = goc_malloc(sizeof(uv_tcp_t));
+    server = goc_new(uv_tcp_t);
     ASSERT(server != NULL);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(server))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_init(server))->val) == 0);
 
     struct sockaddr_in addr;
     uv_ip4_addr("127.0.0.1", port, &addr);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_bind(server, (const struct sockaddr*)&addr))->val) == 0);
 
     ready = goc_chan_make(1);
     accept_ch = goc_io_tcp_server_make(server, 1, ready);
     goc_val_t* vready = goc_take_sync(ready);
-    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox_int(vready->val) == 0);
+    ASSERT(vready != NULL && vready->ok == GOC_OK && goc_unbox(int, vready->val) == 0);
 
     goc_close(ready);
     ready = NULL;
 
-    client = goc_malloc(sizeof(uv_tcp_t));
+    client = goc_new(uv_tcp_t);
     ASSERT(client != NULL);
-    ASSERT(goc_unbox_int(goc_take_sync(goc_io_tcp_init(client))->val) == 0);
+    ASSERT(goc_unbox(int, goc_take_sync(goc_io_tcp_init(client))->val) == 0);
 
     goc_val_t* vconn = goc_take_sync(goc_io_tcp_connect(
         client, (const struct sockaddr*)&addr));
-    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox_int(vconn->val) == 0);
+    ASSERT(vconn != NULL && vconn->ok == GOC_OK && goc_unbox(int, vconn->val) == 0);
 
     /* Close the accept channel while a pending connection may still be
      * delivered to it. The dropped accept callback must not double-close the

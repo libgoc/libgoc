@@ -216,25 +216,76 @@ char* goc_sprintf(const char* fmt, ...);
  * libgoc channels and arrays are type-erased: they carry void* values.
  * These macros eliminate the repetitive double-cast needed to pass scalar
  * integers through a void* slot and to recover them afterwards.
+ * Pointer values can be stored directly as void* and do not require boxing.
  *
- *   goc_box_int(x)   — encode a signed integer (intptr_t) as void*
- *   goc_unbox_int(p) — decode a void* back to intptr_t
- *   goc_box_uint(x)  — encode an unsigned integer (uintptr_t) as void*
- *   goc_unbox_uint(p)— decode a void* back to uintptr_t
+ *   goc_box(int, x)   — allocate a GC-managed signed integer and return it as int*
+ *   goc_unbox(int, p) — dereference a boxed signed integer pointer
+ *   goc_box(unsigned int, x)  — allocate a GC-managed unsigned integer and return it as unsigned int*
+ *   goc_unbox(unsigned int, p)— dereference a boxed unsigned integer pointer
  *
  * Example (channel):
- *   goc_put(ch, goc_box_int(42));
- *   intptr_t n = goc_unbox_int(goc_take(ch)->val);
+ *   goc_put(ch, goc_box(int, 42));
+ *   intptr_t n = goc_unbox(int, goc_take(ch)->val);
  *
  * Example (array):
- *   goc_array_push(arr, goc_box_int(42));
- *   intptr_t n = goc_unbox_int(goc_array_get(arr, 0));
+ *   goc_array_push(arr, goc_box(int, 42));
+ *   intptr_t n = goc_unbox(int, goc_array_get(arr, 0));
  * ---------------------------------------------------------------------- */
 
-#define goc_box_int(x)    ((void*)(intptr_t)(x))
-#define goc_unbox_int(p)  ((intptr_t)(p))
-#define goc_box_uint(x)   ((void*)(uintptr_t)(x))
-#define goc_unbox_uint(p) ((uintptr_t)(p))
+/**
+ * _goc_box_impl() — Allocate a GC-managed copy of `size` bytes at `val`.
+ *
+ * Internal. Do not call directly — use the goc_box(T, val) macro instead.
+ */
+void* _goc_box_impl(const void* val, size_t size);
+
+/**
+ * goc_new(T) — Allocate a single value of type T on the GC heap.
+ *
+ * Returns a typed pointer to the newly allocated T.
+ * Aborts on allocation failure.
+ */
+#define goc_new(T)            ((T*)goc_malloc(sizeof(T)))
+
+/**
+ * goc_new_n(T, n) — Allocate an array of n values of type T on the GC heap.
+ *
+ * Returns a typed pointer to the first element of the newly allocated array.
+ * Aborts on allocation failure.
+ */
+#define goc_new_n(T, n)       ((T*)goc_malloc((n) * sizeof(T)))
+
+/**
+ * goc_box(T, val) — Allocate a GC-managed copy of scalar val.
+ *
+ * Returns a typed T* pointer to the boxed value.
+ */
+#define goc_box(T, val)       ((T*)_goc_box_impl(&(T){(val)}, sizeof(T)))
+
+/**
+ * goc_unbox(T, x) — Dereference a boxed scalar pointer.
+ *
+ * Converts the boxed T* returned by goc_box back into a T value.
+ */
+#define goc_unbox(T, x)       (*(T*)(x))
+
+/**
+ * goc_put_boxed(T, ch, val) — Box val and send it (fiber context).
+ * Equivalent to goc_put(ch, goc_box(T, val)).
+ */
+#define goc_put_boxed(T, ch, val)            goc_put((ch), goc_box(T, (val)))
+
+/**
+ * goc_put_sync_boxed(T, ch, val) — Box val and send it (OS thread context).
+ * Equivalent to goc_put_sync(ch, goc_box(T, val)).
+ */
+#define goc_put_sync_boxed(T, ch, val)       goc_put_sync((ch), goc_box(T, (val)))
+
+/**
+ * goc_put_cb_boxed(T, ch, val, cb, ud) — Box val and send it asynchronously.
+ * Equivalent to goc_put_cb(ch, goc_box(T, val), cb, ud).
+ */
+#define goc_put_cb_boxed(T, ch, val, cb, ud) goc_put_cb((ch), goc_box(T, (val)), (cb), (ud))
 
 /* -------------------------------------------------------------------------
  * Fiber launch

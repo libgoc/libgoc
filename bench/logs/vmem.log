@@ -14,21 +14,6 @@ gmake[2]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 gmake[3]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
-gmake[4]: Entering directory '/home/divyansh/repos/libgoc/build-bench-vmem'
-[  6%] Building C object CMakeFiles/goc.dir/src/alts.c.o
-[ 12%] Building C object CMakeFiles/goc.dir/src/timeout.c.o
-[ 18%] Building C object CMakeFiles/goc.dir/src/gc.c.o
-[ 25%] Building C object CMakeFiles/goc.dir/src/loop.c.o
-[ 31%] Building C object CMakeFiles/goc.dir/src/pool.c.o
-[ 37%] Building C object CMakeFiles/goc.dir/src/fiber.c.o
-[ 43%] Building C object CMakeFiles/goc.dir/src/channel.c.o
-[ 50%] Building C object CMakeFiles/goc.dir/src/mutex.c.o
-[ 56%] Building C object CMakeFiles/goc.dir/src/wsdq.c.o
-[ 62%] Building C object CMakeFiles/goc.dir/src/goc_array.c.o
-[ 68%] Building C object CMakeFiles/goc.dir/src/goc_io.c.o
-[ 75%] Building C object CMakeFiles/goc.dir/src/goc_http.c.o
-[ 81%] Linking C static library libgoc.a
-gmake[4]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 [100%] Built target goc
 gmake[3]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 gmake[2]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
@@ -36,43 +21,43 @@ gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -L/usr/lib/x86_64-linux-gnu -l:libuv.a -L/usr/local/lib -l:libgc.a  -lrt   -lpthread -ldl  -o bench-libgoc
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 36ms (5489965 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 90ms (5498597 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 567ms (352279 msg/s)
-Spawn idle tasks: 200000 fibers in 3660ms (54633 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 563ms (4011 primes/s)
-HTTP ping-pong: 2000 round trips in 586ms (3408 round trips/s, avg 257.9us p50 253.5us p95 294.9us p99 327.6us, warmup 200)
-HTTP server throughput: 58019 requests in 5000ms (11604 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 36ms (5407246 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 85ms (5834659 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 559ms (357563 msg/s)
+Spawn idle tasks: 200000 fibers in 3620ms (55247 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 542ms (4169 primes/s)
+HTTP ping-pong: 2000 round trips in 551ms (3625 round trips/s, avg 245.0us p50 240.5us p95 280.8us p99 318.4us, warmup 200)
+HTTP server throughput: 59663 requests in 5000ms (11933 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 60ms (3310507 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 148ms (3363622 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 239ms (835143 msg/s)
-Spawn idle tasks: 200000 fibers in 4576ms (43698 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 470ms (4805 primes/s)
-HTTP ping-pong: 2000 round trips in 607ms (3294 round trips/s, avg 268.3us p50 263.3us p95 310.0us p99 346.5us, warmup 200)
-HTTP server throughput: 88640 requests in 5000ms (17728 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 56ms (3530123 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 144ms (3463204 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 241ms (829631 msg/s)
+Spawn idle tasks: 200000 fibers in 4544ms (44008 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 469ms (4820 primes/s)
+HTTP ping-pong: 2000 round trips in 498ms (4013 round trips/s, avg 218.1us p50 215.1us p95 251.4us p99 283.8us, warmup 200)
+HTTP server throughput: 108536 requests in 5000ms (21707 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 53ms (3742637 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 136ms (3674828 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 279ms (715933 msg/s)
-Spawn idle tasks: 200000 fibers in 4537ms (44074 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 571ms (3958 primes/s)
-HTTP ping-pong: 2000 round trips in 589ms (3394 round trips/s, avg 260.0us p50 257.2us p95 299.1us p99 338.3us, warmup 200)
-HTTP server throughput: 88441 requests in 5000ms (17688 req/s, 37 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 51ms (3849654 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 133ms (3745185 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 268ms (745476 msg/s)
+Spawn idle tasks: 200000 fibers in 4464ms (44800 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 601ms (3758 primes/s)
+HTTP ping-pong: 2000 round trips in 465ms (4292 round trips/s, avg 201.8us p50 198.6us p95 234.9us p99 269.9us, warmup 200)
+HTTP server throughput: 142701 requests in 5000ms (28540 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 59ms (3376002 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 137ms (3645061 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 291ms (685836 msg/s)
-Spawn idle tasks: 200000 fibers in 4492ms (44517 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 708ms (3195 primes/s)
-HTTP ping-pong: 2000 round trips in 518ms (3860 round trips/s, avg 224.6us p50 218.5us p95 279.9us p99 316.7us, warmup 200)
-HTTP server throughput: 159877 requests in 5000ms (31975 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 52ms (3782316 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 137ms (3641760 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 269ms (743053 msg/s)
+Spawn idle tasks: 200000 fibers in 4572ms (43740 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 670ms (3372 primes/s)
+HTTP ping-pong: 2000 round trips in 522ms (3826 round trips/s, avg 228.2us p50 225.7us p95 261.9us p99 292.9us, warmup 200)
+HTTP server throughput: 166492 requests in 5000ms (33298 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
@@ -98,43 +83,43 @@ gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -L/usr/lib/x86_64-linux-gnu -l:libuv.a -L/usr/local/lib -l:libgc.a  -lrt   -lpthread -ldl  -o bench-libgoc
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 82ms (2414675 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 157ms (3178200 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 716ms (279231 msg/s)
-Spawn idle tasks: 200000 fibers in 3648ms (54821 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 554ms (4078 primes/s)
-HTTP ping-pong: 2000 round trips in 598ms (3341 round trips/s, avg 262.8us p50 257.7us p95 303.1us p99 339.6us, warmup 200)
-HTTP server throughput: 57346 requests in 5000ms (11469 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 35ms (5613510 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 87ms (5707681 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 569ms (351312 msg/s)
+Spawn idle tasks: 200000 fibers in 3666ms (54550 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 547ms (4131 primes/s)
+HTTP ping-pong: 2000 round trips in 557ms (3590 round trips/s, avg 247.9us p50 244.0us p95 282.5us p99 309.1us, warmup 200)
+HTTP server throughput: 59056 requests in 5000ms (11811 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 60ms (3291579 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 148ms (3375744 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 234ms (851904 msg/s)
-Spawn idle tasks: 200000 fibers in 4521ms (44236 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 477ms (4737 primes/s)
-HTTP ping-pong: 2000 round trips in 526ms (3799 round trips/s, avg 229.1us p50 225.0us p95 268.6us p99 303.8us, warmup 200)
-HTTP server throughput: 93463 requests in 5000ms (18693 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 57ms (3458723 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 147ms (3393210 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 249ms (800151 msg/s)
+Spawn idle tasks: 200000 fibers in 4564ms (43815 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 455ms (4964 primes/s)
+HTTP ping-pong: 2000 round trips in 447ms (4469 round trips/s, avg 192.9us p50 190.0us p95 219.6us p99 267.6us, warmup 200)
+HTTP server throughput: 108245 requests in 5000ms (21649 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 57ms (3506381 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 150ms (3319273 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 289ms (691909 msg/s)
-Spawn idle tasks: 200000 fibers in 4563ms (43823 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 614ms (3682 primes/s)
-HTTP ping-pong: 2000 round trips in 499ms (4001 round trips/s, avg 215.9us p50 207.9us p95 275.0us p99 314.6us, warmup 200)
-HTTP server throughput: 119165 requests in 5000ms (23833 req/s, 35 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 52ms (3817804 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 134ms (3713021 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 265ms (754315 msg/s)
+Spawn idle tasks: 200000 fibers in 4428ms (45165 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 597ms (3785 primes/s)
+HTTP ping-pong: 2000 round trips in 484ms (4131 round trips/s, avg 209.9us p50 208.3us p95 244.7us p99 272.5us, warmup 200)
+HTTP server throughput: 152543 requests in 5000ms (30509 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 58ms (3423602 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 139ms (3591401 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 278ms (719326 msg/s)
-Spawn idle tasks: 200000 fibers in 4552ms (43935 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 709ms (3187 primes/s)
-HTTP ping-pong: 2000 round trips in 573ms (3484 round trips/s, avg 248.8us p50 242.4us p95 289.8us p99 334.2us, warmup 200)
-HTTP server throughput: 162239 requests in 5000ms (32448 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 52ms (3799000 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 134ms (3720182 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 257ms (775593 msg/s)
+Spawn idle tasks: 200000 fibers in 4608ms (43401 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 652ms (3466 primes/s)
+HTTP ping-pong: 2000 round trips in 478ms (4178 round trips/s, avg 207.8us p50 205.6us p95 239.0us p99 260.2us, warmup 200)
+HTTP server throughput: 171137 requests in 5000ms (34227 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'
 make: Entering directory '/home/divyansh/repos/libgoc/bench/libgoc'
@@ -160,42 +145,42 @@ gmake[1]: Leaving directory '/home/divyansh/repos/libgoc/build-bench-vmem'
 cc -std=c11 -O2 -DNDEBUG -DGC_THREADS -D_GNU_SOURCE -I/home/divyansh/repos/libgoc/include -I/home/divyansh/repos/libgoc/src -I/home/divyansh/repos/libgoc/vendor/minicoro -I/usr/local/include  bench.c ../../build-bench-vmem/libgoc.a -L/usr/lib/x86_64-linux-gnu -l:libuv.a -L/usr/local/lib -l:libgc.a  -lrt   -lpthread -ldl  -o bench-libgoc
 === Pool Size: 1 ===
 GOC_POOL_THREADS=1
-Channel ping-pong: 200000 round trips in 37ms (5341907 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 89ms (5578640 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 575ms (347717 msg/s)
-Spawn idle tasks: 200000 fibers in 3665ms (54564 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 546ms (4142 primes/s)
-HTTP ping-pong: 2000 round trips in 593ms (3369 round trips/s, avg 260.3us p50 256.2us p95 297.0us p99 325.1us, warmup 200)
-HTTP server throughput: 58123 requests in 5000ms (11625 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 36ms (5528243 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 85ms (5820814 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 571ms (350118 msg/s)
+Spawn idle tasks: 200000 fibers in 3645ms (54863 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 535ms (4222 primes/s)
+HTTP ping-pong: 2000 round trips in 541ms (3693 round trips/s, avg 240.8us p50 237.8us p95 269.5us p99 302.6us, warmup 200)
+HTTP server throughput: 57960 requests in 5000ms (11592 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 2 ===
 GOC_POOL_THREADS=2
-Channel ping-pong: 200000 round trips in 59ms (3370349 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 147ms (3378507 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 222ms (896903 msg/s)
-Spawn idle tasks: 200000 fibers in 4520ms (44241 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 483ms (4679 primes/s)
-HTTP ping-pong: 2000 round trips in 580ms (3442 round trips/s, avg 255.3us p50 251.5us p95 289.4us p99 326.4us, warmup 200)
-HTTP server throughput: 68061 requests in 5000ms (13612 req/s, 33 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 57ms (3464061 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 147ms (3380328 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 243ms (822251 msg/s)
+Spawn idle tasks: 200000 fibers in 4469ms (44751 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 452ms (4998 primes/s)
+HTTP ping-pong: 2000 round trips in 562ms (3555 round trips/s, avg 251.0us p50 247.5us p95 284.8us p99 307.1us, warmup 200)
+HTTP server throughput: 96499 requests in 5000ms (19300 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 4 ===
 GOC_POOL_THREADS=4
-Channel ping-pong: 200000 round trips in 55ms (3601278 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 137ms (3628357 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 272ms (734678 msg/s)
-Spawn idle tasks: 200000 fibers in 4606ms (43418 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 602ms (3757 primes/s)
-HTTP ping-pong: 2000 round trips in 584ms (3420 round trips/s, avg 256.8us p50 253.0us p95 296.6us p99 343.3us, warmup 200)
-HTTP server throughput: 124091 requests in 5000ms (24818 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 51ms (3874004 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 136ms (3665751 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 263ms (758819 msg/s)
+Spawn idle tasks: 200000 fibers in 4623ms (43255 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 587ms (3849 primes/s)
+HTTP ping-pong: 2000 round trips in 551ms (3625 round trips/s, avg 245.2us p50 242.7us p95 274.9us p99 303.3us, warmup 200)
+HTTP server throughput: 113993 requests in 5000ms (22799 req/s, 32 errors, concurrency 32, warmup 1000ms)
 
 === Pool Size: 8 ===
 GOC_POOL_THREADS=8
-Channel ping-pong: 200000 round trips in 56ms (3542751 round trips/s)
-Ring benchmark: 500000 hops across 128 tasks in 134ms (3706835 hops/s)
-Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 275ms (725896 msg/s)
-Spawn idle tasks: 200000 fibers in 4490ms (44542 tasks/s)
-Prime sieve: 2262 primes up to 20000 in 693ms (3259 primes/s)
-HTTP ping-pong: 2000 round trips in 480ms (4158 round trips/s, avg 208.3us p50 204.8us p95 250.9us p99 283.4us, warmup 200)
-HTTP server throughput: 164018 requests in 5000ms (32804 req/s, 0 errors, concurrency 32, warmup 1000ms)
+Channel ping-pong: 200000 round trips in 53ms (3752911 round trips/s)
+Ring benchmark: 500000 hops across 128 tasks in 133ms (3740671 hops/s)
+Selective receive / fan-out / fan-in: 200000 messages with 8 workers in 269ms (742206 msg/s)
+Spawn idle tasks: 200000 fibers in 4507ms (44373 tasks/s)
+Prime sieve: 2262 primes up to 20000 in 664ms (3402 primes/s)
+HTTP ping-pong: 2000 round trips in 464ms (4303 round trips/s, avg 201.2us p50 198.4us p95 228.3us p99 256.9us, warmup 200)
+HTTP server throughput: 166948 requests in 5000ms (33390 req/s, 0 errors, concurrency 32, warmup 1000ms)
 
 make: Leaving directory '/home/divyansh/repos/libgoc/bench/libgoc'

@@ -1,11 +1,10 @@
 /*
  * goc_stats.h — Public API for libgoc telemetry
  *
- * Events are delivered synchronously via a registered callback.  The callback
- * is called on whichever thread emits the event (pool workers, main thread,
- * etc.) so it must be async-signal-safe with respect to the caller: keep it
- * short and non-blocking.  Use a mutex + buffer in the callback to hand off to
- * a consumer thread if heavier processing is needed.
+ * Events are delivered asynchronously via a lock-free MPSC queue.  Emitting
+ * threads (pool workers, main thread, etc.) push events onto the queue and
+ * call uv_async_send; the callback is always invoked on the libuv loop thread
+ * with no internal locks held, so it may safely access loop-thread state.
  *
  * Typical usage:
  *   goc_stats_init();
