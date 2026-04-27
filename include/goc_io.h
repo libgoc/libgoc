@@ -37,8 +37,8 @@
  * When called outside a worker, or for goc_io_fs_event_init /
  * goc_io_fs_poll_init, the global g_loop is used.  All init helpers register
  * the handle with the GC automatically:
- *   uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
- *   int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+ *   uv_tcp_t* tcp = goc_new(uv_tcp_t);
+ *   int rc = goc_unbox(int, goc_take(goc_io_tcp_init(tcp))->val);
  *
  * Compile requirements: -std=c11
  *   Include this header explicitly: #include "goc_io.h"
@@ -257,7 +257,7 @@ typedef struct {
 
 /**
  * goc_io_random_t — result of goc_io_random.
- * data is a goc_array of n bytes (each element is goc_box_int(byte)).
+ * data is a goc_array of n bytes (each element is goc_box(int, byte)).
  */
 typedef struct {
     goc_io_status_t  ok;
@@ -478,7 +478,7 @@ goc_chan* goc_io_fs_read(uv_file file, size_t len, int64_t offset);
  * len    : length of the string data.
  * offset : file offset (-1 to use current position).
  *
- * Returns a channel delivering goc_box_int(nwritten); negative on error.
+ * Returns a channel delivering goc_box(int, nwritten); negative on error.
  */
 goc_chan* goc_io_fs_write(uv_file file, const char* data, size_t len, int64_t offset);
 
@@ -569,8 +569,8 @@ goc_chan* goc_io_getnameinfo(const struct sockaddr* addr, int flags);
  *
  * Typical usage (preferred — safe from any thread):
  *
- *   uv_tcp_t* tcp = goc_malloc(sizeof(uv_tcp_t));
- *   int rc = goc_unbox_int(goc_take(goc_io_tcp_init(tcp))->val);
+ *   uv_tcp_t* tcp = goc_new(uv_tcp_t);
+ *   int rc = goc_unbox(int, goc_take(goc_io_tcp_init(tcp))->val);
  *   // tcp is now initialised and registered; rc == 0 on success.
  *
  *   // ... later, to tear down:
@@ -716,7 +716,7 @@ goc_chan* goc_io_process_spawn(uv_process_t* handle,
  * TCP server / socket options
  * ====================================================================== */
 
-/** Dispatch uv_tcp_bind; delivers goc_box_int(status). */
+/** Dispatch uv_tcp_bind; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_bind(uv_tcp_t* handle, const struct sockaddr* addr);
 
 /**
@@ -727,32 +727,32 @@ goc_chan* goc_io_tcp_bind(uv_tcp_t* handle, const struct sockaddr* addr);
  * server handle is closed.
  *
  * ready_ch: optional buffered channel (capacity >= 1) that receives
- * goc_box_int(rc) once uv_listen has been called on the event-loop thread.
+ * goc_box(int, rc) once uv_listen has been called on the event-loop thread.
  * rc == 0 means the server is accepting connections; rc < 0 is a libuv
  * error code.  Pass NULL for fire-and-forget behaviour.
  */
 goc_chan* goc_io_tcp_server_make(uv_tcp_t* handle, int backlog, goc_chan* ready_ch);
 
-/** Dispatch uv_tcp_keepalive; delivers goc_box_int(status). */
+/** Dispatch uv_tcp_keepalive; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_keepalive(uv_tcp_t* handle, int enable, unsigned int delay);
 
-/** Dispatch uv_tcp_nodelay; delivers goc_box_int(status). */
+/** Dispatch uv_tcp_nodelay; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_nodelay(uv_tcp_t* handle, int enable);
 
-/** Dispatch uv_tcp_simultaneous_accepts; delivers goc_box_int(status). */
+/** Dispatch uv_tcp_simultaneous_accepts; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_simultaneous_accepts(uv_tcp_t* handle, int enable);
 
-/** Dispatch uv_tcp_open; delivers goc_box_int(status). */
+/** Dispatch uv_tcp_open; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_open(uv_tcp_t* handle, uv_os_fd_t fd);
 
-/** Dispatch SO_REUSEADDR on a TCP handle; delivers goc_box_int(status). */
+/** Dispatch SO_REUSEADDR on a TCP handle; delivers goc_box(int, status). */
 goc_chan* goc_io_tcp_reuseaddr(uv_tcp_t* handle);
 
 /* =========================================================================
  * Pipe server / bind
  * ====================================================================== */
 
-/** Dispatch uv_pipe_bind; delivers goc_box_int(status). */
+/** Dispatch uv_pipe_bind; delivers goc_box(int, status). */
 goc_chan* goc_io_pipe_bind(uv_pipe_t* handle, const char* name);
 
 /**
@@ -768,36 +768,36 @@ goc_chan* goc_io_pipe_server_make(uv_pipe_t* handle, int backlog, goc_chan* read
  * UDP socket options
  * ====================================================================== */
 
-/** Dispatch uv_udp_bind; delivers goc_box_int(status). */
+/** Dispatch uv_udp_bind; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_bind(uv_udp_t* handle, const struct sockaddr* addr,
                           unsigned flags);
 
-/** Dispatch uv_udp_connect; delivers goc_box_int(status). */
+/** Dispatch uv_udp_connect; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_connect(uv_udp_t* handle, const struct sockaddr* addr);
 
-/** Dispatch uv_udp_set_broadcast; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_broadcast; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_broadcast(uv_udp_t* handle, int on);
 
-/** Dispatch uv_udp_set_ttl; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_ttl; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_ttl(uv_udp_t* handle, int ttl);
 
-/** Dispatch uv_udp_set_multicast_ttl; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_multicast_ttl; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_multicast_ttl(uv_udp_t* handle, int ttl);
 
-/** Dispatch uv_udp_set_multicast_loop; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_multicast_loop; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_multicast_loop(uv_udp_t* handle, int on);
 
-/** Dispatch uv_udp_set_multicast_interface; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_multicast_interface; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_multicast_interface(uv_udp_t* handle,
                                              const char* iface_addr);
 
-/** Dispatch uv_udp_set_membership; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_membership; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_membership(uv_udp_t* handle,
                                     const char* mcast_addr,
                                     const char* iface_addr,
                                     uv_membership membership);
 
-/** Dispatch uv_udp_set_source_membership; delivers goc_box_int(status). */
+/** Dispatch uv_udp_set_source_membership; delivers goc_box(int, status). */
 goc_chan* goc_io_udp_set_source_membership(uv_udp_t* handle,
                                            const char* mcast_addr,
                                            const char* iface_addr,
@@ -814,43 +814,43 @@ goc_chan* goc_io_fs_lstat(const char* path);
 /** Dispatch uv_fs_fstat; delivers goc_io_fs_stat_t*. */
 goc_chan* goc_io_fs_fstat(uv_file file);
 
-/** Dispatch uv_fs_ftruncate; delivers goc_box_int(status). */
+/** Dispatch uv_fs_ftruncate; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_ftruncate(uv_file file, int64_t offset);
 
-/** Open + ftruncate + close; delivers goc_box_int(status). */
+/** Open + ftruncate + close; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_truncate(const char* path, int64_t offset);
 
-/** Dispatch uv_fs_copyfile; delivers goc_box_int(status). */
+/** Dispatch uv_fs_copyfile; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_copyfile(const char* src, const char* dst, int flags);
 
-/** Dispatch uv_fs_access; delivers goc_box_int(status). */
+/** Dispatch uv_fs_access; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_access(const char* path, int mode);
 
-/** Dispatch uv_fs_chmod; delivers goc_box_int(status). */
+/** Dispatch uv_fs_chmod; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_chmod(const char* path, int mode);
 
-/** Dispatch uv_fs_fchmod; delivers goc_box_int(status). */
+/** Dispatch uv_fs_fchmod; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_fchmod(uv_file file, int mode);
 
-/** Dispatch uv_fs_chown; delivers goc_box_int(status). */
+/** Dispatch uv_fs_chown; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_chown(const char* path, uv_uid_t uid, uv_gid_t gid);
 
-/** Dispatch uv_fs_fchown; delivers goc_box_int(status). */
+/** Dispatch uv_fs_fchown; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_fchown(uv_file file, uv_uid_t uid, uv_gid_t gid);
 
-/** Dispatch uv_fs_utime; delivers goc_box_int(status). */
+/** Dispatch uv_fs_utime; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_utime(const char* path, double atime, double mtime);
 
-/** Dispatch uv_fs_futime; delivers goc_box_int(status). */
+/** Dispatch uv_fs_futime; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_futime(uv_file file, double atime, double mtime);
 
-/** Dispatch uv_fs_lutime; delivers goc_box_int(status). */
+/** Dispatch uv_fs_lutime; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_lutime(const char* path, double atime, double mtime);
 
-/** Dispatch uv_fs_mkdir; delivers goc_box_int(status). */
+/** Dispatch uv_fs_mkdir; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_mkdir(const char* path, int mode);
 
-/** Dispatch uv_fs_rmdir; delivers goc_box_int(status). */
+/** Dispatch uv_fs_rmdir; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_rmdir(const char* path);
 
 /** Dispatch uv_fs_scandir + iterate; delivers goc_io_fs_readdir_t*. */
@@ -862,10 +862,10 @@ goc_chan* goc_io_fs_mkdtemp(const char* tpl);
 /** Dispatch uv_fs_mkstemp; delivers goc_io_fs_mkstemp_t*. */
 goc_chan* goc_io_fs_mkstemp(const char* tpl);
 
-/** Dispatch uv_fs_link; delivers goc_box_int(status). */
+/** Dispatch uv_fs_link; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_link(const char* path, const char* new_path);
 
-/** Dispatch uv_fs_symlink; delivers goc_box_int(status). */
+/** Dispatch uv_fs_symlink; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_symlink(const char* path, const char* new_path, int flags);
 
 /** Dispatch uv_fs_readlink; delivers goc_io_fs_path_t*. */
@@ -874,10 +874,10 @@ goc_chan* goc_io_fs_readlink(const char* path);
 /** Dispatch uv_fs_realpath; delivers goc_io_fs_path_t*. */
 goc_chan* goc_io_fs_realpath(const char* path);
 
-/** Dispatch uv_fs_fsync; delivers goc_box_int(status). */
+/** Dispatch uv_fs_fsync; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_fsync(uv_file file);
 
-/** Dispatch uv_fs_fdatasync; delivers goc_box_int(status). */
+/** Dispatch uv_fs_fdatasync; delivers goc_box(int, status). */
 goc_chan* goc_io_fs_fdatasync(uv_file file);
 
 /** Dispatch uv_fs_statfs; delivers goc_io_fs_statfs_t*. */
@@ -894,14 +894,14 @@ goc_chan* goc_io_fs_statfs(const char* path);
 goc_chan* goc_io_fs_read_file(const char* path);
 
 /**
- * goc_io_fs_write_file() — Open + write + close; delivers goc_box_int(status).
+ * goc_io_fs_write_file() — Open + write + close; delivers goc_box(int, status).
  * flags : open flags, e.g. UV_FS_O_WRONLY|UV_FS_O_CREAT|UV_FS_O_TRUNC.
  */
 goc_chan* goc_io_fs_write_file(const char* path, const char* data, int flags);
 
 /**
  * goc_io_fs_append_file() — Open (O_APPEND) + write + close;
- * delivers goc_box_int(status).
+ * delivers goc_box(int, status).
  */
 goc_chan* goc_io_fs_append_file(const char* path, const char* data);
 
@@ -923,14 +923,14 @@ goc_chan* goc_io_fs_write_stream_make(const char* path, int flags);
 
 /**
  * goc_io_fs_write_stream_write() — Write a chunk to an open write stream.
- * Delivers goc_box_int(nwritten); negative on error.
+ * Delivers goc_box(int, nwritten); negative on error.
  */
 goc_chan* goc_io_fs_write_stream_write(goc_io_fs_write_stream_t* ws,
                                        const char* data, size_t len);
 
 /**
  * goc_io_fs_write_stream_end() — Flush and close write stream.
- * Delivers goc_box_int(status).
+ * Delivers goc_box(int, status).
  */
 goc_chan* goc_io_fs_write_stream_end(goc_io_fs_write_stream_t* ws);
 
@@ -941,7 +941,7 @@ goc_chan* goc_io_fs_write_stream_end(goc_io_fs_write_stream_t* ws);
 /**
  * goc_io_signal_start() — Begin watching for a signal.
  *
- * Channel delivers goc_box_int(signum) on each delivery.
+ * Channel delivers goc_box(int, signum) on each delivery.
  * Channel stays open until goc_io_signal_stop().
  *
  * Constraint: stores context in handle->data.
@@ -996,7 +996,7 @@ int goc_io_fs_poll_stop(uv_fs_poll_t* handle);
  * TTY mode / window size
  * ====================================================================== */
 
-/** Dispatch uv_tty_set_mode to loop thread; delivers goc_box_int(status). */
+/** Dispatch uv_tty_set_mode to loop thread; delivers goc_box(int, status). */
 goc_chan* goc_io_tty_set_mode(uv_tty_t* handle, uv_tty_mode_t mode);
 
 /** Dispatch uv_tty_get_winsize to loop thread; delivers goc_io_tty_winsize_t*. */
@@ -1006,10 +1006,10 @@ goc_chan* goc_io_tty_get_winsize(uv_tty_t* handle);
  * Process signals
  * ====================================================================== */
 
-/** Dispatch uv_process_kill; delivers goc_box_int(status). */
+/** Dispatch uv_process_kill; delivers goc_box(int, status). */
 goc_chan* goc_io_process_kill(uv_process_t* handle, int signum);
 
-/** Dispatch uv_kill(pid, signum); delivers goc_box_int(status). */
+/** Dispatch uv_kill(pid, signum); delivers goc_box(int, status). */
 goc_chan* goc_io_kill(int pid, int signum);
 
 /* =========================================================================

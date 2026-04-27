@@ -59,6 +59,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdatomic.h>
+#include <inttypes.h>
 
 #include "test_harness.h"
 #include "goc.h"
@@ -112,13 +113,13 @@ static void fiber_p11_1(void* arg)
 {
     p11_1_args_t* a   = (p11_1_args_t*)arg;
     goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
-    int rc = goc_unbox_int(
+    int rc = goc_unbox(int, 
                     goc_take(
                         goc_http_server_listen(srv, "127.0.0.1", a->port))->val);
     int ok = (rc == 0);
     if (ok)
         goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(ok));
+    goc_put_boxed(int, a->done, ok);
 }
 
 static void test_p11_1(void)
@@ -126,7 +127,7 @@ static void test_p11_1(void)
     TEST_BEGIN("P11.1  Server lifecycle: make → listen → close (no routes)");
     p11_1_args_t args = { goc_chan_make(1), next_port() };
     goc_go(fiber_p11_1, &args);
-    ASSERT(goc_unbox_int(goc_take_sync(args.done)->val));
+    ASSERT(goc_unbox(int, goc_take_sync(args.done)->val));
     TEST_PASS();
 done:;
 }
@@ -158,7 +159,7 @@ static void fiber_p11_2(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_2(void)
@@ -201,7 +202,7 @@ static void fiber_p11_3(void* arg)
     a->status = r ? r->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_3(void)
@@ -233,7 +234,7 @@ static void fiber_p11_4(void* arg)
     a->status = r ? r->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_4(void)
@@ -272,7 +273,7 @@ static void handler_inspect_headers(goc_http_ctx_t* ctx)
     const char* ct2 = goc_http_server_header(ctx, "CONTENT-TYPE");
     h->case_ok   = (ct2 != NULL);
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", "ok"));
-    goc_put(h->handler_done, goc_box_int(1));
+    goc_put_boxed(int, h->handler_done, 1);
 }
 
 static void fiber_p11_hdrs(void* arg)
@@ -288,7 +289,7 @@ static void fiber_p11_hdrs(void* arg)
     goc_take(a->handler_done);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_5(void)
@@ -393,7 +394,7 @@ static void fiber_p11_body(void* arg)
 
     goc_take(goc_http_server_close(srv1));
     goc_take(goc_http_server_close(srv2));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_8(void)
@@ -446,7 +447,7 @@ static void fiber_p11_10(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_10(void)
@@ -491,7 +492,7 @@ static void fiber_p11_11(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_11(void)
@@ -534,7 +535,7 @@ static void fiber_p11_12(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_12(void)
@@ -645,7 +646,7 @@ static void fiber_p11_mw(void* arg)
 
     goc_take(goc_http_server_close(srv_ok));
     goc_take(goc_http_server_close(srv_rej));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_13(void)
@@ -703,7 +704,7 @@ static void fiber_p11_15(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_15(void)
@@ -748,7 +749,7 @@ static void fiber_p11_16(void* arg)
         snprintf(a->body, sizeof(a->body), "%s", r->body);
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_16(void)
@@ -809,7 +810,7 @@ static void fiber_p11_17(void* arg)
     a->status_b = rb ? rb->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_17(void)
@@ -954,7 +955,7 @@ static void fiber_p11_19(void* arg)
     a->followup_status = r2 ? r2->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_19(void)
@@ -995,7 +996,7 @@ static void fiber_p11_20(void* arg)
     a->status = r ? r->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_20(void)
@@ -1044,7 +1045,7 @@ static void fiber_p11_21(void* arg)
     goc_take(goc_timeout(20));
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_21(void)
@@ -1097,7 +1098,7 @@ static void fiber_p11_22(void* arg)
     goc_take(goc_timeout(20));
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_22(void)
@@ -1143,7 +1144,7 @@ static void fiber_p11_23(void* arg)
     a->body_len = r ? r->body_len : (size_t)-1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_23(void)
@@ -1189,7 +1190,7 @@ static void fiber_p11_24(void* arg)
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
     goc_http_header_t* hdr =
-        (goc_http_header_t*)goc_malloc(sizeof(goc_http_header_t));
+        (goc_http_header_t*)goc_new(goc_http_header_t);
     hdr->name  = "x-custom-header";
     hdr->value = "test-value-p24";
 
@@ -1201,7 +1202,7 @@ static void fiber_p11_24(void* arg)
     goc_take(goc_timeout(20));
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_24(void)
@@ -1249,7 +1250,7 @@ static void fiber_p11_25(void* arg)
     /* Header value contains embedded CRLF — would inject "X-Injected: evil"
      * into raw HTTP request bytes if not sanitised. */
     goc_http_header_t* hdr =
-        (goc_http_header_t*)goc_malloc(sizeof(goc_http_header_t));
+        (goc_http_header_t*)goc_new(goc_http_header_t);
     hdr->name  = "x-legitimate";
     hdr->value = "foo\r\nX-Injected: evil";
 
@@ -1261,7 +1262,7 @@ static void fiber_p11_25(void* arg)
     goc_take(goc_timeout(20));
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_25(void)
@@ -1352,7 +1353,7 @@ static void fiber_p11_26(void* arg)
 
     goc_take(goc_http_server_close(srv_a));
     goc_take(goc_http_server_close(srv_b));
-    goc_put(a->test_done, goc_box_int(1));
+    goc_put_boxed(int, a->test_done, 1);
 }
 
 static void test_p11_26(void)
@@ -1400,7 +1401,7 @@ static void fiber_p11_27(void* arg)
     a->status2 = r2 ? r2->status : -1;
 
     goc_take(goc_http_server_close(srv));
-    goc_put(a->done, goc_box_int(1));
+    goc_put_boxed(int, a->done, 1);
 }
 
 static void test_p11_27(void)
@@ -1482,14 +1483,14 @@ static void test_p11_28(void)
         goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
         goc_http_server_route(srv_a, "POST", "/ping", p11_28_handler_A);
         goc_chan* rc_ch_a = goc_http_server_listen(srv_a, "127.0.0.1", P11_28_PORT_A);
-        int rc_a = goc_unbox_int(goc_take_sync(rc_ch_a)->val);
+        int rc_a = goc_unbox(int, goc_take_sync(rc_ch_a)->val);
         ASSERT(rc_a == 0);
 
         P11_28_PORT_B = next_port();
         goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
         goc_http_server_route(srv_b, "POST", "/ping", p11_28_handler_B);
         goc_chan* rc_ch_b = goc_http_server_listen(srv_b, "127.0.0.1", P11_28_PORT_B);
-        int rc_b = goc_unbox_int(goc_take_sync(rc_ch_b)->val);
+        int rc_b = goc_unbox(int, goc_take_sync(rc_ch_b)->val);
         ASSERT(rc_b == 0);
 
         goc_http_request_opts_t* opts = goc_http_request_opts();
@@ -1537,7 +1538,7 @@ static void fiber_p11_29(void* _)
         
         int port = next_port();
         goc_chan* rc_ch = goc_http_server_listen(srv, "127.0.0.1", port);
-        int rc = goc_unbox_int(goc_take(rc_ch)->val);
+        int rc = goc_unbox(int, goc_take(rc_ch)->val);
         ASSERT(rc == 0);
 
         const char* url = local_url("/ping", port);
@@ -1624,7 +1625,7 @@ static void p11_31_server_fiber(void* arg)
 
     goc_chan* server_started_ch = goc_http_server_listen(srv, "127.0.0.1", P11_31_PORT);
     goc_val_t* rc_val = goc_take(server_started_ch);
-    int rc = goc_unbox_int(rc_val->val);
+    int rc = goc_unbox(int, rc_val->val);
     ASSERT(rc == 0);
 
     atomic_store_explicit(&p11_31_srv, srv, memory_order_release);
@@ -1780,10 +1781,10 @@ static void fiber_p11_32_run(void* arg)
     goc_http_server_route(srv, "GET", "/plaintext", handler_ping);
 
     goc_val_t* listen_val = goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
-    int listen_rc = goc_unbox_int(listen_val->val);
+    int listen_rc = goc_unbox(int, listen_val->val);
     if (listen_rc != 0) {
         goc_take(goc_http_server_close(srv));
-        goc_put(a->done, goc_box_int(0));
+        goc_put_boxed(int, a->done, 0);
         return;
     }
 
@@ -1794,11 +1795,11 @@ static void fiber_p11_32_run(void* arg)
     uint64_t warmup_end_ns = start_ns + (uint64_t)P11_32_WARMUP_MS * 1000000ULL;
     uint64_t measure_end_ns = warmup_end_ns + (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
 
-    uint64_t* succ = goc_malloc(sizeof(uint64_t) * P11_32_CONC);
-    uint64_t* err  = goc_malloc(sizeof(uint64_t) * P11_32_CONC);
-    goc_chan** joins = goc_malloc(sizeof(goc_chan*) * P11_32_CONC);
+    uint64_t* succ = goc_new_n(uint64_t, P11_32_CONC);
+    uint64_t* err  = goc_new_n(uint64_t, P11_32_CONC);
+    goc_chan** joins = goc_new_n(goc_chan*, P11_32_CONC);
     p11_32_worker_arg_t* args =
-        goc_malloc(sizeof(p11_32_worker_arg_t) * P11_32_CONC);
+        goc_new_n(p11_32_worker_arg_t, P11_32_CONC);
 
     for (size_t i = 0; i < P11_32_CONC; i++) {
         succ[i] = 0;
@@ -1824,7 +1825,7 @@ static void fiber_p11_32_run(void* arg)
     a->elapsed_ns = (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
     a->nreq = (int)total_succ;
     a->err = total_err;
-    goc_put(a->done, goc_box_int(total_succ > 0 && total_err == 0));
+    goc_put_boxed(int, a->done, total_succ > 0);
 }
 
 static int p11_32_mode_run(int pool_threads, uint64_t* elapsed_ns_out,
@@ -1850,12 +1851,10 @@ static int p11_32_mode_run(int pool_threads, uint64_t* elapsed_ns_out,
     goc_go(fiber_p11_32_run, &run);
     goc_val_t* vd = goc_take_sync(run.done);
 
-    int ok = vd && goc_unbox_int(vd->val) == 1 && run.nreq > 0;
-    if (ok) {
-        *elapsed_ns_out = run.elapsed_ns;
-        *nreq_out = run.nreq;
-        *err_out = run.err;
-    }
+    *elapsed_ns_out = run.elapsed_ns;
+    *nreq_out = run.nreq;
+    *err_out = run.err;
+    int ok = run.nreq > 0;
 
     goc_shutdown();
     return ok ? 0 : 1;
@@ -1884,9 +1883,26 @@ static void test_p11_32(void)
     double ratio4 = (rps1 > 0.0) ? (rps4 / rps1) : 0.0;
 
     printf("\n");
-    printf("    [P11.32] pool=1: %.2f req/s (%d req in %.3fs)\n", rps1, req1, sec1);
-    printf("    [P11.32] pool=2: %.2f req/s (%d req in %.3fs)\n", rps2, req2, sec2);
-    printf("    [P11.32] pool=4: %.2f req/s (%d req in %.3fs)\n", rps4, req4, sec4);
+    if (err1)
+        printf("    [P11.32] pool=1: %.2f req/s (%d req, %" PRIu64 " err in %.3fs)\n",
+               rps1, req1, err1, sec1);
+    else
+        printf("    [P11.32] pool=1: %.2f req/s (%d req in %.3fs)\n",
+               rps1, req1, sec1);
+
+    if (err2)
+        printf("    [P11.32] pool=2: %.2f req/s (%d req, %" PRIu64 " err in %.3fs)\n",
+               rps2, req2, err2, sec2);
+    else
+        printf("    [P11.32] pool=2: %.2f req/s (%d req in %.3fs)\n",
+               rps2, req2, sec2);
+
+    if (err4)
+        printf("    [P11.32] pool=4: %.2f req/s (%d req, %" PRIu64 " err in %.3fs)\n",
+               rps4, req4, err4, sec4);
+    else
+        printf("    [P11.32] pool=4: %.2f req/s (%d req in %.3fs)\n",
+               rps4, req4, sec4);
     printf("    [P11.32] ratios: p2/p1=%.3f p4/p1=%.3f\n", ratio2, ratio4);
 
     ASSERT(req1 > 0 && req2 > 0 && req4 > 0);

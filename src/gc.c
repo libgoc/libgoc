@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <string.h>
 #include <stdatomic.h>
 #include <uv.h>
 #include <gc.h>
@@ -407,6 +408,12 @@ void* goc_malloc(size_t n) {
     void* p = GC_malloc(n);
     if (!p)
         ABORT("goc_malloc: allocation failed\n");
+    return p;
+}
+
+void* _goc_box_impl(const void* val, size_t size) {
+    void* p = goc_malloc(size);
+    memcpy(p, val, size);
     return p;
 }
 

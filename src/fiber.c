@@ -83,7 +83,7 @@ goc_entry* goc_fiber_entry_create(goc_pool* pool,
                                   void* arg,
                                   goc_chan* join_ch) {
     /* 1. Allocate the entry on the GC heap (zero-initialised by GC_malloc). */
-    goc_entry* entry = (goc_entry*)goc_malloc(sizeof(goc_entry));
+    goc_entry* entry = (goc_entry*)goc_new(goc_entry);
 
     /* 2. Populate fiber launch fields. */
     entry->kind     = GOC_FIBER;

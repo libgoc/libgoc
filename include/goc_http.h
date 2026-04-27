@@ -82,7 +82,8 @@ typedef struct {
     const char* path;        /* request path, e.g. "/api/ping"             */
     const char* query;       /* query string without '?', or "" if absent  */
     goc_array*  headers;     /* goc_array of goc_http_header_t*            */
-    goc_array*  body;        /* request body bytes; empty goc_array if none*/
+    const char* body;        /* request body bytes (null-terminated); "" if none */
+    size_t      body_len;    /* byte length of body (excluding null terminator)  */
     void*       user_data;   /* set by middleware; NULL by default         */
 } goc_http_ctx_t;
 
@@ -168,7 +169,7 @@ goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts);
 /**
  * goc_http_server_listen — bind and start listening on host:port.
  *
- * Returns a channel that delivers goc_box_int(rc) once the server is
+ * Returns a channel that delivers goc_box(int, rc) once the server is
  * actually listening (rc == 0) or has failed (rc < 0, libuv error code).
  * Always call goc_take() on the returned channel before sending any
  * requests to guarantee the server is ready to accept connections.
@@ -207,7 +208,7 @@ int goc_http_server_reuseport_listener_accept_count(
  *
  * Stops accepting new connections and drains in-flight requests.
  * Waits for all active connections to close before completing shutdown.
- * Returns a channel delivering goc_box_int(0) when shutdown is complete.
+ * Returns a channel delivering goc_box(int, 0) when shutdown is complete.
  */
 goc_chan* goc_http_server_close(goc_http_server_t* srv);
 
@@ -259,7 +260,7 @@ const char* goc_http_server_body_str(goc_http_ctx_t* ctx);
  * body         : null-terminated string body.
  * content_type : MIME type; NULL defaults to "text/plain".
  *
- * Returns a channel delivering goc_box_int(0) when the response has been
+ * Returns a channel delivering goc_box(int, 0) when the response has been
  * flushed by libuv.  Exactly one respond* function must be called per
  * handler invocation.
  */

@@ -618,12 +618,12 @@ void compact_dead_entries(goc_chan* ch)
 goc_chan* goc_chan_make(size_t buf_size)
 {
     GOC_DBG("goc_chan_make: before goc_malloc(chan) buf_size=%zu\n", buf_size);
-    goc_chan* ch = goc_malloc(sizeof(goc_chan));   /* zero-initialised by GC_malloc */
+    goc_chan* ch = goc_new(goc_chan);   /* zero-initialised by GC_malloc */
     GOC_DBG("goc_chan_make: after goc_malloc(chan) ch=%p\n", (void*)ch);
 
     if (buf_size > 0) {
         GOC_DBG("goc_chan_make: before goc_malloc(buf) ch=%p\n", (void*)ch);
-        ch->buf = goc_malloc(buf_size * sizeof(void*));
+        ch->buf = goc_new_n(void*, buf_size);
         GOC_DBG("goc_chan_make: after goc_malloc(buf) ch=%p buf=%p\n", (void*)ch, (void*)ch->buf);
     }
 
@@ -687,7 +687,7 @@ goc_val_t* goc_take(goc_chan* ch)
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
         GOC_DBG("goc_take: fast-path BUFFERED ch=%p val=%p\n", (void*)ch, val);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
@@ -705,7 +705,7 @@ goc_val_t* goc_take(goc_chan* ch)
                         (void*)ch, (void*)fe_putter);
             }
         }
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
@@ -713,7 +713,7 @@ goc_val_t* goc_take(goc_chan* ch)
     /* Fast path: closed and empty */
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = NULL; r->ok = GOC_CLOSED;
         return r;
     }
@@ -779,7 +779,7 @@ goc_val_t* goc_take(goc_chan* ch)
     GOC_DBG("goc_take: resumed coro=%p ch=%p ok=%d val=%p parked=%llu\n",
             (void*)mco_running(), (void*)ch, (int)e->ok, local_result,
             (unsigned long long)atomic_load_explicit(&fiber_entry->parked, memory_order_acquire));
-    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    goc_val_t* r = goc_new(goc_val_t);
     r->val = local_result; r->ok = e->ok;
     free(e);
     return r;
@@ -929,7 +929,7 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     /* Fast path: buffered value */
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
@@ -937,7 +937,7 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     /* Fast path: parked putter */
     if (chan_take_from_putter(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
@@ -945,7 +945,7 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     /* Fast path: closed and empty */
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = NULL; r->ok = GOC_CLOSED;
         return r;
     }
@@ -964,7 +964,7 @@ goc_val_t* goc_take_sync(goc_chan* ch)
     goc_sync_wait(&e.sync_obj);
     goc_sync_destroy(&e.sync_obj);
 
-    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    goc_val_t* r = goc_new(goc_val_t);
     r->val = e.cb_result; r->ok = e.ok;
     return r;
 }
@@ -1033,28 +1033,28 @@ goc_val_t* goc_take_try(goc_chan* ch)
 
     if (chan_take_from_buffer(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
 
     if (chan_take_from_putter(ch, &val)) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = val; r->ok = GOC_OK;
         return r;
     }
 
     if (ch->closed) {
         uv_mutex_unlock(ch->lock);
-        goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+        goc_val_t* r = goc_new(goc_val_t);
         r->val = NULL; r->ok = GOC_CLOSED;
         return r;
     }
 
     /* Open but empty */
     uv_mutex_unlock(ch->lock);
-    goc_val_t* r = goc_malloc(sizeof(goc_val_t));
+    goc_val_t* r = goc_new(goc_val_t);
     r->val = NULL; r->ok = GOC_EMPTY;
     return r;
 }
@@ -1065,7 +1065,7 @@ goc_val_t* goc_take_try(goc_chan* ch)
 goc_val_t** goc_take_all(goc_chan** chs, size_t n)
 {
     const size_t alloc_count = (n == 0) ? 1 : n;
-    goc_val_t** results = goc_malloc(alloc_count * sizeof(goc_val_t*));
+    goc_val_t** results = goc_new_n(goc_val_t*, alloc_count);
     if (n == 0)
         return results;
 
@@ -1082,7 +1082,7 @@ goc_val_t** goc_take_all(goc_chan** chs, size_t n)
 goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)
 {
     const size_t alloc_count = (n == 0) ? 1 : n;
-    goc_val_t** results = goc_malloc(alloc_count * sizeof(goc_val_t*));
+    goc_val_t** results = goc_new_n(goc_val_t*, alloc_count);
     if (n == 0)
         return results;
 

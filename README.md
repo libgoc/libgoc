@@ -105,13 +105,13 @@ static void player_fiber(void* arg) {
 
     goc_val_t* v;
     while ((v = goc_take(a->recv))->ok == GOC_OK) {
-        int count = goc_unbox_int(v->val);
+        int count = goc_unbox(int, v->val);
         printf("%s %d\n", a->name, count);
         if (count >= N_ROUNDS) {
             goc_close(a->send);
             return;
         }
-        goc_put(a->send, goc_box_int(count + 1));
+        goc_put_boxed(int, a->send, count + 1);
     }
 }
 
@@ -126,7 +126,7 @@ static void main_fiber(void* _) {
     goc_chan* done_pong = goc_go(player_fiber, &pong_args);
 
     /* Kick off the exchange with the first message. */
-    goc_put(a_to_b, goc_box_int(1));
+    goc_put_boxed(int, a_to_b, 1);
 
     /* Wait for both fibers to finish. */
     goc_take(done_ping);
@@ -181,7 +181,7 @@ static void sum_range(void* arg) {
     long acc = 0;
     for (long i = a->lo; i < a->hi; i++)
         acc += i;
-    goc_put(a->result_ch, goc_box_int(acc));
+    goc_put_boxed(int, a->result_ch, acc);
 }
 
 /* =========================================================================
@@ -215,7 +215,7 @@ int main(void) {
     long total = 0;
     for (int i = 0; i < N_WORKERS; i++) {
         goc_val_t* v = goc_take_sync(result_ch);
-        if (v->ok == GOC_OK) total += (long)goc_unbox_int(v->val);
+        if (v->ok == GOC_OK) total += (long)goc_unbox(int, v->val);
     }
 
     printf("sum [0, %ld) = %ld\n", RANGE, total);
@@ -247,8 +247,9 @@ int main(void) {
 ### 3. Using goc_malloc
 
 `goc_malloc` allocates memory on the Boehm GC heap. Allocations are collected
-automatically when no longer reachable — no `free` is needed. This is the
-intended allocator for long-lived program objects: nodes, buffers, application data, and so on.
+automatically when no longer reachable — no `free` is needed. Prefer the helper
+macros `goc_new(T)` and `goc_new_n(T, n)` instead of
+calling `goc_malloc(sizeof(T))` or `goc_malloc(n * sizeof(T))` directly.
 
 ```c
 #include "goc.h"
@@ -262,7 +263,7 @@ typedef struct node_t {
 static node_t* build_list(int n) {
     node_t* head = NULL;
     for (int i = n - 1; i >= 0; i--) {
-        node_t* node = goc_malloc(sizeof(node_t));
+        node_t* node = goc_new(node_t);
         node->value = i;
         node->next  = head;
         head        = node;
@@ -288,6 +289,9 @@ int main(void) {
 **A few things to keep in mind:**
 
 - `goc_malloc` is a thin wrapper around `GC_malloc`. Memory is zero-initialised.
+- `goc_new(T)` allocates a single `T` on the GC heap and returns a `T*`.
+- `goc_new_n(T, n)` allocates an array of `n` values of type `T` on the GC heap and returns a `T*`.
+- `goc_box(T, val)` allocates a heap copy of scalar `val` and returns a `T*`.
 
 ---
 
@@ -306,11 +310,18 @@ int main(void) {
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_malloc` | `void* goc_malloc(size_t n)` | Allocate `n` bytes on the GC-managed heap. No `free` required — the collector reclaims unreachable memory automatically. Backed by `GC_malloc` internally. Aborts on allocation failure and never returns `NULL`. |
+| `goc_malloc` | `void* goc_malloc(size_t n)` | Allocate `n` bytes on the GC-managed heap and return a `void*`. |
+| `goc_new` | `T* goc_new(T)` | Allocate a single `T` value on the GC heap and return a `T*`. |
+| `goc_new_n` | `T* goc_new_n(T, size_t n)` | Allocate an array of `n` `T` values on the GC heap and return a `T*`. |
+| `goc_box` | `T* goc_box(T, val)` | Allocate a GC-managed copy of scalar `val` and return it as `T*`. |
+| `goc_unbox` | `T goc_unbox(T, void* x)` | Dereference a boxed scalar pointer previously created by `goc_box`. |
 
 ```c
-my_obj_t* obj = goc_malloc(sizeof(my_obj_t));
-// obj is automatically collected when no longer reachable
+my_obj_t* obj = goc_new(my_obj_t);
+my_obj_t** objs = goc_new_n(my_obj_t, 8);
+int* boxed = goc_box(int, 42);
+int value = goc_unbox(int, boxed);
+// obj, objs, and boxed are all GC-managed and automatically reclaimed.
 ```
 
 ---
@@ -321,35 +332,12 @@ libgoc provides a GC-managed string formatting helper. The result is allocated o
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_sprintf` | `char* goc_sprintf(const char* fmt, ...)` | Formats `fmt` and the given arguments into a null-terminated GC-heap string. Never returns `NULL`. Aborts on allocation failure. |
+| `goc_sprintf` | `char* goc_sprintf(const char* fmt, ...)` | Formats `fmt` and the given arguments into a null-terminated GC-heap string. Never returns `NULL`. |
 
 ```c
 // Format a message and send it on a channel
 char* msg = goc_sprintf("fiber %d ready", id);
 goc_put(ch, msg);
-```
-
----
-
-### Scalar boxing helpers
-
-libgoc channels and arrays carry `void*` values. These macros eliminate the repetitive double-cast needed to pass integers through a `void*` slot and to recover them.
-
-| Macro | Expands to | Description |
-|---|---|---|
-| `goc_box_int(x)` | `(void*)(intptr_t)(x)` | Encode a signed integer as `void*` |
-| `goc_unbox_int(p)` | `(intptr_t)(p)` | Decode a `void*` back to `intptr_t` |
-| `goc_box_uint(x)` | `(void*)(uintptr_t)(x)` | Encode an unsigned integer as `void*` |
-| `goc_unbox_uint(p)` | `(uintptr_t)(p)` | Decode a `void*` back to `uintptr_t` |
-
-```c
-// Channel
-goc_put(ch, goc_box_int(42));
-intptr_t n = goc_unbox_int(goc_take(ch)->val);
-
-// Array
-goc_array_push(arr, goc_box_int(42));
-intptr_t n = goc_unbox_int(goc_array_get(arr, 0));
 ```
 
 ---
@@ -417,7 +405,7 @@ typedef struct { goc_chan* ch; int n; } args_t;
 static void producer(void* arg) {
     args_t* a = arg;
     for (int i = 0; i < a->n; i++)
-        goc_put(a->ch, goc_box_int(i));
+        goc_put_boxed(int, a->ch, i);
     goc_close(a->ch);
 }
 
@@ -448,6 +436,7 @@ Non-blocking. Safe from the libuv loop thread, pool threads, or any other contex
 |---|---|---|
 | `goc_take_cb` | `void goc_take_cb(goc_chan* ch, void (*cb)(void* val, goc_status_t ok, void* ud), void* ud)` | Register a callback to receive the next value. `ok==GOC_CLOSED` means the channel was closed. |
 | `goc_put_cb` | `void goc_put_cb(goc_chan* ch, void* val, void (*cb)(goc_status_t ok, void* ud), void* ud)` | Register a callback to deliver `val`. If `ok==GOC_CLOSED`, the value was not consumed. When the value is `goc_malloc`-allocated (the recommended pattern), no explicit cleanup is needed — the GC reclaims it automatically once it becomes unreachable. `cb` may be `NULL` if no completion notification is needed. |
+| `goc_put_cb_boxed` | `void goc_put_cb_boxed(T, goc_chan* ch, T val, void (*cb)(goc_status_t ok, void* ud), void* ud)` | Shorthand for `goc_put_cb(ch, goc_box(T, val), cb, ud)` in any context. |
 
 ```c
 // In a libuv read callback (loop thread) — forward data into a fiber:
@@ -459,11 +448,14 @@ static void on_put_done(goc_status_t ok, void* ud) {
 // The callback (on_put_done) will also be invoked on the loop thread.
 static void on_read(uv_stream_t* stream, ssize_t nread, const uv_buf_t* buf) {
     if (nread <= 0) return;
-    my_msg_t* msg = goc_malloc(sizeof(my_msg_t));
+    my_msg_t* msg = goc_new(my_msg_t);
     memcpy(msg->data, buf->base, nread);
     msg->len = nread;
     goc_put_cb(data_ch, msg, on_put_done, msg);
 }
+
+/* For scalar boxed values, the callback shorthand may be used instead: */
+/* goc_put_cb_boxed(int, data_ch, 42, on_put_done, NULL); */
 ```
 
 ---
@@ -483,8 +475,9 @@ These functions may suspend the calling fiber. **Call only from inside a fiber**
 | Function | Signature | Description |
 |---|---|---|
 | `goc_take` | `goc_val_t* goc_take(goc_chan* ch)` | Receive the next value from `ch`. Blocks until a value is available or the channel is closed. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
-| `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
 | `goc_take_all` | `goc_val_t** goc_take_all(goc_chan** chs, size_t n)` | Receive from each channel in `chs[0..n-1]` in order, then wait for all results. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must only be called from a fiber. |
+| `goc_put` | `goc_status_t goc_put(goc_chan* ch, void* val)` | Send `val` into `ch`. Blocks until a receiver accepts or the channel is closed. Returns `GOC_OK` on success, `GOC_CLOSED` on close. Asserts that the caller is running inside a fiber — calling from a bare OS thread aborts with a clear message. |
+| `goc_put_boxed` | `goc_status_t goc_put_boxed(T, goc_chan* ch, T val)` | Shorthand for `goc_put(ch, goc_box(T, val))` in fiber context. |
 
 ---
 
@@ -495,8 +488,9 @@ Blocks the calling OS thread (not a fiber). Calling these from a fiber is a runt
 | Function | Signature | Description |
 |---|---|---|
 | `goc_take_sync` | `goc_val_t* goc_take_sync(goc_chan* ch)` | Receive a value, blocking the OS thread. Returns a GC-managed pointer to `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. |
-| `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
 | `goc_take_all_sync` | `goc_val_t** goc_take_all_sync(goc_chan** chs, size_t n)` | Receive from each channel in `chs[0..n-1]` in order, then block the OS thread until all results are ready. Returns a GC-managed array of `n` `goc_val_t*` results in the same order as `chs[]`. Each element follows `goc_take_sync` semantics: `{val, GOC_OK}` on success, `{NULL, GOC_CLOSED}` on close. Must not be called from a fiber. |
+| `goc_put_sync` | `goc_status_t goc_put_sync(goc_chan* ch, void* val)` | Send `val`, blocking the OS thread. Returns `GOC_OK` on success, `GOC_CLOSED` on close. |
+| `goc_put_sync_boxed` | `goc_status_t goc_put_sync_boxed(T, goc_chan* ch, T val)` | Shorthand for `goc_put_sync_boxed(T, ch, val)` from an OS thread. |
 
 ---
 

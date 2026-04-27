@@ -130,8 +130,8 @@ static void on_start_timer(void* arg)
 goc_chan* goc_timeout(uint64_t ms)
 {
     goc_chan*               ch   = goc_chan_make(0);   /* rendezvous channel */
-    goc_timeout_req*        req  = (goc_timeout_req*)goc_malloc(sizeof(goc_timeout_req));
-    goc_timeout_timer_ctx*  tctx = (goc_timeout_timer_ctx*)goc_malloc(sizeof(goc_timeout_timer_ctx));
+    goc_timeout_req*        req  = (goc_timeout_req*)goc_new(goc_timeout_req);
+    goc_timeout_timer_ctx*  tctx = (goc_timeout_timer_ctx*)goc_new(goc_timeout_timer_ctx);
     GOC_DBG("goc_timeout: ms=%llu ch=%p req=%p tctx=%p\n",
             (unsigned long long)ms, (void*)ch, (void*)req, (void*)tctx);
 

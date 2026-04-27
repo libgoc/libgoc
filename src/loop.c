@@ -747,8 +747,7 @@ void goc_timer_manager_remove(goc_timer_manager_t* mgr,
 /* Initialise the timer manager; called from loop_init after uv_loop_init. */
 static void goc_timer_manager_init(void)
 {
-    g_timer_heap     = (timer_heap_entry_t*)goc_malloc(
-                            TIMER_HEAP_INIT_CAP * sizeof(timer_heap_entry_t));
+    g_timer_heap     = (timer_heap_entry_t*)goc_new_n(timer_heap_entry_t, TIMER_HEAP_INIT_CAP);
     g_timer_heap_cap = TIMER_HEAP_INIT_CAP;
     g_timer_heap_len = 0;
 

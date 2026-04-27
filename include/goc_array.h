@@ -57,12 +57,58 @@ goc_array* goc_array_make(size_t initial_cap);
  * items : pointer to an array of n void* values to copy in.
  * n     : number of elements (0 is allowed; produces an empty array).
  *
- * The items are copied into a fresh GC-managed backing buffer. The original
- * C array is not referenced after this call returns.
+ * The provided `items` array is used directly as the backing buffer. No copy
+ * is performed. The caller must ensure `items` is GC-managed (for example,
+ * allocated with goc_new_n) and must not modify it directly after calling
+ * goc_array_from().
+ *
+ * The returned array has `cap == n`; the first push may trigger a grow.
+ * If an independent copy is required instead, use goc_array_copy().
+ *
+ * Prefer goc_array_of() for inline construction of pointer arrays.
  *
  * Returns a GC-managed pointer. Never returns NULL.
  */
 goc_array* goc_array_from(void** items, size_t n);
+
+/**
+ * goc_array_of(...) — Create a dynamic array from inline void* arguments.
+ *
+ * Prefer this over goc_array_from() when building an array inline.
+ * Use goc_array_of_boxed() instead when building an array from scalar values.
+ * The element count is derived automatically from the argument list.
+ */
+#define goc_array_of(...) \
+    goc_array_from((void*[]){__VA_ARGS__}, \
+                   sizeof((void*[]){__VA_ARGS__}) / sizeof(void*))
+
+/**
+ * goc_array_of_boxed(T, ...) — Create a dynamic array from scalar values of
+ * type T, each automatically boxed.
+ *
+ * Prefer this over goc_array_of() when dealing with scalars (bool, char,
+ * int, float, etc.).
+ */
+#define goc_array_of_boxed(T, ...) \
+    _goc_array_of_boxed_impl((T[]){__VA_ARGS__}, sizeof(T), \
+                              sizeof((T[]){__VA_ARGS__}) / sizeof(T))
+
+/* internal — use goc_array_of_boxed */
+goc_array* _goc_array_of_boxed_impl(const void* elems, size_t elem_size, size_t n);
+
+/**
+ * goc_array_copy() — Return a shallow copy of arr with an independent backing buffer.
+ *
+ * The returned array has the same length and elements as arr. Modifying one
+ * does not affect the other. Elements themselves are not deep-copied; pointers
+ * are shared.
+ *
+ * If sharing the backing buffer is acceptable, prefer goc_array_slice() over
+ * this function — it is O(1) and avoids allocating a new buffer.
+ *
+ * O(n). Returns a GC-managed pointer. Never returns NULL.
+ */
+goc_array* goc_array_copy(const goc_array* arr);
 
 /* -------------------------------------------------------------------------
  * Length
@@ -85,11 +131,25 @@ size_t goc_array_len(const goc_array* arr);
 void* goc_array_get(const goc_array* arr, size_t i);
 
 /**
+ * goc_array_get_unboxed(T, arr, i) — Retrieve and unbox the element at index i.
+ * Equivalent to goc_unbox(T, goc_array_get(arr, i)).  O(1).
+ */
+#define goc_array_get_unboxed(T, arr, i) \
+    goc_unbox(T, goc_array_get((arr), (i)))
+
+/**
  * goc_array_set() — Replace the element at index i with val.
  *
  * i must be < goc_array_len(arr). Aborts on out-of-bounds access.
  */
 void goc_array_set(goc_array* arr, size_t i, void* val);
+
+/**
+ * goc_array_set_boxed(T, arr, i, val) — Box val and store it at index i.
+ * Equivalent to goc_array_set(arr, i, goc_box(T, val)).  O(1).
+ */
+#define goc_array_set_boxed(T, arr, i, val) \
+    goc_array_set((arr), (i), goc_box(T, (val)))
 
 /* -------------------------------------------------------------------------
  * Tail push / pop — amortized O(1)
@@ -104,11 +164,25 @@ void goc_array_set(goc_array* arr, size_t i, void* val);
 void goc_array_push(goc_array* arr, void* val);
 
 /**
+ * goc_array_push_boxed(T, arr, val) — Box val and append it to the tail.
+ * Equivalent to goc_array_push(arr, goc_box(T, val)).  Amortized O(1).
+ */
+#define goc_array_push_boxed(T, arr, val) \
+    goc_array_push((arr), goc_box(T, (val)))
+
+/**
  * goc_array_pop() — Remove and return the tail element of arr.
  *
  * O(1). arr must not be empty; aborts if goc_array_len(arr) == 0.
  */
 void* goc_array_pop(goc_array* arr);
+
+/**
+ * goc_array_pop_unboxed(T, arr) — Remove the tail element and unbox it.
+ * Equivalent to goc_unbox(T, goc_array_pop(arr)).  O(1).
+ */
+#define goc_array_pop_unboxed(T, arr) \
+    goc_unbox(T, goc_array_pop(arr))
 
 /* -------------------------------------------------------------------------
  * Head push / pop — amortized O(1)
@@ -122,11 +196,25 @@ void* goc_array_pop(goc_array* arr);
 void goc_array_push_head(goc_array* arr, void* val);
 
 /**
+ * goc_array_push_head_boxed(T, arr, val) — Box val and prepend it to the head.
+ * Equivalent to goc_array_push_head(arr, goc_box(T, val)).  Amortized O(1).
+ */
+#define goc_array_push_head_boxed(T, arr, val) \
+    goc_array_push_head((arr), goc_box(T, (val)))
+
+/**
  * goc_array_pop_head() — Remove and return the head element of arr.
  *
  * O(1). arr must not be empty; aborts if goc_array_len(arr) == 0.
  */
 void* goc_array_pop_head(goc_array* arr);
+
+/**
+ * goc_array_pop_head_unboxed(T, arr) — Remove the head element and unbox it.
+ * Equivalent to goc_unbox(T, goc_array_pop_head(arr)).  O(1).
+ */
+#define goc_array_pop_head_unboxed(T, arr) \
+    goc_unbox(T, goc_array_pop_head(arr))
 
 /* -------------------------------------------------------------------------
  * Concat — O(n)
@@ -161,6 +249,10 @@ goc_array* goc_array_concat(const goc_array* a, const goc_array* b);
  *
  * As long as either the slice or the original is reachable, the GC will
  * retain the shared backing buffer.
+ *
+ * If an independent backing buffer is required (so that mutations to one
+ * array cannot affect the other's shared region), use goc_array_copy() on
+ * the slice instead.
  */
 goc_array* goc_array_slice(const goc_array* arr, size_t start, size_t end);
 
@@ -188,7 +280,7 @@ void** goc_array_to_c(const goc_array* arr);
 /**
  * goc_array_from_str() — Create a byte array from a null-terminated C string.
  *
- * Each byte of s is stored as goc_box_int(byte). The null terminator is not
+ * Each byte of s is stored as goc_box(int, byte). The null terminator is not
  * included. Equivalent to iterating over s and calling goc_array_push for each
  * byte.
  *
@@ -200,7 +292,7 @@ goc_array* goc_array_from_str(const char* s);
 /**
  * goc_array_to_str() — Return a GC-heap null-terminated string from a byte array.
  *
- * Each element is interpreted as goc_box_int(byte). The result is a fresh
+ * Each element is interpreted as goc_box(char, byte). The result is a fresh
  * GC-heap allocation of len+1 bytes with a null terminator appended.
  *
  * Returns a GC-managed pointer. Never returns NULL.
