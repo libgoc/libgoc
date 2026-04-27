@@ -334,7 +334,38 @@ static void test_dict_resize(void) {
 done:;
 }
 
+/* D19 — goc_dict_get_in supports deep dict/array lookup */
+static void test_dict_get_in(void) {
+    TEST_BEGIN("D19  goc_dict_get_in supports deep dict/array lookup");
+
+    goc_dict* item0 = goc_dict_of_boxed(int, {"id", 100});
+    goc_dict* item1 = goc_dict_of_boxed(int, {"id", 200});
+    goc_array* items = goc_array_of(item0, item1);
+    goc_dict* cfg = goc_dict_of("items", items);
+
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".items.[0].id", goc_box(int, -1))) == 100);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".items.[1].id", goc_box(int, -1))) == 200);
+    ASSERT(goc_dict_get_in(cfg, "", NULL) == cfg);
+
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".missing", goc_box(int, -1))) == -1);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".items.[2]", goc_box(int, -1))) == -1);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, "a.b", goc_box(int, -1))) == -1);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".items.[abc]", goc_box(int, -1))) == -1);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, ".items.[1", goc_box(int, -1))) == -1);
+
+    goc_dict* null_dict = goc_dict_of("a", NULL);
+    ASSERT(goc_dict_get_in(null_dict, ".a", goc_box(int, -1)) == NULL);
+    ASSERT(goc_unbox(int, goc_dict_get_in(null_dict, ".a.b", goc_box(int, -1))) == -1);
+
+    ASSERT(goc_unbox(int, goc_dict_get_in(NULL, ".a", goc_box(int, -1))) == -1);
+    ASSERT(goc_unbox(int, goc_dict_get_in(cfg, NULL, goc_box(int, -1))) == -1);
+    TEST_PASS();
+done:;
+}
+
 int main(void) {
+    goc_init();
+
     test_dict_make();
     test_dict_set_get();
     test_dict_contains();
@@ -355,6 +386,10 @@ int main(void) {
     test_dict_boxed_macros();
     test_dict_tombstone_probe();
     test_dict_resize();
+    test_dict_get_in();
+
+    goc_shutdown();
+
     REPORT(g_tests_run, g_tests_passed, g_tests_failed);
     return (g_tests_failed == 0) ? 0 : 1;
 }

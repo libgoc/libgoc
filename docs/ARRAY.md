@@ -25,6 +25,7 @@ Elements are stored as `void*` pointers (type-erased, consistent with channels a
 4. [Complexity Summary](#complexity-summary)
 5. [Thread Safety](#thread-safety)
 6. [Examples](#examples)
+7. [Test Coverage](#test-coverage)
 
 ---
 
@@ -226,6 +227,9 @@ char*      s   = goc_array_to_str(arr);         /* "hello"  */
 
 ---
 
+
+---
+
 ## Complexity Summary
 
 | Operation | Complexity |
@@ -316,3 +320,34 @@ goc_array* from_c = goc_array_from(items, 3);
 /* goc_array_get_unboxed(int, from_c, 0) == 10 */
 /* uses items directly as the backing buffer — no copy performed */
 ```
+
+---
+
+## Test Coverage
+
+| Test | Description |
+|---|---|
+| `test_array_make` | `goc_array_make(0)` returns non-NULL; `goc_array_len` returns 0 |
+| `test_array_push_get` | `goc_array_push` appends elements; `goc_array_get` retrieves them in order |
+| `test_array_set` | `goc_array_set` overwrites an element; adjacent elements are not disturbed |
+| `test_array_pop` | `goc_array_pop` removes and returns the tail element |
+| `test_array_push_pop_head` | `goc_array_push_head` / `goc_array_pop_head` operate on the front; order correct after mixed head+tail pushes |
+| `test_array_grow` | Array doubles capacity when full; all values survive across the realloc |
+| `test_array_concat` | `goc_array_concat` produces a new array with all elements from both inputs in order |
+| `test_array_slice` | `goc_array_slice` returns a view sharing the backing buffer; O(1) |
+| `test_array_c_interop` | `goc_array_to_c` + `goc_array_from` round-trip: pointer into live region is valid; reconstructed array matches original |
+| `test_array_with` | `goc_array_of(...)` produces an array of the given pointers in order |
+| `test_array_with_boxed` | `goc_array_of_boxed(int, 1, 2, 3)` boxes each int; `goc_array_get_unboxed(int, arr, i)` returns correct values |
+| `test_array_copy` | `goc_array_copy` returns an independent array; push to copy does not affect original |
+| `test_array_to_c_empty` | `goc_array_to_c` on an empty array returns non-NULL and does not crash |
+| `test_array_empty_ops` | Pop/pop_head/slice/concat on empty arrays return NULL / zero-length array without crashing |
+| `test_array_from_empty` | `goc_array_from(NULL, 0)` returns a valid empty array |
+| `test_array_str_roundtrip` | `goc_array_from_str` then `goc_array_to_str` round-trips an ASCII string |
+| `test_array_from_str_null` | `goc_array_from_str(NULL)` returns a valid empty array |
+| `test_array_to_str_empty` | `goc_array_to_str` on an empty array returns "" |
+| `test_array_str_binary` | String interop correctly handles bytes with value 0x00 embedded mid-array |
+| `test_array_push_boxed` | `goc_array_push_boxed(int, arr, 42)` appends a boxed int; `goc_array_get_unboxed(int, arr, 0)` returns `42` |
+| `test_array_push_head_boxed` | `goc_array_push_head_boxed(int, arr, 7)` prepends; `goc_array_get_unboxed(int, arr, 0)` returns `7` |
+| `test_array_set_boxed` | `goc_array_set_boxed(int, arr, i, 99)` overwrites; adjacent elements unchanged; `goc_array_get_unboxed` retrieves `99` |
+| `test_array_pop_unboxed` | `goc_array_pop_unboxed(int, arr)` returns correct scalar; array length decrements |
+| `test_array_pop_head_unboxed` | `goc_array_pop_head_unboxed(int, arr)` returns correct scalar from head; array length decrements |

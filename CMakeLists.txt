@@ -151,8 +151,10 @@ set(GOC_SOURCES
     src/goc_array.c
     src/goc_dict.c
     src/goc_schema.c
+    src/goc_json.c
     src/goc_io.c
     src/goc_debug.c
+    vendor/yyjson/yyjson.c
 )
 
 if(GOC_ENABLE_STATS)
@@ -186,6 +188,7 @@ function(goc_configure_target target_name)
                 vendor/minicoro
                 vendor/picohttpparser
                 vendor/regex
+                vendor/yyjson
     )
     # GC_THREADS: enable bdwgc multi-thread support on all platforms.
     # GC_PTHREADS: on POSIX this activates gc_pthread_redirects.h so that
@@ -362,7 +365,7 @@ foreach(test_src IN LISTS TEST_SOURCES)
 
     add_executable(${test_name} ${test_src} tests/test_harness.c)
 
-    target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro vendor/regex)
+    target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro vendor/regex vendor/yyjson)
 
     if(LIBGOC_STATIC_DEPENDENCIES)
         target_link_libraries(${test_name} PRIVATE ${GOC_LINK_TARGET})
@@ -435,7 +438,7 @@ include(GNUInstallDirs)
 install(TARGETS goc
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_dict.h include/goc_stats.h include/goc_schema.h
+install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_dict.h include/goc_stats.h include/goc_schema.h include/goc_json.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 if(LIBGOC_SERVER)

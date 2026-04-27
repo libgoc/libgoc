@@ -35,7 +35,7 @@ typedef struct goc_dict goc_dict;
 
 /** Single dictionary entry used for array conversions. */
 typedef struct {
-    char* key;
+    const char* key;
     void* val;
 } goc_dict_entry_t;
 
@@ -118,6 +118,21 @@ bool goc_dict_contains(const goc_dict* d, const char* key);
  * Amortized O(1).
  */
 void* goc_dict_get(const goc_dict* d, const char* key, void* not_found);
+
+/**
+ * goc_dict_get_in(d, path, not_found) — Return the value at path within a
+ * nested dict/array structure rooted at d.
+ *
+ * Path syntax matches goc_schema_validate / goc_json_error_path:
+ *   .key  — lookup a key in the current dict
+ *   .[N]  — lookup an index in the current array
+ *   ""   — return d itself
+ *
+ * Returns not_found on any invalid input, malformed path, missing key, or
+ * out-of-bounds index. Precondition: intermediate nodes must be correctly
+ * typed as dict or array according to the path.
+ */
+void* goc_dict_get_in(const goc_dict* d, const char* path, void* not_found);
 
 /**
  * goc_dict_len(d) — Return the number of live entries in the dict.
@@ -233,6 +248,13 @@ goc_dict* goc_dict_from_entries(const goc_array* entries);
  */
 #define goc_dict_get_unboxed(T, d, key, not_found) \
     goc_unbox(T, goc_dict_get((d), (key), goc_box(T, (not_found))))
+
+/**
+ * goc_dict_get_in_boxed(T, d, path, not_found) — Lookup a nested path and
+ * unbox the result as T.
+ */
+#define goc_dict_get_in_boxed(T, d, path, not_found) \
+    goc_unbox(T, goc_dict_get_in((d), (path), goc_box(T, (not_found))))
 
 /**
  * goc_dict_set_boxed(T, d, key, val) — Box val and store it in the dict.

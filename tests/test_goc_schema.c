@@ -31,6 +31,7 @@
  *   SC25  public schema hierarchy helpers
  *   SC26  predicate schema
  *   SC27  global registry — built-in entries and user registration
+ *   SC28  duplicate schema name aborts
  *
  * Build:  cmake -B build && cmake --build build
  * Run:   ctest --test-dir build --output-on-failure
@@ -51,12 +52,11 @@
 
 static void test_schema_registry(void) {
     TEST_BEGIN("SC1   schema registry add and get");
-    goc_schema_registry* reg = goc_schema_registry_make();
     goc_schema* schema = goc_schema_int_min(0);
 
-    goc_schema_registry_add(reg, "positiveInt", schema);
-    ASSERT(goc_schema_registry_get(reg, "positiveInt") == schema);
-    ASSERT(goc_schema_registry_get(reg, "missing") == NULL);
+    goc_schema_named("positiveInt", schema);
+    ASSERT(goc_schema_lookup("positiveInt") == schema);
+    ASSERT(goc_schema_lookup("missing") == NULL);
 
     TEST_PASS();
 
@@ -72,16 +72,16 @@ static void test_schema_hierarchy(void) {
 
     /* direct builtin numeric sub-hierarchy */
     ASSERT(goc_schema_is_a(goc_schema_byte(), goc_schema_int()));
-    ASSERT(goc_schema_is_a(goc_schema_bool(), goc_schema_byte()));
-    ASSERT(goc_schema_is_a(goc_schema_ubyte(), goc_schema_byte()));
-    ASSERT(goc_schema_is_a(goc_schema_uint(), goc_schema_int()));
-    ASSERT(goc_schema_is_a(goc_schema_int(), goc_schema_real()));
+    ASSERT(goc_schema_is_a(goc_schema_ubyte(), goc_schema_uint()));
+    ASSERT(goc_schema_is_a(goc_schema_bool(), goc_schema_ubyte()));
+    ASSERT(goc_schema_is_a(goc_schema_int(), goc_schema_number()));
+    ASSERT(goc_schema_is_a(goc_schema_uint(), goc_schema_number()));
     ASSERT(goc_schema_is_a(goc_schema_complex(), goc_schema_number()));
     ASSERT(goc_schema_is_a(goc_schema_real(), goc_schema_complex()));
-    ASSERT(goc_schema_is_a(goc_schema_int(), goc_schema_number()));
 
     /* transitive */
     ASSERT(goc_schema_is_a(goc_schema_byte(), goc_schema_number()));
+    ASSERT(goc_schema_is_a(goc_schema_bool(), goc_schema_number()));
     ASSERT(goc_schema_is_a(goc_schema_byte(), goc_schema_any()));
     ASSERT(goc_schema_is_a(goc_schema_real(), goc_schema_any()));
     ASSERT(goc_schema_is_a(goc_schema_str(), goc_schema_any()));
@@ -89,8 +89,10 @@ static void test_schema_hierarchy(void) {
     ASSERT(goc_schema_is_a(goc_schema_number(), goc_schema_any()));
 
     /* non-relationships */
+    ASSERT(!goc_schema_is_a(goc_schema_int(), goc_schema_real()));
+    ASSERT(!goc_schema_is_a(goc_schema_uint(), goc_schema_real()));
     ASSERT(!goc_schema_is_a(goc_schema_int(), goc_schema_byte()));
-    ASSERT(!goc_schema_is_a(goc_schema_real(), goc_schema_int()));
+    ASSERT(!goc_schema_is_a(goc_schema_uint(), goc_schema_int()));
     ASSERT(!goc_schema_is_a(goc_schema_str(), goc_schema_number()));
     ASSERT(!goc_schema_is_a(goc_schema_any(), goc_schema_int()));
 
@@ -99,8 +101,7 @@ static void test_schema_hierarchy(void) {
     ASSERT(!goc_schema_is_a(goc_schema_int(), NULL));
 
     /* user-declared relation */
-    goc_schema* my_id_schema = goc_schema_any_of(goc_schema_int(), goc_schema_str());
-    goc_schema_derive(my_id_schema, goc_schema_any());
+    goc_schema* my_id_schema = goc_schema_any_of(goc_schema_any(), goc_schema_int(), goc_schema_str());
     ASSERT(goc_schema_is_a(my_id_schema, goc_schema_any()));
     ASSERT(!goc_schema_is_a(my_id_schema, goc_schema_int()));
 
@@ -130,13 +131,16 @@ static void test_schema_scalar_types(void) {
     ASSERT(err != NULL);
     ASSERT(strcmp(goc_schema_error_message(err), "expected int, got real") == 0);
 
+    ASSERT(!goc_schema_is_valid(goc_schema_real(), goc_box(int64_t, 42)));
+    ASSERT(!goc_schema_is_valid(goc_schema_real(), goc_box(unsigned int, 42u)));
+
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(int64_t, 42)));
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(unsigned int, 42u)));
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(char, 'A')));
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(unsigned char, 255)));
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(double, 1.0)));
+    ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(bool, true)));
     ASSERT(!goc_schema_is_valid(goc_schema_number(), "hello"));
-    ASSERT(!goc_schema_is_valid(goc_schema_number(), goc_box(bool, true)));
 
     TEST_PASS();
 
@@ -315,9 +319,9 @@ static void test_schema_complex(void) {
     ASSERT(goc_schema_is_valid(goc_schema_number(), goc_box(long double complex, 1.0L + 2.0L * I)));
     ASSERT(!goc_schema_is_valid(goc_schema_real(), goc_box(long double complex, 1.0L + 2.0L * I)));
 
+    ASSERT(goc_schema_is_valid(goc_schema_complex(), goc_box(double, 42.0)));
     err = goc_schema_validate(goc_schema_complex(), goc_box(double, 42.0));
-    ASSERT(err != NULL);
-    ASSERT(strcmp(goc_schema_error_message(err), "expected complex, got real") == 0);
+    ASSERT(err == NULL);
 
     goc_schema_check(goc_schema_complex(), goc_box(long double complex, 0.0L + 0.0L * I));
 
@@ -655,7 +659,8 @@ static void test_schema_conditional_and_composition(void) {
     TEST_BEGIN("SC21  conditional and composition schemas");
     goc_schema_error* err;
 
-    goc_schema* cond = goc_schema_if(goc_schema_bool(),
+    goc_schema* cond = goc_schema_if(goc_schema_any(),
+                                     goc_schema_bool(),
                                      goc_schema_int(),
                                      goc_schema_str());
     err = goc_schema_validate(cond, goc_box(bool, true));
@@ -664,13 +669,13 @@ static void test_schema_conditional_and_composition(void) {
     err = goc_schema_validate(cond, goc_box(bool, false));
     ASSERT(err != NULL);
 
-    goc_schema* any_of = goc_schema_any_of(goc_schema_int(), goc_schema_str());
+    goc_schema* any_of = goc_schema_any_of(goc_schema_any(), goc_schema_int(), goc_schema_str());
     ASSERT(goc_schema_is_valid(any_of, goc_box(int64_t, 1)));
     ASSERT(goc_schema_is_valid(any_of, "ok"));
     err = goc_schema_validate(any_of, goc_box(bool, true));
     ASSERT(err != NULL);
 
-    goc_schema* one_of = goc_schema_one_of(goc_schema_int(), goc_schema_int_const(1));
+    goc_schema* one_of = goc_schema_one_of(goc_schema_any(), goc_schema_int(), goc_schema_int_const(1));
     ASSERT(goc_schema_is_valid(one_of, goc_box(int64_t, 2)));
     err = goc_schema_validate(one_of, goc_box(int64_t, 1));
     ASSERT(err != NULL);
@@ -680,7 +685,7 @@ static void test_schema_conditional_and_composition(void) {
     err = goc_schema_validate(all_of, goc_box(int64_t, -1));
     ASSERT(err != NULL);
 
-    goc_schema* not_schema = goc_schema_not(goc_schema_int());
+    goc_schema* not_schema = goc_schema_not(goc_schema_any(), goc_schema_int());
     ASSERT(!goc_schema_is_valid(not_schema, goc_box(int64_t, 1)));
 
     ASSERT(goc_schema_is_valid(not_schema, goc_box(bool, true)));
@@ -804,33 +809,17 @@ done:;
 static void test_schema_hierarchy_helpers(void) {
     TEST_BEGIN("SC25  public schema hierarchy helpers");
 
-    goc_schema* custom_child = goc_schema_any_of(goc_schema_int(), goc_schema_str());
-    goc_schema_derive(custom_child, goc_schema_int());
-    goc_schema_derive(custom_child, goc_schema_str());
+    goc_schema* custom_child = goc_schema_any_of(goc_schema_any(), goc_schema_int(), goc_schema_real());
 
-    goc_array* parents = goc_schema_parents(custom_child);
-    bool has_int = false;
-    bool has_str = false;
-    for (size_t i = 0; i < goc_array_len(parents); i++) {
-        goc_schema* parent = (goc_schema*)goc_array_get(parents, i);
-        if (parent == goc_schema_int()) has_int = true;
-        if (parent == goc_schema_str()) has_str = true;
-    }
-    ASSERT(has_int);
-    ASSERT(has_str);
+    ASSERT(goc_schema_parent(custom_child) == goc_schema_any());
+    ASSERT(goc_schema_is_a(custom_child, goc_schema_any()));
+    ASSERT(!goc_schema_is_a(custom_child, goc_schema_complex()));
 
     goc_array* ancestors = goc_schema_ancestors(custom_child);
-    has_int = false;
-    has_str = false;
-    for (size_t i = 0; i < goc_array_len(ancestors); i++) {
-        goc_schema* ancestor = (goc_schema*)goc_array_get(ancestors, i);
-        if (ancestor == goc_schema_int()) has_int = true;
-        if (ancestor == goc_schema_str()) has_str = true;
-    }
-    ASSERT(has_int);
-    ASSERT(has_str);
+    ASSERT(goc_array_len(ancestors) > 0);
+    ASSERT(goc_array_get(ancestors, 0) == goc_schema_any());
 
-    goc_array* descendants = goc_schema_descendants(goc_schema_int());
+    goc_array* descendants = goc_schema_descendants(goc_schema_any());
     bool found_child = false;
     for (size_t i = 0; i < goc_array_len(descendants); i++) {
         if (goc_array_get(descendants, i) == custom_child) {
@@ -845,6 +834,34 @@ static void test_schema_hierarchy_helpers(void) {
 done:;
 }
 
+#if !defined(_WIN32)
+static void duplicate_schema_named_abort_child(void* arg) {
+    (void)arg;
+    goc_schema* first = goc_schema_int_min(0);
+    goc_schema_named("test/duplicate_name", first);
+    goc_schema* second = goc_schema_int_min(1);
+    goc_schema_named("test/duplicate_name", second);
+}
+
+static void test_schema_named_duplicate_abort(void) {
+    TEST_BEGIN("SC28  duplicate schema name aborts");
+
+    bool got_sigabrt = fork_expect_sigabrt(duplicate_schema_named_abort_child, NULL);
+    ASSERT(got_sigabrt);
+
+    TEST_PASS();
+
+done:;
+}
+#else
+static void test_schema_named_duplicate_abort(void) {
+    TEST_BEGIN("SC28  duplicate schema name aborts");
+    TEST_SKIP("abort tests are skipped on Windows");
+
+done:;
+}
+#endif
+
 static bool is_prime(void* val) {
     if (!goc_schema_is_valid(goc_schema_int(), val)) return false;
     int64_t n = goc_unbox(int64_t, val);
@@ -858,7 +875,7 @@ static void test_schema_predicate(void) {
     TEST_BEGIN("SC26  predicate schema");
     goc_schema_error* err;
 
-    goc_schema* prime = goc_schema_predicate(is_prime, "prime");
+    goc_schema* prime = goc_schema_predicate(goc_schema_int(), is_prime, "prime");
 
     ASSERT(goc_schema_is_valid(prime, goc_box(int64_t, 2)));
     ASSERT(goc_schema_is_valid(prime, goc_box(int64_t, 7)));
@@ -874,19 +891,20 @@ static void test_schema_predicate(void) {
 
     /* compose: positive prime via all_of */
     goc_schema* pos_prime = goc_schema_all_of(
+        goc_schema_int(),
         goc_schema_int_min(2),
-        goc_schema_predicate(is_prime, "prime")
+        goc_schema_predicate(goc_schema_int(), is_prime, "prime")
     );
     ASSERT(goc_schema_is_valid(pos_prime, goc_box(int64_t, 13)));
     ASSERT(!goc_schema_is_valid(pos_prime, goc_box(int64_t, 1)));
 
-    /* hierarchy: prime derives from int */
-    goc_schema_derive(prime, goc_schema_int());
+    /* hierarchy: prime is already an int predicate */
     ASSERT(goc_schema_is_a(prime, goc_schema_int()));
-    ASSERT(goc_schema_is_a(prime, goc_schema_real()));
+    ASSERT(goc_schema_is_a(prime, goc_schema_number()));
+    ASSERT(!goc_schema_is_a(prime, goc_schema_real()));
 
     /* NULL name — falls back to "predicate" in error message */
-    goc_schema* unnamed = goc_schema_predicate(is_prime, NULL);
+    goc_schema* unnamed = goc_schema_predicate(goc_schema_int(), is_prime, NULL);
     err = goc_schema_validate(unnamed, goc_box(int64_t, 6));
     ASSERT(err != NULL);
     ASSERT(strstr(goc_schema_error_message(err), "predicate") != NULL);
@@ -899,26 +917,19 @@ done:;
 static void test_schema_global_registry(void) {
     TEST_BEGIN("SC27  global registry — built-in entries and user registration");
 
-    goc_schema_registry* reg = goc_schema_global_registry();
-    ASSERT(reg != NULL);
-
-    /* same pointer each call */
-    ASSERT(goc_schema_global_registry() == reg);
-
-    /* all built-ins registered */
-    ASSERT(goc_schema_registry_get(reg, "goc/any")     == goc_schema_any());
-    ASSERT(goc_schema_registry_get(reg, "goc/null")    == goc_schema_null());
-    ASSERT(goc_schema_registry_get(reg, "goc/bool")    == goc_schema_bool());
-    ASSERT(goc_schema_registry_get(reg, "goc/int")     == goc_schema_int());
-    ASSERT(goc_schema_registry_get(reg, "goc/uint")    == goc_schema_uint());
-    ASSERT(goc_schema_registry_get(reg, "goc/byte")    == goc_schema_byte());
-    ASSERT(goc_schema_registry_get(reg, "goc/ubyte")   == goc_schema_ubyte());
-    ASSERT(goc_schema_registry_get(reg, "goc/number")  == goc_schema_number());
-    ASSERT(goc_schema_registry_get(reg, "goc/real")    == goc_schema_real());
-    ASSERT(goc_schema_registry_get(reg, "goc/complex") == goc_schema_complex());
-    ASSERT(goc_schema_registry_get(reg, "goc/str")     == goc_schema_str());
-    ASSERT(goc_schema_registry_get(reg, "goc/arr")     == goc_schema_arr_any());
-    ASSERT(goc_schema_registry_get(reg, "goc/dict")    == goc_schema_dict_any());
+    ASSERT(goc_schema_lookup("goc/any")     == goc_schema_any());
+    ASSERT(goc_schema_lookup("goc/null")    == goc_schema_null());
+    ASSERT(goc_schema_lookup("goc/bool")    == goc_schema_bool());
+    ASSERT(goc_schema_lookup("goc/int")     == goc_schema_int());
+    ASSERT(goc_schema_lookup("goc/uint")    == goc_schema_uint());
+    ASSERT(goc_schema_lookup("goc/byte")    == goc_schema_byte());
+    ASSERT(goc_schema_lookup("goc/ubyte")   == goc_schema_ubyte());
+    ASSERT(goc_schema_lookup("goc/number")  == goc_schema_number());
+    ASSERT(goc_schema_lookup("goc/real")    == goc_schema_real());
+    ASSERT(goc_schema_lookup("goc/complex") == goc_schema_complex());
+    ASSERT(goc_schema_lookup("goc/str")     == goc_schema_str());
+    ASSERT(goc_schema_lookup("goc/arr_any") == goc_schema_arr_any());
+    ASSERT(goc_schema_lookup("goc/dict_any") == goc_schema_dict_any());
 
     /* arr_any and dict_any are stable singletons */
     ASSERT(goc_schema_arr_any()  == goc_schema_arr_any());
@@ -936,12 +947,12 @@ static void test_schema_global_registry(void) {
     ASSERT(!goc_schema_is_valid(goc_schema_dict_any(), "not a dict"));
 
     /* unknown name returns NULL */
-    ASSERT(goc_schema_registry_get(reg, "goc/missing") == NULL);
+    ASSERT(goc_schema_lookup("goc/missing") == NULL);
 
     /* user registration */
     goc_schema* my_schema = goc_schema_int_min(0);
-    goc_schema_registry_add(reg, "test/positive_int", my_schema);
-    ASSERT(goc_schema_registry_get(reg, "test/positive_int") == my_schema);
+    goc_schema_named("test/positive_int", my_schema);
+    ASSERT(goc_schema_lookup("test/positive_int") == my_schema);
 
     TEST_PASS();
 
@@ -981,6 +992,7 @@ int main(void) {
     test_schema_error_paths_and_nested_composite();
     test_schema_recursive_ref();
     test_schema_hierarchy_helpers();
+    test_schema_named_duplicate_abort();
     test_schema_predicate();
     test_schema_global_registry();
 

@@ -1,0 +1,3 @@
+version: 0.12.0
+commit: 8b4a38dc994a110abaec8a400615567bd996105f
+upstream: https://github.com/ibireme/yyjson

@@ -280,6 +280,14 @@ void* goc_realloc(void* ptr, size_t n);
  */
 char* goc_sprintf(const char* fmt, ...);
 
+/**
+ * goc_strdup() — duplicate a C string onto the GC heap.
+ *
+ * Returns a GC-managed copy of s. The caller need not free the result.
+ * Aborts on allocation failure. Never returns NULL.
+ */
+#define goc_strdup(s) goc_sprintf("%s", (s))
+
 /* -------------------------------------------------------------------------
  * Scalar/pointer boxing helpers
  *

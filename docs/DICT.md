@@ -23,6 +23,7 @@ Keys are null-terminated C strings; values are `void*` pointers (type-erased, co
 4. [Complexity Summary](#complexity-summary)
 5. [Thread Safety](#thread-safety)
 6. [Examples](#examples)
+7. [Test Coverage](#test-coverage)
 
 ---
 
@@ -117,6 +118,35 @@ size_t goc_dict_len(const goc_dict* d);
 ```
 
 `goc_dict_get_unboxed(T, d, key, not_found)` retrieves the value for `key` and unboxes it as type `T` in one step, returning `not_found` if absent.
+
+## Deep lookup
+
+### `goc_dict_get_in(d, path, not_found)`
+
+Returns the value at `path` within the nested dict/array structure rooted at `d`.
+`path` uses the same dot-separated format produced by `goc_schema_validate` and
+`goc_json_error_path`:
+
+- `.key` — look up `key` in the current dict
+- `.[N]` — look up index `N` in the current array
+- `""` (empty string) — return `d` itself cast to `void*`
+
+Returns `not_found` on any error: NULL inputs, missing key, out-of-bounds index,
+malformed path, or a `NULL` intermediate node when the path continues.
+Never aborts.
+
+**Precondition**: every intermediate node must be correctly typed as a dict or
+array according to the path. There are no runtime type tags on libgoc values,
+so mismatched node types cause undefined behaviour.
+
+### `goc_dict_get_in_boxed(T, d, path, not_found)`
+
+Typed convenience wrapper around `goc_dict_get_in`. Boxes `not_found` before the
+lookup and unboxes the result as `T`.
+
+```c
+int64_t port = goc_dict_get_in_boxed(int64_t, cfg, ".db.port", 0);
+```
 
 ### Mutation
 
@@ -219,6 +249,9 @@ Build a dict by pairing `keys[i]` with `vals[i]` for `i` in `[0, n)`.  Insertion
 
 ---
 
+
+---
+
 ## Thread Safety
 
 `goc_dict` is **not** thread-safe.  Concurrent reads and writes require external synchronisation.  Use `goc_mutex` or channels to coordinate access from multiple fibers or OS threads.
@@ -289,3 +322,31 @@ const goc_array* keys = goc_dict_keys(d);
 goc_dict*  d2      = goc_dict_from_entries(entries);
 /* d2 is a fresh dict equivalent to d */
 ```
+
+---
+
+## Test Coverage
+
+| Test | Description |
+|---|---|
+| `test_dict_make` | `goc_dict_make()` returns non-NULL empty dict; no membership for missing keys |
+| `test_dict_set_get` | `goc_dict_set` stores boxed values; `goc_dict_get` retrieves them; missing keys return not-found default |
+| `test_dict_contains` | `goc_dict_contains` reports membership correctly for present and absent keys |
+| `test_dict_overwrite` | `goc_dict_set` overwrites existing keys without changing dictionary length |
+| `test_dict_pop` | `goc_dict_pop` removes entries and returns boxed values; missing keys return default |
+| `test_dict_len` | `goc_dict_len` tracks live entries after insert and pop operations |
+| `test_dict_insertion_order` | `goc_dict_entries` preserves insertion order for live entries |
+| `test_dict_keys` | `goc_dict_keys` returns live keys in insertion order, skipping popped entries |
+| `test_dict_vals` | `goc_dict_vals` returns live values in insertion order of keys |
+| `test_dict_to_from_array` | `goc_dict_entries` and `goc_dict_from_entries` round-trip preserves contents |
+| `test_dict_copy` | `goc_dict_copy` returns an independent dict with shared value pointers |
+| `test_dict_merge` | `goc_dict_merge` merges dicts left-to-right, later entries win for duplicates |
+| `test_dict_merge_many` | `goc_dict_merge` handles multiple dictionaries with duplicate overriding semantics |
+| `test_dict_merge_empty` | `goc_dict_merge()` with zero arguments returns an empty dict |
+| `test_dict_select` | `goc_dict_select` preserves requested key order in the resulting dict |
+| `test_dict_get_in` | `goc_dict_get_in` supports deep nested dict/array lookup and failure cases |
+| `test_dict_zip` | `goc_dict_zip` builds a dict from parallel goc_array key/value arrays |
+| `test_dict_zip_c` | `goc_dict_zip_c` builds a dict from parallel C arrays of keys and values |
+| `test_dict_boxed_macros` | boxed macros round-trip scalar values correctly through set/get/pop |
+| `test_dict_tombstone_probe` | popped entries leave tombstones; reinserting through tombstone slots works |
+| `test_dict_resize` | dict resizes under load and preserves all entries across rehashes |

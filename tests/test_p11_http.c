@@ -27,6 +27,7 @@
  *   P11.14 Middleware: GOC_HTTP_ERR short-circuits with 500
  *   P11.15 HTTP client: goc_http_get
  *   P11.16 HTTP client: goc_http_post
+ *   P11.16a HTTP client: JSON POST request/response roundtrip
  *   P11.17 HTTP client: parallel requests with goc_take_all
  *   P11.18 HTTP client: timeout fires correctly
  *   P11.18a HTTP client: keepalive request timeout fires correctly
@@ -68,6 +69,8 @@
 #include "goc.h"
 #include "goc_array.h"
 #include "goc_http.h"
+#include "goc_json.h"
+#include "goc_schema.h"
 #include "goc_stats.h"
 #include "internal.h"
 
@@ -766,6 +769,87 @@ static void test_p11_16(void)
     goc_take_sync(args.done);
     ASSERT(args.status == 200);
     ASSERT(strstr(args.body, "echo-this") != NULL);
+    TEST_PASS();
+done:;
+}
+
+/* =========================================================================
+ * P11.16a — goc_http_post JSON request/response roundtrip
+ * ====================================================================== */
+
+static goc_schema* p11_16a_request_schema;
+static goc_schema* p11_16a_response_schema;
+
+static void handler_json_greet(goc_http_ctx_t* ctx)
+{
+    goc_json_result req_r = goc_json_parse(goc_http_server_body_str(ctx));
+    if (req_r.err) {
+        goc_take(goc_http_server_respond_error(ctx, 400, "invalid JSON"));
+        return;
+    }
+
+    goc_dict* req = req_r.res;
+    goc_schema_error* schema_err = goc_schema_validate(p11_16a_request_schema, req);
+    if (schema_err) {
+        goc_take(goc_http_server_respond_error(ctx, 400,
+            goc_schema_error_message(schema_err)));
+        return;
+    }
+
+    const char* name = goc_dict_get(req, "name", NULL);
+    goc_dict* resp = goc_dict_of(
+        {"response", goc_sprintf("Hi, %s!", name)}
+    );
+
+    goc_json_result out_r = goc_json_stringify(p11_16a_response_schema, resp);
+    goc_http_server_respond(ctx, 200, "application/json", out_r.res);
+}
+
+static void fiber_p11_16a(void* arg)
+{
+    p11_simple_t* a   = (p11_simple_t*)arg;
+    p11_16a_request_schema = goc_schema_dict_of(
+        {"name", goc_schema_str()}
+    );
+    p11_16a_response_schema = goc_schema_dict_of(
+        {"response", goc_schema_str()}
+    );
+
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server_route(srv, "POST", "/greet", handler_json_greet);
+    goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
+
+    goc_dict* req_obj = goc_dict_of(
+        {"name", "Arjun"}
+    );
+    goc_json_result req_json_r = goc_json_stringify(p11_16a_request_schema, req_obj);
+
+    goc_http_response_t* r =
+        (goc_http_response_t*)goc_take(
+            goc_http_post(local_url("/greet", a->port),
+                           "application/json",
+                           req_json_r.res,
+                           goc_http_request_opts()))->val;
+    
+    a->status = r ? r->status : -1;
+    if (r && r->body)
+        snprintf(a->body, sizeof(a->body), "%s", r->body);
+
+    goc_take(goc_http_server_close(srv));
+    goc_put_boxed(int, a->done, 1);
+}
+
+static void test_p11_16a(void)
+{
+    TEST_BEGIN("P11.16a HTTP client: JSON POST /greet → JSON response");
+    p11_simple_t args;
+    memset(&args, 0, sizeof(args));
+    args.done = goc_chan_make(1);
+    args.port = next_port();
+    goc_go(fiber_p11_16a, &args);
+    goc_take_sync(args.done);
+    ASSERT(args.status == 200);
+    ASSERT(strcmp(args.body, "{\"response\":\"Hi, Arjun!\"}") == 0);
     TEST_PASS();
 done:;
 }
@@ -2002,6 +2086,7 @@ int main(void)
     test_p11_14();
     test_p11_15();
     test_p11_16();
+    test_p11_16a();
     test_p11_17();
     test_p11_18();
     test_p11_18a();

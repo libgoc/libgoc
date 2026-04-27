@@ -268,4 +268,15 @@ GOC_STATS_CHANNEL_STATUS((int)(intptr_t)ch, 0, ch->buf_size, ch->item_count,
 
 ## Testing
 
-See `tests/test_goc_stats.c` for tests.
+`test_goc_stats` always compiles with `GOC_ENABLE_STATS` defined and links `src/goc_stats.c` directly, independent of the `GOC_ENABLE_STATS` CMake option. This lets the telemetry tests run in any build configuration.
+
+| Test | Description |
+|---|---|
+| S1.1 | `goc_stats_init` / `goc_stats_shutdown` complete without error |
+| S1.2 | `goc_stats_is_enabled()` returns `true` after `goc_stats_init` |
+| S1.3 | Worker event round-trips with correct `id`, `status`, and `pending_jobs` fields |
+| S1.4 | Fiber event round-trips with correct `id`, `last_worker_id`, and `status` fields |
+| S1.5 | Channel event round-trips with correct `id`, `status`, `buf_size`, and `item_count` fields |
+| S2.1 | `goc_go` emits `GOC_FIBER_CREATED`; completion emits `GOC_FIBER_COMPLETED` |
+| S2.2 | Worker transitions to `GOC_WORKER_IDLE` after fiber completes |
+| S2.3 | `goc_pool_make` emits `GOC_WORKER_CREATED` per thread |

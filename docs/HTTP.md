@@ -26,6 +26,7 @@
 - [4. Sending Responses](#4-sending-responses)
 - [5. Middleware](#5-middleware)
 - [6. HTTP Client](#6-http-client)
+- [7. Test Coverage](#test-coverage)
 
 ---
 
@@ -485,4 +486,43 @@ goc_http_response_t* post_r = (goc_http_response_t*)post_val->val;
 ```
 
 ---
+
+## 7. Test Coverage
+
+| Test | Description |
+|---|---|
+| P11.1 | Server lifecycle: `goc_http_server_make` → `listen` → `close` (no routes) |
+| P11.2 | Routing: exact path match (`GET /ping` → 200 `"pong"`) |
+| P11.3 | Routing: catch-all wildcard `/*` catches any path → 200 |
+| P11.4 | Routing: unmatched path → 404 |
+| P11.5 | `goc_http_server_header`: present header found |
+| P11.6 | `goc_http_server_header`: absent header returns NULL |
+| P11.7 | `goc_http_server_header`: case-insensitive lookup |
+| P11.8 | `goc_http_server_body_str`: POST body received correctly |
+| P11.9 | `goc_http_server_body_str`: empty body returns `""` |
+| P11.10 | `goc_http_server_respond`: status 200, body `"pong"` |
+| P11.11 | `goc_http_server_respond_buf`: status 201, binary body |
+| P11.12 | `goc_http_server_respond_error`: status 400, error body |
+| P11.13 | Middleware: chain runs in order; `user_data` propagates |
+| P11.14 | Middleware: `GOC_HTTP_ERR` short-circuits with 500 |
+| P11.15 | HTTP client: `goc_http_get` → 200 with body |
+| P11.16 | HTTP client: `goc_http_post` → echoed body |
+| P11.16a | HTTP client: JSON `POST /greet` request, JSON response |
+| P11.17 | HTTP client: parallel requests with `goc_take_all` |
+| P11.18 | HTTP client: timeout fires → status 408 |
+| P11.18a | HTTP client: keep-alive timeout cleans up inflight fiber |
+| P11.19 | Oversized request body rejected (> 8 MiB); server stays alive for subsequent requests |
+| P11.20 | Method mismatch: GET route hit with POST → 404 |
+| P11.21 | `ctx->path` and `ctx->method` populated correctly |
+| P11.22 | `ctx->query` parsed from URL query string |
+| P11.23 | `goc_http_response_t->body_len` matches `respond_buf` payload length |
+| P11.24 | Custom request headers via `opts->headers` received by server |
+| P11.25 | CRLF in header value blocked (header-injection prevention) |
+| P11.26 | Ping-pong: 500 round trips between two servers (keep-alive) |
+| P11.27 | Keep-alive: sequential requests succeed with persistent connection |
+| P11.28 | Regression: fire-and-forget ping-pong survives repeated immediate teardown |
+| P11.29 | Regression: fire-and-forget connect churn survives repeated teardown |
+| P11.30 | Regression: repeated listen/close under worker-pool startup race |
+| P11.31 | Strict affinity invariant: requests distributed across ≥ 2 workers; accept counts verified per listener |
+| P11.32 | Throughput comparison pool=1,2,4 (bench-style workload); ratio assertions enabled locally, disabled in CI via `GOC_BENCH_ASSERTIONS` |
 
