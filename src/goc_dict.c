@@ -26,19 +26,6 @@
 #define GOC_DICT_MIN_CAP 8
 
 /* ---------------------------------------------------------------------------
- * Internal struct definition
- * ---------------------------------------------------------------------------*/
-
-struct goc_dict {
-    void**     table;
-    char**     table_keys;
-    size_t     table_cap;
-    size_t     occupied;
-    goc_array* keys;
-    size_t     len;
-};
-
-/* ---------------------------------------------------------------------------
  * Internal helpers
  * ---------------------------------------------------------------------------*/
 
@@ -250,11 +237,6 @@ void* goc_dict_pop(goc_dict* d, const char* key, void* not_found)
     return val;
 }
 
-/**
- * goc_dict_copy(d) — Return a shallow copy of d.
- *
- * The copy shares value pointers but has an independent dictionary structure.
- */
 goc_dict* goc_dict_copy(const goc_dict* d)
 {
     goc_dict* copy = _goc_dict_make_internal(d->table_cap);
@@ -266,10 +248,6 @@ goc_dict* goc_dict_copy(const goc_dict* d)
     return copy;
 }
 
-/**
- * goc_dict_select_c(d, keys, n) — Build a sub-dict containing only the
- * requested keys.
- */
 goc_dict* goc_dict_select_c(const goc_dict* d, const char** keys, size_t n)
 {
     goc_dict* result = _goc_dict_make_internal(d->table_cap);
@@ -283,9 +261,6 @@ goc_dict* goc_dict_select_c(const goc_dict* d, const char** keys, size_t n)
     return result;
 }
 
-/**
- * goc_dict_entries(d) — Convert a dict to a goc_array of goc_dict_entry_t*.
- */
 goc_array* goc_dict_entries(const goc_dict* d)
 {
     goc_array* entries = goc_array_make(goc_dict_len(d));
@@ -311,9 +286,6 @@ goc_array* goc_dict_entries(const goc_dict* d)
     return entries;
 }
 
-/**
- * goc_dict_keys(d) — Return a goc_array of live keys in insertion order.
- */
 goc_array* goc_dict_keys(const goc_dict* d)
 {
     goc_array* keys = goc_array_make(goc_dict_len(d));
@@ -336,10 +308,6 @@ goc_array* goc_dict_keys(const goc_dict* d)
     return keys;
 }
 
-/**
- * goc_dict_vals(d) — Return a goc_array of live values
- * in insertion order of keys.
- */
 goc_array* goc_dict_vals(const goc_dict* d)
 {
     goc_array* vals = goc_array_make(goc_dict_len(d));
@@ -362,9 +330,6 @@ goc_array* goc_dict_vals(const goc_dict* d)
     return vals;
 }
 
-/**
- * goc_dict_from_entries(entries) — Build a dict from an array of dict entries.
- */
 goc_dict* goc_dict_from_entries(const goc_array* entries)
 {
     goc_dict* result = _goc_dict_make_internal(goc_array_len(entries));
@@ -378,9 +343,6 @@ goc_dict* goc_dict_from_entries(const goc_array* entries)
     return result;
 }
 
-/**
- * _goc_dict_of_impl(kvs, n) — Build a dict from an array of key/value pairs.
- */
 goc_dict* _goc_dict_of_impl(const goc_dict_entry_t* kvs, size_t n)
 {
     goc_dict* d = _goc_dict_make_internal(n);
@@ -390,13 +352,10 @@ goc_dict* _goc_dict_of_impl(const goc_dict_entry_t* kvs, size_t n)
     return d;
 }
 
-/**
- * _goc_dict_of_boxed_impl(elem_size, pair_size, val_offset, pairs, n) —
- * Build a dict from inline boxed key/value pairs of scalar type T.
- */
 goc_dict* _goc_dict_of_boxed_impl(size_t elem_size,
                                    size_t pair_size,
                                    size_t val_offset,
+                                   goc_boxed_type_t boxed_type,
                                    const void* pairs,
                                    size_t n)
 {
@@ -406,16 +365,13 @@ goc_dict* _goc_dict_of_boxed_impl(size_t elem_size,
     for (size_t i = 0; i < n; i++) {
         const char* key = *(const char**)(base + i * pair_size);
         const void* value_ptr = base + i * pair_size + val_offset;
-        void* boxed = _goc_box_impl(value_ptr, elem_size);
+        void* boxed = _goc_box_impl(value_ptr, elem_size, boxed_type);
         goc_dict_set(d, key, boxed);
     }
 
     return d;
 }
 
-/**
- * _goc_dict_merge_many(dicts, n) — Merge n dictionaries left-to-right.
- */
 goc_dict* _goc_dict_merge_many(goc_dict** dicts, size_t n)
 {
     if (n == 0) {
@@ -441,9 +397,6 @@ goc_dict* _goc_dict_merge_many(goc_dict** dicts, size_t n)
     return merged;
 }
 
-/**
- * goc_dict_zip_c(keys, vals, n) — Build a dict from paired C arrays.
- */
 goc_dict* goc_dict_zip_c(const char** keys, void** vals, size_t n)
 {
     goc_dict* d = _goc_dict_make_internal(n);
@@ -453,9 +406,6 @@ goc_dict* goc_dict_zip_c(const char** keys, void** vals, size_t n)
     return d;
 }
 
-/**
- * _goc_dict_zip_impl(keys, vals) — Build a dict from two goc_array objects.
- */
 goc_dict* _goc_dict_zip_impl(const goc_array* keys, const goc_array* vals)
 {
     size_t n_keys = goc_array_len(keys);

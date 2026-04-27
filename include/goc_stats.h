@@ -30,6 +30,14 @@ extern "C" {
  * ---------------------------------------------------------------------- */
 
 
+/**
+ * goc_stats_event_type_t — discriminator for the goc_stats_event_t union.
+ *
+ * GOC_STATS_EVENT_POOL_STATUS    : pool created or destroyed.
+ * GOC_STATS_EVENT_WORKER_STATUS  : worker lifecycle change.
+ * GOC_STATS_EVENT_FIBER_STATUS   : fiber created or completed.
+ * GOC_STATS_EVENT_CHANNEL_STATUS : channel opened or closed.
+ */
 typedef enum goc_stats_event_type {
     GOC_STATS_EVENT_POOL_STATUS,
     GOC_STATS_EVENT_WORKER_STATUS,
@@ -37,11 +45,25 @@ typedef enum goc_stats_event_type {
     GOC_STATS_EVENT_CHANNEL_STATUS,
 } goc_stats_event_type_t;
 
+/**
+ * goc_stats_pool_status_t — status value for GOC_STATS_EVENT_POOL_STATUS events.
+ *
+ * GOC_POOL_CREATED   : a new pool has been initialised.
+ * GOC_POOL_DESTROYED : the pool has been shut down and its resources freed.
+ */
 typedef enum goc_stats_pool_status {
     GOC_POOL_CREATED = 0,
     GOC_POOL_DESTROYED = 1,
 } goc_stats_pool_status_t;
 
+/**
+ * goc_stats_worker_status_t — status value for GOC_STATS_EVENT_WORKER_STATUS events.
+ *
+ * GOC_WORKER_CREATED : worker thread has been spawned.
+ * GOC_WORKER_RUNNING : worker is executing a fiber.
+ * GOC_WORKER_IDLE    : worker is parked waiting for work.
+ * GOC_WORKER_STOPPED : worker thread has exited.
+ */
 typedef enum goc_stats_worker_status {
     GOC_WORKER_CREATED = 0,
     GOC_WORKER_RUNNING = 1,
@@ -49,6 +71,12 @@ typedef enum goc_stats_worker_status {
     GOC_WORKER_STOPPED = 3,
 } goc_stats_worker_status_t;
 
+/**
+ * goc_stats_fiber_status_t — status value for GOC_STATS_EVENT_FIBER_STATUS events.
+ *
+ * GOC_FIBER_CREATED   : fiber has been queued for execution.
+ * GOC_FIBER_COMPLETED : fiber entry function has returned.
+ */
 typedef enum goc_stats_fiber_status {
     GOC_FIBER_CREATED   = 0,
     GOC_FIBER_COMPLETED = 1,
@@ -94,22 +122,43 @@ typedef struct goc_stats_event {
  * or cleared at any time (thread-safe).  Setting NULL disables delivery.
  * ---------------------------------------------------------------------- */
 
+/**
+ * goc_stats_callback — event delivery function type.
+ *
+ * ev : the emitted event; valid only for the duration of the call.
+ * ud : opaque user data registered with goc_stats_set_callback().
+ *
+ * Called on the libuv event loop thread with no internal locks held.
+ */
 typedef void (*goc_stats_callback)(const goc_stats_event_t* ev, void* ud);
 
+/**
+ * goc_stats_set_callback() — install (or clear) the event delivery callback.
+ *
+ * cb : function invoked for every emitted event; pass NULL to unregister.
+ * ud : opaque pointer forwarded to cb unchanged.
+ *
+ * Thread-safe. The callback may be replaced or cleared at any time.
+ */
 void goc_stats_set_callback(goc_stats_callback cb, void* ud);
 
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
 
+/** Initialise the stats subsystem. Must be called before any emit macro fires. */
 void goc_stats_init(void);
+/** Shut down the stats subsystem, flushing all pending events. */
 void goc_stats_shutdown(void);
+/** Return true when stats have been initialised and a callback is registered. */
 bool goc_stats_is_enabled(void);
 
-/* Block until the stats delivery loop has drained all in-flight events from
- * the internal queue and delivered them to the registered callback.  Use this
- * before resetting test buffers to avoid a race between the async delivery
- * thread and the consumer. No-op when stats are disabled. */
+/**
+ * goc_stats_flush() — block until all in-flight events have been delivered.
+ *
+ * Use before resetting test buffers to avoid a race between the async delivery
+ * thread and the consumer.  No-op when stats are disabled.
+ */
 void goc_stats_flush(void);
 
 /* -------------------------------------------------------------------------
@@ -124,8 +173,14 @@ void goc_stats_submit_event_fiber(int id, int last_worker_id, int last_pool_id, 
 void goc_stats_submit_event_channel(int id, int status, int buf_size, int item_count,
                                     uint64_t taker_scans, uint64_t putter_scans,
                                     uint64_t compaction_runs, uint64_t entries_removed);
-/* Telemetry accessors — available when GOC_ENABLE_STATS is defined */
+/**
+ * goc_timeout_get_stats() — read aggregate timeout counters.
+ *
+ * allocations : total goc_timeout() calls since process start.
+ * expirations : total timers that have fired since process start.
+ */
 void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
+/** goc_cb_queue_get_hwm() — return the high-water-mark depth of the callback queue. */
 size_t goc_cb_queue_get_hwm(void);
 /*
  * goc_pool_get_steal_stats — read aggregate work-stealing and idle counters.
@@ -148,6 +203,16 @@ void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
 
 /* -------------------------------------------------------------------------
  * Emission macros (no-op unless GOC_ENABLE_STATS is defined)
+ *
+ * GOC_STATS_POOL_STATUS(id, status, thread_count)
+ *   Emit a pool lifecycle event.
+ * GOC_STATS_WORKER_STATUS(id, pool_id, status, pending_jobs, steal_att, steal_suc)
+ *   Emit a worker lifecycle event with work-stealing counters.
+ * GOC_STATS_FIBER_STATUS(id, last_worker_id, last_pool_id, status)
+ *   Emit a fiber lifecycle event.
+ * GOC_STATS_CHANNEL_STATUS(id, status, buf_size, item_count, ts, ps, cr, er)
+ *   Emit a channel lifecycle event (ts=taker_scans, ps=putter_scans,
+ *   cr=compaction_runs, er=entries_removed).
  * ---------------------------------------------------------------------- */
 
 #ifdef GOC_ENABLE_STATS

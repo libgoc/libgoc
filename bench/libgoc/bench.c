@@ -704,11 +704,11 @@ static void bench_http_ping_pong(size_t rounds) {
     g_http_pp.t_meas_start = 0;
     g_http_pp.t_meas_end   = 0;
 
-    goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv_a = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv_a, "POST", "/ping", http_pp_handler_a);
     goc_chan* ready_a = goc_http_server_listen(srv_a, "127.0.0.1", HTTP_PP_PORT_A);
 
-    goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv_b = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv_b, "POST", "/ping", http_pp_handler_b);
     goc_chan* ready_b = goc_http_server_listen(srv_b, "127.0.0.1", HTTP_PP_PORT_B);
 
@@ -815,7 +815,7 @@ static void bench_http_server_throughput(size_t concurrency,
     if (concurrency == 0 || warmup_ms < 0 || measure_ms <= 0)
         return;
 
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/plaintext", http_tp_handler);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", HTTP_TP_PORT));
 

@@ -130,7 +130,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -x
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON -DGOC_BENCH_ASSERTIONS=OFF ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(nproc)
         timeout-minutes: 2
         env:
@@ -185,7 +185,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -x
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON -DLIBGOC_DEBUG=OFF ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON -DLIBGOC_DEBUG=OFF -DGOC_BENCH_ASSERTIONS=OFF ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(sysctl -n hw.ncpu)
         timeout-minutes: 5
         env:
@@ -248,7 +248,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON ${{ matrix.cmake_flags }}
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLIBGOC_STATIC_DEPENDENCIES=ON -DGOC_BENCH_ASSERTIONS=OFF ${{ matrix.cmake_flags }}
           cmake --build build --parallel $(nproc)
         timeout-minutes: 10
         env:

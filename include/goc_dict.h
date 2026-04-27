@@ -70,6 +70,7 @@ goc_dict* _goc_dict_of_impl(const goc_dict_entry_t* kvs, size_t n);
 goc_dict* _goc_dict_of_boxed_impl(size_t elem_size,
                                    size_t pair_size,
                                    size_t val_offset,
+                                   goc_boxed_type_t boxed_type,
                                    const void* pairs,
                                    size_t n);
 
@@ -219,6 +220,7 @@ goc_dict* goc_dict_from_entries(const goc_array* entries);
     _goc_dict_of_boxed_impl(sizeof(T), \
         sizeof(struct { const char* k; T v; }), \
         _GOC_ALIGN_UP(sizeof(const char*), _Alignof(T)), \
+        GOC_BOXED_TYPE(T), \
         (struct { const char* k; T v; }[]){__VA_ARGS__}, \
         sizeof((struct { const char* k; T v; }[]){__VA_ARGS__}) / \
         sizeof(struct { const char* k; T v; }))

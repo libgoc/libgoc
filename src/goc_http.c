@@ -382,7 +382,7 @@ void goc_http_reset_globals(void* ub)
 static void accept_loop_fiber(void* arg);
 static void accept_fd_transfer_fiber(void* arg);
 static void handle_conn_fiber(void* arg);
-static void http_accept_loop(goc_http_server_t* srv,
+static void http_accept_loop(goc_http_server* srv,
                              goc_chan* accept_ch,
                              goc_chan* close_ch,
                              int fallback,
@@ -434,10 +434,10 @@ goc_http_server_opts_t* goc_http_server_opts(void)
     return o;
 }
 
-goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)
+goc_http_server* goc_http_server_make(const goc_http_server_opts_t* opts)
 {
-    goc_http_server_t* srv =
-        (goc_http_server_t*)goc_new(goc_http_server_t);
+    goc_http_server* srv =
+        (goc_http_server*)goc_new(goc_http_server);
 
     srv->middleware = opts ? opts->middleware : NULL;
     srv->close_ch   = goc_chan_make(0);
@@ -456,7 +456,7 @@ goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)
 /* Arg passed to each reuseport_accept_loop_fiber. */
 #ifdef GOC_HTTP_REUSEPORT
 typedef struct {
-    goc_http_server_t*     srv;
+    goc_http_server*     srv;
     struct sockaddr_storage addr;
     socklen_t               addrlen;
     size_t                  slot;         /* index into listener_* arrays */
@@ -464,7 +464,7 @@ typedef struct {
 } reuseport_accept_arg_t;
 #endif
 
-goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port)
+goc_chan* goc_http_server_listen(goc_http_server* srv, const char* host, int port)
 {
     goc_chan* ready_ch = goc_chan_make(1);
 
@@ -624,13 +624,13 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
     return ready_ch;
 }
 
-int goc_http_server_reuseport_listener_count(goc_http_server_t* srv)
+int goc_http_server_reuseport_listener_count(goc_http_server* srv)
 {
     return srv ? (int)srv->n_listeners : 0;
 }
 
 int goc_http_server_reuseport_listener_accept_count(
-        goc_http_server_t* srv, int slot)
+        goc_http_server* srv, int slot)
 {
 #if GOC_ENABLE_STATS
     if (!srv || slot < 0 || (size_t)slot >= srv->n_listeners ||
@@ -645,7 +645,7 @@ int goc_http_server_reuseport_listener_accept_count(
 #endif
 }
 
-goc_chan* goc_http_server_close(goc_http_server_t* srv)
+goc_chan* goc_http_server_close(goc_http_server* srv)
 {
     goc_chan* ch = goc_chan_make(1);
 
@@ -765,7 +765,7 @@ goc_chan* goc_http_server_close(goc_http_server_t* srv)
  * 2. Routing
  * ====================================================================== */
 
-void goc_http_server_route(goc_http_server_t* srv, const char* method,
+void goc_http_server_route(goc_http_server* srv, const char* method,
                       const char* pattern, goc_http_handler_t handler)
 {
     if (srv->n_routes >= srv->cap_routes) {
@@ -828,7 +828,7 @@ static int request_wants_keepalive(const struct phr_header* headers,
  * ====================================================================== */
 
 typedef struct {
-    goc_http_server_t* srv;
+    goc_http_server* srv;
     uv_tcp_t*     conn;
     goc_chan*     close_ch; /* captured at spawn; srv->close_ch may be NULL by the time the fiber runs */
     size_t        slot;
@@ -848,7 +848,7 @@ typedef struct {
 static void reuseport_accept_loop_fiber(void* arg)
 {
     reuseport_accept_arg_t* a   = (reuseport_accept_arg_t*)arg;
-    goc_http_server_t*      srv = a->srv;
+    goc_http_server*      srv = a->srv;
     size_t                  slot = a->slot;
     goc_chan*               slot_ready_ch = a->slot_ready_ch;
     goc_chan*               close_ch = srv->close_ch;
@@ -1035,14 +1035,14 @@ static uv_os_fd_t sock_dup(uv_os_fd_t fd)
 /* Carries a dup'd socket fd to a target worker for re-opening on that
  * worker's loop, so epoll/kqueue ownership moves off the accept worker. */
 typedef struct {
-    goc_http_server_t* srv;
+    goc_http_server* srv;
     uv_os_fd_t         fd;
     goc_chan*          close_ch;
 } accept_fd_arg_t;
 
 static void handle_conn_fiber(void* arg);
 
-static void http_dispatch_conn(goc_http_server_t* srv, goc_pool* pool,
+static void http_dispatch_conn(goc_http_server* srv, goc_pool* pool,
                                size_t target_worker, uv_tcp_t* conn,
                                goc_chan* close_ch, size_t slot)
 {
@@ -1065,7 +1065,7 @@ static void http_dispatch_conn(goc_http_server_t* srv, goc_pool* pool,
  * unsupported there: kqueue ties events to the fd-number and fires spurious
  * events when two instances watch the same socket; IOCP allows only one
  * completion-port association per socket. */
-static int http_accept_dispatch(goc_http_server_t* srv,
+static int http_accept_dispatch(goc_http_server* srv,
                                 goc_pool*           pool,
                                 size_t              target_worker,
                                 uv_tcp_t*           conn,
@@ -1098,7 +1098,7 @@ static int http_accept_dispatch(goc_http_server_t* srv,
 static void accept_fd_transfer_fiber(void* arg)
 {
     accept_fd_arg_t*   a        = (accept_fd_arg_t*)arg;
-    goc_http_server_t* srv      = a->srv;
+    goc_http_server* srv      = a->srv;
     uv_os_fd_t         raw_fd   = a->fd;
     goc_chan*          close_ch = a->close_ch;
     free(a);
@@ -1135,13 +1135,13 @@ static void accept_fd_transfer_fiber(void* arg)
 
 static void accept_loop_fiber(void* arg)
 {
-    goc_http_server_t* srv      = (goc_http_server_t*)arg;
+    goc_http_server* srv      = (goc_http_server*)arg;
     goc_chan*     accept_ch = srv->accept_ch; /* cache before any yield point */
     goc_chan*     close_ch  = srv->close_ch;  /* cache before any yield point */
     http_accept_loop(srv, accept_ch, close_ch, 1, SIZE_MAX);
 }
 
-static void http_accept_loop(goc_http_server_t* srv,
+static void http_accept_loop(goc_http_server* srv,
                              goc_chan* accept_ch,
                              goc_chan* close_ch,
                              int fallback,
@@ -1253,7 +1253,7 @@ static void handle_conn_fiber(void* arg)
 {
     static _Atomic uint64_t s_conn_fiber_seq = 0;
     conn_arg_t*   a    = (conn_arg_t*)arg;
-    goc_http_server_t* srv  = a->srv;
+    goc_http_server* srv  = a->srv;
     uv_tcp_t*     conn = a->conn;
     goc_chan*     close_ch = a->close_ch;
     size_t        slot = a->slot;

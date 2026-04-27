@@ -373,12 +373,12 @@ static uv_mutex_t g_live_mutex;   /* plain malloc; not GC-heap (uv constraint) *
  * Thread-safety: protected by g_live_uv_mutex.
  * ---------------------------------------------------------------------------*/
 
-static void** live_uv_handles     = NULL;  /* GC_malloc'd array */
-static size_t        live_uv_handles_len = 0;
-static size_t        live_uv_handles_cap = 0;
-static uv_mutex_t    g_live_uv_mutex;
+static void**      live_uv_handles     = NULL;  /* GC_malloc'd array */
+static size_t      live_uv_handles_len = 0;
+static size_t      live_uv_handles_cap = 0;
+static uv_mutex_t  g_live_uv_mutex;
 static uv_thread_t g_main_thread;
-static bool       g_main_thread_set = false;
+static bool        g_main_thread_set   = false;
 
 __attribute__((constructor))
 static void capture_main_thread_at_load(void)
@@ -411,17 +411,19 @@ void* goc_malloc(size_t n) {
     return p;
 }
 
-void* _goc_box_impl(const void* val, size_t size) {
-    void* p = goc_malloc(size);
-    memcpy(p, val, size);
-    return p;
+void* _goc_box_impl(const void* val, size_t size, goc_boxed_type_t type) {
+    size_t total = sizeof(goc_boxed_header_t) + size;
+    goc_boxed_header_t* hdr = (goc_boxed_header_t*)goc_malloc(total);
+    hdr->type = type;
+    hdr->size = size;
+    void* payload = (char*)hdr + sizeof(goc_boxed_header_t);
+    memcpy(payload, val, size);
+    return payload;
 }
 
 void* _goc_unbox_check(const void* x) {
-    if (x == NULL) {
-        fprintf(stderr, "libgoc: goc_unbox: null pointer\n");
-        abort();
-    }
+    if (x == NULL)
+        ABORT("libgoc: goc_unbox: null pointer\n");
     return (void*)x;
 }
 
@@ -628,11 +630,11 @@ void goc_init(void) {
     /* Step 2 — Allow worker threads to register themselves with the GC. */
     GC_allow_register_threads();
 
+    /* Step 3.0 — Lifecycle hook registry (must precede any goc_register_lifecycle_hook call). */
+    uv_mutex_init(&g_lifecycle_hook_lock);
+
     /* Step 3 — Live-channels registry (this file). */
     live_channels_init();
-
-    /* Step 3.0 — Lifecycle hook registry. */
-    uv_mutex_init(&g_lifecycle_hook_lock);
 
     /* Step 3.1 — Live UV-handle channel registry (this file). */
     live_uv_handles_init();
@@ -648,6 +650,7 @@ void goc_init(void) {
 
     /* Step 5 — libuv event loop + loop thread (loop.c). */
     loop_init();
+    goc_run_lifecycle_hooks(GOC_LIFECYCLE_HOOK_PRE_LOOP_INIT, NULL);
     goc_run_lifecycle_hooks(GOC_LIFECYCLE_HOOK_POST_LOOP_INIT, NULL);
 
     /* Step 6 — Default fiber pool.

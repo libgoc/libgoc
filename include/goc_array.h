@@ -93,10 +93,14 @@ goc_array* goc_array_from(void** items, size_t n);
  */
 #define goc_array_of_boxed(T, ...) \
     _goc_array_of_boxed_impl((T[]){__VA_ARGS__}, sizeof(T), \
+                              GOC_BOXED_TYPE(T), \
                               sizeof((T[]){__VA_ARGS__}) / sizeof(T))
 
 /* internal — use goc_array_of_boxed */
-goc_array* _goc_array_of_boxed_impl(const void* elems, size_t elem_size, size_t n);
+goc_array* _goc_array_of_boxed_impl(const void* elems,
+                                     size_t elem_size,
+                                     goc_boxed_type_t boxed_type,
+                                     size_t n);
 
 /**
  * goc_array_copy() — Return a shallow copy of arr with an independent backing buffer.

@@ -88,12 +88,12 @@ static void main_fiber(void* _) {
     done = goc_chan_make(0);
 
     goc_http_server_opts_t* opts_a = goc_http_server_opts();
-    goc_http_server_t* a = goc_http_server_make(opts_a);
+    goc_http_server* a = goc_http_server_make(opts_a);
     goc_http_server_route(a, "POST", "/ping", handler_a);
     goc_chan* ready_a = goc_http_server_listen(a, "127.0.0.1", 8080);
 
     goc_http_server_opts_t* opts_b = goc_http_server_opts();
-    goc_http_server_t* b = goc_http_server_make(opts_b);
+    goc_http_server* b = goc_http_server_make(opts_b);
     goc_http_server_route(b, "POST", "/ping", handler_b);
     goc_chan* ready_b = goc_http_server_listen(b, "127.0.0.1", 8081);
 
@@ -199,9 +199,9 @@ typedef enum {
 ## Data Structures
 
 ```c
-/* goc_http_server_t — opaque server object.
+/* goc_http_server — opaque server object.
  * Created by goc_http_server_make(); destroyed by goc_http_server_close(). */
-typedef struct goc_http_server goc_http_server_t;
+typedef struct goc_http_server goc_http_server;
 
 /* goc_http_ctx_t — per-request context passed to handler fibers.
  * Valid only for the lifetime of the handler (until goc_http_server_respond*
@@ -238,7 +238,7 @@ typedef goc_http_status_t (*goc_http_middleware_t)(goc_http_ctx_t* ctx);
  * Example (one middleware):
  *   goc_http_server_opts_t* opts = goc_http_server_opts();
  *   opts->middleware = goc_array_of(auth_mw);
- *   goc_http_server_t* srv = goc_http_server_make(opts);
+ *   goc_http_server* srv = goc_http_server_make(opts);
  */
 typedef struct {
     /* Middleware chain executed in order inside the per-request fiber before
@@ -280,15 +280,15 @@ typedef struct {
 | Function | Signature | Description |
 |---|---|---|
 | `goc_http_server_opts` | `goc_http_server_opts_t* goc_http_server_opts(void)` | Allocate and return a default options struct. `middleware` defaults to NULL. |
-| `goc_http_server_make` | `goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts)` | Allocate and initialise a server from `opts`. Returns a GC-managed pointer. Never returns NULL (aborts on failure). |
-| `goc_http_server_listen` | `goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port)` | Bind and start listening on `host:port`. On Linux with SO_REUSEPORT and a pool of size ≥ 2, creates one listener per worker for kernel-level load balancing. Falls back to a single listener otherwise. Returns a channel that delivers `goc_box(int, rc)` once all listeners are ready (rc == 0 = ready; rc < 0 = first libuv error). Always `goc_take()` the channel before sending requests. |
-| `goc_http_server_reuseport_listener_count` | `int goc_http_server_reuseport_listener_count(goc_http_server_t* srv)` | Return the number of active SO_REUSEPORT listener slots for the server. Returns 0 on single-listener mode or if `srv` is NULL. |
-| `goc_http_server_reuseport_listener_accept_count` | `int goc_http_server_reuseport_listener_accept_count(goc_http_server_t* srv, int slot)` | Return the number of accepted connections handled by the given reuseport listener slot. Meaningful only when `GOC_ENABLE_STATS` is enabled; otherwise returns 0. Returns 0 for single-listener mode or invalid slot numbers. |
-| `goc_http_server_close` | `goc_chan* goc_http_server_close(goc_http_server_t* srv)` | Gracefully stop accepting new connections and drain in-flight requests. Returns a channel delivering `goc_box(int, 0)` when shutdown is complete. Safe from any context. |
+| `goc_http_server_make` | `goc_http_server* goc_http_server_make(const goc_http_server_opts_t* opts)` | Allocate and initialise a server from `opts`. Returns a GC-managed pointer. Never returns NULL (aborts on failure). |
+| `goc_http_server_listen` | `goc_chan* goc_http_server_listen(goc_http_server* srv, const char* host, int port)` | Bind and start listening on `host:port`. On Linux with SO_REUSEPORT and a pool of size ≥ 2, creates one listener per worker for kernel-level load balancing. Falls back to a single listener otherwise. Returns a channel that delivers `goc_box(int, rc)` once all listeners are ready (rc == 0 = ready; rc < 0 = first libuv error). Always `goc_take()` the channel before sending requests. |
+| `goc_http_server_reuseport_listener_count` | `int goc_http_server_reuseport_listener_count(goc_http_server* srv)` | Return the number of active SO_REUSEPORT listener slots for the server. Returns 0 on single-listener mode or if `srv` is NULL. |
+| `goc_http_server_reuseport_listener_accept_count` | `int goc_http_server_reuseport_listener_accept_count(goc_http_server* srv, int slot)` | Return the number of accepted connections handled by the given reuseport listener slot. Meaningful only when `GOC_ENABLE_STATS` is enabled; otherwise returns 0. Returns 0 for single-listener mode or invalid slot numbers. |
+| `goc_http_server_close` | `goc_chan* goc_http_server_close(goc_http_server* srv)` | Gracefully stop accepting new connections and drain in-flight requests. Returns a channel delivering `goc_box(int, 0)` when shutdown is complete. Safe from any context. |
 
 ```c
 goc_http_server_opts_t* opts = goc_http_server_opts();
-goc_http_server_t* srv = goc_http_server_make(opts);
+goc_http_server* srv = goc_http_server_make(opts);
 goc_chan* ready = goc_http_server_listen(srv, "0.0.0.0", 8080);
 goc_val_t* ready_val = goc_take(ready);
 int rc = (int)goc_unbox(int, ready_val->val);
@@ -310,7 +310,7 @@ A route pattern is a path prefix string; exact matching and simple wildcards
 
 | Function | Signature | Description |
 |---|---|---|
-| `goc_http_server_route` | `void goc_http_server_route(goc_http_server_t* srv, const char* method, const char* pattern, goc_http_handler_t handler)` | Register a route. `method` may be `"GET"`, `"POST"`, etc., or `"*"` to match any method. `pattern` is matched as a path prefix; use `"/*"` to match all paths. Must be called before `goc_http_server_listen`. |
+| `goc_http_server_route` | `void goc_http_server_route(goc_http_server* srv, const char* method, const char* pattern, goc_http_handler_t handler)` | Register a route. `method` may be `"GET"`, `"POST"`, etc., or `"*"` to match any method. `pattern` is matched as a path prefix; use `"/*"` to match all paths. Must be called before `goc_http_server_listen`. |
 
 ```c
 goc_http_server_route(srv, "GET",  "/api/ping",  ping_handler);
@@ -394,7 +394,7 @@ goc_http_status_t auth_middleware(goc_http_ctx_t* ctx) {
 
 goc_http_server_opts_t* opts = goc_http_server_opts();
 opts->middleware = goc_array_of(auth_middleware);
-goc_http_server_t* srv = goc_http_server_make(opts);
+goc_http_server* srv = goc_http_server_make(opts);
 ```
 
 ---

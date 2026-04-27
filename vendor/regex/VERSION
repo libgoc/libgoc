@@ -1,0 +1,15 @@
+upstream: TRE regex library (https://github.com/laurikari/tre)
+version:  TRE 0.8.0 (as vendored in musl libc 1.2.4)
+source:   https://musl.libc.org/releases/musl-1.2.4.tar.gz
+files:    src/regex/regcomp.c, src/regex/regexec.c, src/regex/regerror.c,
+          src/regex/tre.h, src/regex/tre-mem.c
+
+local patches:
+  - vendor/regex/regex.h: new portable POSIX header (replaces musl's
+    include/regex.h which depends on musl-internal bits/alltypes.h);
+    also defines CHARCLASS_NAME_MAX and RE_DUP_MAX for runtimes that
+    omit them (e.g. MinGW UCRT64)
+  - vendor/regex/tre.h: added portable 'hidden' visibility macro;
+    guarded NDEBUG with #ifndef to avoid redefinition warnings
+  - vendor/regex/regerror.c: replaced #include "locale_impl.h" with
+    #define LCTRANS_CUR(s) (s) to remove musl-internal dependency

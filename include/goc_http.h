@@ -64,9 +64,9 @@ typedef enum {
  * Data structures
  * ====================================================================== */
 
-/* goc_http_server_t — opaque server object.
+/* goc_http_server — opaque server object.
  * Created by goc_http_server_make(); destroyed by goc_http_server_close(). */
-typedef struct goc_http_server goc_http_server_t;
+typedef struct goc_http_server goc_http_server;
 
 /* goc_http_header_t — a single HTTP header name/value pair.
  * Both fields are GC-managed null-terminated strings. */
@@ -104,12 +104,12 @@ typedef goc_http_status_t (*goc_http_middleware_t)(goc_http_ctx_t* ctx);
  * set only the fields you need.
  *
  * Example (all defaults):
- *   goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+ *   goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
  *
  * Example (one middleware):
  *   goc_http_server_opts_t* opts = goc_http_server_opts();
  *   opts->middleware = goc_array_of(auth_mw);
- *   goc_http_server_t* srv = goc_http_server_make(opts);
+ *   goc_http_server* srv = goc_http_server_make(opts);
  */
 typedef struct {
     /* Middleware chain executed in order inside the per-request fiber before
@@ -166,7 +166,7 @@ goc_http_server_opts_t* goc_http_server_opts(void);
  * Returns a GC-managed pointer.  Never returns NULL (aborts on failure).
  * Store routes with goc_http_server_route() before calling goc_http_server_listen().
  */
-goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts);
+goc_http_server* goc_http_server_make(const goc_http_server_opts_t* opts);
 
 /**
  * goc_http_server_listen — bind and start listening on host:port.
@@ -183,7 +183,7 @@ goc_http_server_t* goc_http_server_make(const goc_http_server_opts_t* opts);
  *   goc_chan* ready = goc_http_server_listen(srv, host, port);
  *   goc_take(ready);
  */
-goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int port);
+goc_chan* goc_http_server_listen(goc_http_server* srv, const char* host, int port);
 
 /**
  * goc_http_server_reuseport_listener_count — return the number of active
@@ -191,7 +191,7 @@ goc_chan* goc_http_server_listen(goc_http_server_t* srv, const char* host, int p
  *
  * Returns 0 for the single-listener path.
  */
-int goc_http_server_reuseport_listener_count(goc_http_server_t* srv);
+int goc_http_server_reuseport_listener_count(goc_http_server* srv);
 
 /**
  * goc_http_server_reuseport_listener_accept_count — return the number of
@@ -203,7 +203,7 @@ int goc_http_server_reuseport_listener_count(goc_http_server_t* srv);
  * Returns 0 for single-listener mode or invalid slot numbers.
  */
 int goc_http_server_reuseport_listener_accept_count(
-        goc_http_server_t* srv, int slot);
+        goc_http_server* srv, int slot);
 
 /**
  * goc_http_server_close — gracefully stop the server.
@@ -212,7 +212,7 @@ int goc_http_server_reuseport_listener_accept_count(
  * Waits for all active connections to close before completing shutdown.
  * Returns a channel delivering goc_box(int, 0) when shutdown is complete.
  */
-goc_chan* goc_http_server_close(goc_http_server_t* srv);
+goc_chan* goc_http_server_close(goc_http_server* srv);
 
 /* =========================================================================
  * 2. Routing
@@ -229,7 +229,7 @@ goc_chan* goc_http_server_close(goc_http_server_t* srv);
  * Unmatched requests receive an automatic 404 Not Found.
  * Must be called before goc_http_server_listen().
  */
-void goc_http_server_route(goc_http_server_t* srv, const char* method,
+void goc_http_server_route(goc_http_server* srv, const char* method,
                       const char* pattern, goc_http_handler_t handler);
 
 /* =========================================================================

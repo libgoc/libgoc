@@ -67,9 +67,15 @@ extern "C" {
  * I/O operation status
  * ====================================================================== */
 
+/**
+ * goc_io_status_t — success/failure flag embedded in compound I/O result types.
+ *
+ * GOC_IO_ERR : the I/O operation failed; check the libuv error code for details.
+ * GOC_IO_OK  : the I/O operation completed successfully.
+ */
 typedef enum {
-    GOC_IO_ERR =  0,  /* I/O operation failed                  */
-    GOC_IO_OK  =  1,  /* I/O operation completed successfully   */
+    GOC_IO_ERR =  0,
+    GOC_IO_OK  =  1,
 } goc_io_status_t;
 
 /* =========================================================================
@@ -135,7 +141,11 @@ typedef struct {
     uv_stat_t    statbuf;
 } goc_io_fs_stat_t;
 
-/* Forward declaration — definition is opaque (lives in goc_io.c). */
+/**
+ * goc_io_fs_write_stream_t — opaque handle for a streaming file write session.
+ * Created by goc_io_fs_write_stream_make(); passed to
+ * goc_io_fs_write_stream_write() and goc_io_fs_write_stream_end().
+ */
 typedef struct goc_io_fs_write_stream goc_io_fs_write_stream_t;
 
 #include "goc_array.h"
@@ -1067,7 +1077,14 @@ void goc_io_handle_unregister(uv_handle_t* handle);
  */
 goc_chan* goc_io_handle_close(uv_handle_t* handle);
 
-/** Handle wrapper for ownership and close-state tracking. */
+/**
+ * goc_io_handle_state_t — lifecycle state of a goc_io_handle_t wrapper.
+ *
+ * GOC_H_OPEN    : handle is active; I/O may proceed.
+ * GOC_H_QUEUED  : a close has been requested but not yet dispatched to the loop.
+ * GOC_H_CLOSING : uv_close has been called; waiting for the close callback.
+ * GOC_H_CLOSED  : uv_close callback has fired; handle is no longer active.
+ */
 typedef enum {
     GOC_H_OPEN,
     GOC_H_QUEUED,
@@ -1075,6 +1092,7 @@ typedef enum {
     GOC_H_CLOSED,
 } goc_io_handle_state_t;
 
+/** goc_io_handle_t — opaque wrapper tracking ownership and close state of a uv handle. */
 typedef struct goc_io_handle goc_io_handle_t;
 
 /** Wrap a raw uv handle for owner-safe close tracking. */

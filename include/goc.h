@@ -22,7 +22,25 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <complex.h>
 #include <uv.h>
+
+#ifndef __uchar_defined
+typedef unsigned char  uchar;
+#  define __uchar_defined
+#endif
+#ifndef __ushort_defined
+typedef unsigned short ushort;
+#  define __ushort_defined
+#endif
+#ifndef __uint_defined
+typedef unsigned int   uint;
+#  define __uint_defined
+#endif
+#ifndef __ulong_defined
+typedef unsigned long  ulong;
+#  define __ulong_defined
+#endif
 
 /* -------------------------------------------------------------------------
  * Debug logging macro
@@ -55,10 +73,15 @@ extern "C" {
 #endif
 
 #ifdef LIBGOC_DEBUG
+/** Append a formatted message to the in-process debug ring buffer. */
 void goc_dbg_log(const char *fmt, ...);
+/** Flush buffered debug messages to stderr; safe to call from any thread. */
 void goc_dbg_flush(void);
+/** Flush buffered debug messages to stderr; async-signal-safe (for crash handlers). */
 void goc_dbg_flush_signal_safe(void);
+/** Enable debug capture; messages emitted before this call are ignored. */
 void goc_dbg_start(void);
+/** Disable debug capture; messages emitted after this call are ignored. */
 void goc_dbg_stop(void);
 #endif
 
@@ -66,20 +89,37 @@ void goc_dbg_stop(void);
  * Opaque types
  * ---------------------------------------------------------------------- */
 
+/** Opaque channel handle. Created with goc_chan_make(); GC-managed. */
 typedef struct goc_chan goc_chan;
+/** Opaque thread-pool handle. Created with goc_pool_make(); GC-managed. */
 typedef struct goc_pool goc_pool;
+/** Opaque RW-mutex handle. Created with goc_mutex_make(); GC-managed. */
 typedef struct goc_mutex goc_mutex;
 
 /* -------------------------------------------------------------------------
  * Status and value types
  * ---------------------------------------------------------------------- */
 
+/**
+ * goc_status_t — result code returned by channel send/receive operations.
+ *
+ * GOC_EMPTY  : channel is open but no value was immediately available
+ *              (returned only by goc_take_try).
+ * GOC_CLOSED : channel is closed; no more values will be delivered.
+ * GOC_OK     : a value was delivered successfully.
+ */
 typedef enum {
-    GOC_EMPTY  = -1,  /* channel open but no value available (goc_take_try only) */
-    GOC_CLOSED =  0,  /* channel was closed                                       */
-    GOC_OK     =  1,  /* value delivered successfully                             */
+    GOC_EMPTY  = -1,
+    GOC_CLOSED =  0,
+    GOC_OK     =  1,
 } goc_status_t;
 
+/**
+ * goc_val_t — value-and-status pair returned by channel take operations.
+ *
+ * val : the received value; meaningful only when ok == GOC_OK.
+ * ok  : GOC_OK, GOC_CLOSED, or (from goc_take_try) GOC_EMPTY.
+ */
 typedef struct {
     void*        val;
     goc_status_t ok;
@@ -89,6 +129,12 @@ typedef struct {
  * Drain result type
  * ---------------------------------------------------------------------- */
 
+/**
+ * goc_drain_result_t — outcome of goc_pool_destroy_timeout().
+ *
+ * GOC_DRAIN_OK      : all fibers completed within the deadline; pool destroyed.
+ * GOC_DRAIN_TIMEOUT : deadline elapsed; pool is still running.
+ */
 typedef enum {
     GOC_DRAIN_OK      = 0,
     GOC_DRAIN_TIMEOUT = 1,
@@ -98,18 +144,39 @@ typedef enum {
  * Select types
  * ---------------------------------------------------------------------- */
 
+/**
+ * goc_alt_kind_t — kind of a single arm in a goc_alts() / goc_alts_sync() call.
+ *
+ * GOC_ALT_TAKE    : receive a value from ch.
+ * GOC_ALT_PUT     : send put_val to ch.
+ * GOC_ALT_DEFAULT : fires immediately if no other arm is ready; ch must be NULL.
+ */
 typedef enum {
     GOC_ALT_TAKE,
     GOC_ALT_PUT,
     GOC_ALT_DEFAULT,
 } goc_alt_kind_t;
 
+/**
+ * goc_alt_op_t — descriptor for one arm of a goc_alts() / goc_alts_sync() call.
+ *
+ * ch      : channel this arm operates on; NULL for GOC_ALT_DEFAULT.
+ * op_kind : GOC_ALT_TAKE, GOC_ALT_PUT, or GOC_ALT_DEFAULT.
+ * put_val : value to send; used only when op_kind == GOC_ALT_PUT.
+ */
 typedef struct {
     goc_chan*      ch;
     goc_alt_kind_t op_kind;
     void*          put_val;
 } goc_alt_op_t;
 
+/**
+ * goc_alts_result_t — result returned by goc_alts() / goc_alts_sync().
+ *
+ * ch    : channel pointer of the winning arm; NULL when GOC_ALT_DEFAULT fired.
+ * value : received value and ok flag.  For put arms value.val is NULL;
+ *         value.ok is GOC_OK on success or GOC_CLOSED if the channel closed.
+ */
 typedef struct {
     goc_chan* ch;
     goc_val_t value;
@@ -234,13 +301,50 @@ char* goc_sprintf(const char* fmt, ...);
  *   goc_array_push(arr, goc_box(int, 42));
  *   intptr_t n = goc_unbox(int, goc_array_get(arr, 0));
  * ---------------------------------------------------------------------- */
+/**
+ * goc_boxed_type_t — runtime type tag embedded in every goc_box() allocation.
+ *
+ * GOC_BOXED_TYPE_UNKNOWN : type not in the known set (struct, raw pointer, etc.).
+ * GOC_BOXED_TYPE_BOOL    : bool value.
+ * GOC_BOXED_TYPE_INT     : signed integer value (any width).
+ * GOC_BOXED_TYPE_UINT    : unsigned integer value (any width, excluding byte).
+ * GOC_BOXED_TYPE_BYTE    : signed byte value (char / signed char only).
+ * GOC_BOXED_TYPE_UBYTE   : unsigned byte value (unsigned char only).
+ * GOC_BOXED_TYPE_REAL    : floating-point value.
+ */
+typedef enum {
+    GOC_BOXED_TYPE_UNKNOWN = 0,
+    GOC_BOXED_TYPE_BOOL,
+    GOC_BOXED_TYPE_INT,
+    GOC_BOXED_TYPE_UINT,
+    GOC_BOXED_TYPE_BYTE,
+    GOC_BOXED_TYPE_UBYTE,
+    GOC_BOXED_TYPE_REAL,
+    GOC_BOXED_TYPE_COMPLEX,
+    GOC_BOXED_TYPE_MAX,
+} goc_boxed_type_t;
+
+/**
+ * goc_boxed_header_t — header prepended to every goc_box() allocation.
+ *
+ * type : runtime type tag (goc_boxed_type_t).
+ * size : size of the boxed value in bytes.
+ *
+ * The header immediately precedes the boxed value in memory.  It is written
+ * by _goc_box_impl and read by _goc_unbox_check for safety assertions.
+ * Callers must not manipulate this header directly.
+ */
+typedef struct {
+    goc_boxed_type_t type;
+    size_t           size;
+} goc_boxed_header_t;
 
 /**
  * _goc_box_impl() — Allocate a GC-managed copy of `size` bytes at `val`.
  *
  * Internal. Do not call directly — use the goc_box(T, val) macro instead.
  */
-void* _goc_box_impl(const void* val, size_t size);
+void* _goc_box_impl(const void* val, size_t size, goc_boxed_type_t type);
 
 /**
  * goc_new(T) — Allocate a single value of type T on the GC heap.
@@ -259,11 +363,43 @@ void* _goc_box_impl(const void* val, size_t size);
 #define goc_new_n(T, n)       ((T*)goc_malloc((n) * sizeof(T)))
 
 /**
+ * GOC_BOXED_TYPE(T) — resolve the goc_boxed_type_t tag for type T at compile time.
+ *
+ * Maps bool→GOC_BOXED_TYPE_BOOL, char / signed char→GOC_BOXED_TYPE_BYTE,
+ * unsigned char→GOC_BOXED_TYPE_UBYTE, signed integer types → GOC_BOXED_TYPE_INT,
+ * unsigned integer types → GOC_BOXED_TYPE_UINT, real types → GOC_BOXED_TYPE_REAL.
+ * Typedef aliases such as int64_t, size_t, ssize_t, and ptrdiff_t are transparent
+ * to _Generic and resolve to the underlying base type.
+ * Used internally by goc_box().
+ */
+#define GOC_BOXED_TYPE(T)                                    \
+    _Generic(((T*)0),                                        \
+        bool*:                GOC_BOXED_TYPE_BOOL,           \
+        char*:                GOC_BOXED_TYPE_BYTE,           \
+        signed char*:         GOC_BOXED_TYPE_BYTE,           \
+        unsigned char*:       GOC_BOXED_TYPE_UBYTE,          \
+        short*:               GOC_BOXED_TYPE_INT,            \
+        unsigned short*:      GOC_BOXED_TYPE_UINT,           \
+        int*:                 GOC_BOXED_TYPE_INT,            \
+        unsigned int*:        GOC_BOXED_TYPE_UINT,           \
+        long*:                GOC_BOXED_TYPE_INT,            \
+        unsigned long*:       GOC_BOXED_TYPE_UINT,           \
+        long long*:           GOC_BOXED_TYPE_INT,            \
+        unsigned long long*:  GOC_BOXED_TYPE_UINT,           \
+        float*:               GOC_BOXED_TYPE_REAL,           \
+        double*:              GOC_BOXED_TYPE_REAL,           \
+        long double*:         GOC_BOXED_TYPE_REAL,           \
+        float complex*:       GOC_BOXED_TYPE_COMPLEX,        \
+        double complex*:      GOC_BOXED_TYPE_COMPLEX,        \
+        long double complex*: GOC_BOXED_TYPE_COMPLEX,        \
+        default:              GOC_BOXED_TYPE_UNKNOWN)
+
+/**
  * goc_box(T, val) — Allocate a GC-managed copy of scalar val.
  *
  * Returns a typed T* pointer to the boxed value.
  */
-#define goc_box(T, val)       ((T*)_goc_box_impl(&(T){(val)}, sizeof(T)))
+#define goc_box(T, val)       ((T*)_goc_box_impl(&(T){(val)}, sizeof(T), GOC_BOXED_TYPE(T)))
 
 void* _goc_unbox_check(const void* x);
 
