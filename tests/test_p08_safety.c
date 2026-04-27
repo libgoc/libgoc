@@ -67,6 +67,8 @@
  *          fork + waitpid asserting SIGABRT
  *   P8.11  goc_alts_sync() called from a fiber → abort(); verified via
  *          fork + waitpid asserting SIGABRT
+ *   P8.12  goc_unbox(NULL) → abort(); verified via
+ *          fork + waitpid asserting SIGABRT
  *
  * Notes:
  *   - goc_init() is called once in the parent main() before forking, but
@@ -577,6 +579,22 @@ static void test_p8_11(void) {
 done:;
 }
 
+static void p8_12_child_fn(void* arg) {
+    (void)arg;
+
+    /* Calling goc_unbox on a NULL boxed pointer must abort with a libgoc error. */
+    goc_unbox(int, NULL);
+    /* Unreachable. */
+}
+
+static void test_p8_12(void) {
+    TEST_BEGIN("P8.12  goc_unbox(NULL) → abort()");
+    bool got_sigabrt = fork_expect_sigabrt(p8_12_child_fn, NULL);
+    ASSERT(got_sigabrt);
+    TEST_PASS();
+done:;
+}
+
 #else  /* _WIN32 — fork/waitpid not available; skip all P8 tests */
 
 #define P8_SKIP(num, label) \
@@ -597,6 +615,7 @@ P8_SKIP(8,  "P8.8   goc_shutdown() from non-main pthread → abort()")
 P8_SKIP(9,  "P8.9   goc_take_sync() from fiber context → abort()")
 P8_SKIP(10, "P8.10  goc_put_sync() from fiber context → abort()")
 P8_SKIP(11, "P8.11  goc_alts_sync() from fiber context → abort()")
+P8_SKIP(12, "P8.12  goc_unbox(NULL) → abort()")
 
 #undef P8_SKIP
 
@@ -634,6 +653,7 @@ int main(void) {
     test_p8_9();
     test_p8_10();
     test_p8_11();
+    test_p8_12();
 
     printf("\n");
     goc_shutdown();

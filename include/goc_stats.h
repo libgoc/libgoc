@@ -6,6 +6,8 @@
  * call uv_async_send; the callback is always invoked on the libuv loop thread
  * with no internal locks held, so it may safely access loop-thread state.
  *
+ * Copyright (c) Divyansh Prakash
+ *
  * Typical usage:
  *   goc_stats_init();
  *   goc_stats_set_callback(my_cb, my_ud);

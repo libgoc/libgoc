@@ -6,6 +6,8 @@
  * built on goc_io TCP and the vendored picohttpparser (MIT) — no additional
  * runtime dependencies beyond libuv.
  *
+ * Copyright (c) Divyansh Prakash
+ *
  * Design
  * ------
  * Server: goc_http_server_listen binds a GC-managed uv_tcp_t and calls
