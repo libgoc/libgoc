@@ -32,7 +32,8 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 **Helper libraries:**
 - [Async I/O](./docs/IO.md)
 - [Async HTTP Client/Server](./docs/HTTP.md)
-- [Dynamic Array](./docs/ARRAY.md)
+- [Dynamic Arrays](./docs/ARRAY.md)
+- [Dictionaries](./docs/DICT.md)
 - [Telemetry](./docs/TELEMETRY.md)
 
 **Also see:**
@@ -952,4 +953,4 @@ ctest --test-dir build-tsan --output-on-failure
 
 ---
 
-*(C) Divyansh Prakash, 2026 | [MIT License](./LICENSE)*
+*Copyright (c) Divyansh Prakash | [MIT License](./LICENSE)*

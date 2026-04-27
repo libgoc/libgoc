@@ -4,6 +4,8 @@
  * Provides channel-returning wrappers for libuv I/O functions across four
  * categories: Stream I/O, UDP datagrams, File System, and DNS resolution.
  *
+ * Copyright (c) Divyansh Prakash
+ *
  * Design
  * ------
  * Each libuv operation is exposed as a single function that returns goc_chan*.

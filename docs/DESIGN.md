@@ -34,6 +34,7 @@
 23. [HTTP Server (`goc_http`)](#http-server-goc_http)
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
+> **Ordered Dictionary:** For `goc_dict` design rationale and full API see [DICT.md](./DICT.md).
 > **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
 > **HTTP Server:** For full `goc_http` design and API rationale see [HTTP.md](./HTTP.md).
 > **I/O Wrappers:** For full `goc_io` API reference see [IO.md](./IO.md).
@@ -61,6 +62,7 @@ libgoc/
 │   ├── goc.h              # Public API header
 │   ├── goc_io.h           # Async I/O wrappers public API (separate include)
 │   ├── goc_array.h        # Dynamic array public API
+│   ├── goc_dict.h         # Ordered dictionary public API
 │   ├── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
 │   └── goc_http.h       # HTTP server public API (separate include)
 ├── src/
@@ -73,6 +75,7 @@ libgoc/
 │   ├── channel.c          # Channel operations
 │   ├── mutex.c            # RW mutexes (channel-backed lock handles)
 │   ├── goc_array.c        # Dynamic array (goc_array)
+│   ├── goc_dict.c         # Ordered dictionary (goc_dict)
 │   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── goc_stats.c        # Telemetry implementation (compiled only when GOC_ENABLE_STATS is set)
 │   ├── goc_http.c       # HTTP/1.1 server and client (picohttpparser + goc_io; see goc_http.h)
@@ -86,6 +89,7 @@ libgoc/
 │   ├── test_harness.c               # Shared harness implementation (compiled into every test binary)
 │   ├── test_p01_foundation.c        # Phase 1  — Foundation
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
+│   ├── test_goc_dict.c              # Component — goc_dict ordered dictionary
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
@@ -1730,6 +1734,31 @@ Builds only the named test target (`cmake --build "$BUILD_DIR" --target "$test_n
 | `test_array_set_boxed` | `goc_array_set_boxed(int, arr, i, 99)` overwrites; adjacent elements unchanged; `goc_array_get_unboxed` retrieves `99` |
 | `test_array_pop_unboxed` | `goc_array_pop_unboxed(int, arr)` returns correct scalar; array length decrements |
 | `test_array_pop_head_unboxed` | `goc_array_pop_head_unboxed(int, arr)` returns correct scalar from head; array length decrements |
+
+**goc_dict component**
+
+| Test | Description |
+|---|---|
+| `test_dict_make` | `goc_dict_make()` returns non-NULL empty dict; no membership for missing keys |
+| `test_dict_set_get` | `goc_dict_set` stores boxed values; `goc_dict_get` retrieves them; missing keys return not-found default |
+| `test_dict_contains` | `goc_dict_contains` reports membership correctly for present and absent keys |
+| `test_dict_overwrite` | `goc_dict_set` overwrites existing keys without changing dictionary length |
+| `test_dict_pop` | `goc_dict_pop` removes entries and returns boxed values; missing keys return default |
+| `test_dict_len` | `goc_dict_len` tracks live entries after insert and pop operations |
+| `test_dict_insertion_order` | `goc_dict_entries` preserves insertion order for live entries |
+| `test_dict_keys` | `goc_dict_keys` returns live keys in insertion order, skipping popped entries |
+| `test_dict_vals` | `goc_dict_vals` returns live values in insertion order of keys |
+| `test_dict_to_from_array` | `goc_dict_entries` and `goc_dict_from_entries` round-trip preserves contents |
+| `test_dict_copy` | `goc_dict_copy` returns an independent dict with shared value pointers |
+| `test_dict_merge` | `goc_dict_merge` merges dicts left-to-right, later entries win for duplicates |
+| `test_dict_merge_many` | `goc_dict_merge` handles multiple dictionaries with duplicate overriding semantics |
+| `test_dict_merge_empty` | `goc_dict_merge()` with zero arguments returns an empty dict |
+| `test_dict_select` | `goc_dict_select` preserves requested key order in the resulting dict |
+| `test_dict_zip` | `goc_dict_zip` builds a dict from parallel goc_array key/value arrays |
+| `test_dict_zip_c` | `goc_dict_zip_c` builds a dict from parallel C arrays of keys and values |
+| `test_dict_boxed_macros` | boxed macros round-trip scalar values correctly through set/get/pop |
+| `test_dict_tombstone_probe` | popped entries leave tombstones; reinserting through tombstone slots works |
+| `test_dict_resize` | dict resizes under load and preserves all entries across rehashes |
 
 **Phase 10 — Async I/O wrappers**
 

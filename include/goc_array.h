@@ -6,6 +6,8 @@
  *
  * Consumers: #include "goc_array.h"  (or <goc_array.h> when installed)
  *
+ * Copyright (c) Divyansh Prakash
+ *
  * Compile requirements: -std=c11
  * Required defines: -DGC_THREADS  -D_GNU_SOURCE
  *

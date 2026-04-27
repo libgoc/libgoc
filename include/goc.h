@@ -6,6 +6,8 @@
  *
  * Consumers: #include "goc.h"  (or <goc.h> when installed)
  *
+ * Copyright (c) Divyansh Prakash
+ *
  * Compile requirements: -std=c11
  * Required defines (build system / compiler command line):
  *   -DGC_THREADS  -D_GNU_SOURCE
@@ -19,6 +21,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <uv.h>
 
 /* -------------------------------------------------------------------------
@@ -262,12 +265,14 @@ void* _goc_box_impl(const void* val, size_t size);
  */
 #define goc_box(T, val)       ((T*)_goc_box_impl(&(T){(val)}, sizeof(T)))
 
+void* _goc_unbox_check(const void* x);
+
 /**
  * goc_unbox(T, x) — Dereference a boxed scalar pointer.
  *
  * Converts the boxed T* returned by goc_box back into a T value.
  */
-#define goc_unbox(T, x)       (*(T*)(x))
+#define goc_unbox(T, x)       (*(T*)_goc_unbox_check((const void*)(x)))
 
 /**
  * goc_put_boxed(T, ch, val) — Box val and send it (fiber context).

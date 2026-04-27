@@ -417,6 +417,14 @@ void* _goc_box_impl(const void* val, size_t size) {
     return p;
 }
 
+void* _goc_unbox_check(const void* x) {
+    if (x == NULL) {
+        fprintf(stderr, "libgoc: goc_unbox: null pointer\n");
+        abort();
+    }
+    return (void*)x;
+}
+
 /* ---------------------------------------------------------------------------
  * goc_realloc
  * ---------------------------------------------------------------------------*/
