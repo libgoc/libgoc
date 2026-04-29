@@ -35,6 +35,7 @@
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
 > **Ordered Dictionary:** For `goc_dict` design rationale and full API see [DICT.md](./DICT.md).
+> **Value Schemas:** For `goc_schema` design rationale and full API see [SCHEMA.md](./SCHEMA.md).
 > **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
 > **HTTP Server:** For full `goc_http` design and API rationale see [HTTP.md](./HTTP.md).
 > **I/O Wrappers:** For full `goc_io` API reference see [IO.md](./IO.md).
@@ -49,6 +50,7 @@
 | `libuv` | event loop, timers, cross-thread signalling |
 | Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init`; thread pool workers and the uv loop thread are registered with the collector on creation and unregistered on exit |
 | `picohttpparser` | HTTP/1.1 request parser (vendored MIT, `vendor/picohttpparser/`); used by `goc_http`; compiled in by default; excluded with `-DLIBGOC_SERVER=OFF` |
+| musl/TRE regex | POSIX ERE regex engine (vendored BSD-2-Clause, `vendor/regex/`); used by `goc_schema` for `str_pattern`, `str_format`, and `patternProperties`; compiled in unconditionally for consistency across all platforms |
 
 ---
 
@@ -63,6 +65,7 @@ libgoc/
 │   ├── goc_io.h           # Async I/O wrappers public API (separate include)
 │   ├── goc_array.h        # Dynamic array public API
 │   ├── goc_dict.h         # Ordered dictionary public API
+│   ├── goc_schema.h       # Schema validation public API
 │   ├── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
 │   └── goc_http.h       # HTTP server public API (separate include)
 ├── src/
@@ -76,6 +79,7 @@ libgoc/
 │   ├── mutex.c            # RW mutexes (channel-backed lock handles)
 │   ├── goc_array.c        # Dynamic array (goc_array)
 │   ├── goc_dict.c         # Ordered dictionary (goc_dict)
+│   ├── goc_schema.c       # Value schema validation and recursive refs
 │   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── goc_stats.c        # Telemetry implementation (compiled only when GOC_ENABLE_STATS is set)
 │   ├── goc_http.c       # HTTP/1.1 server and client (picohttpparser + goc_io; see goc_http.h)
@@ -90,6 +94,7 @@ libgoc/
 │   ├── test_p01_foundation.c        # Phase 1  — Foundation
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
 │   ├── test_goc_dict.c              # Component — goc_dict ordered dictionary
+│   ├── test_goc_schema.c            # Component — goc_schema validation
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
@@ -108,7 +113,10 @@ libgoc/
 │   └── README.md
 ├── docs/
 │   ├── DESIGN.md          # This document
+│   ├── GOC.md             # goc.h public API reference (channels, fibers, pools, select, mutexes)
 │   ├── ARRAY.md           # Dynamic array design and API reference
+│   ├── DICT.md            # Ordered dictionary design and API reference
+│   ├── SCHEMA.md          # Value schema library design and API reference (goc_schema)
 │   ├── TELEMETRY.md       # goc_stats async telemetry system
 │   ├── IO.md              # goc_io async I/O wrappers API reference
 │   ├── HTTP.md            # HTTP server API and design reference
@@ -116,9 +124,16 @@ libgoc/
 ├── vendor/
 │   ├── minicoro/
 │   │   └── minicoro.h             # Vendored header — fiber suspend/resume (header-only)
-│   └── picohttpparser/
-│       ├── picohttpparser.h       # Vendored header — fast HTTP/1.1 request parser (MIT)
-│       └── picohttpparser.c       # Vendored implementation
+│   ├── picohttpparser/
+│   │   ├── picohttpparser.h       # Vendored header — fast HTTP/1.1 request parser (MIT)
+│   │   └── picohttpparser.c       # Vendored implementation
+│   └── regex/
+│       ├── regex.h                # Portable POSIX regex.h (musl/TRE, BSD-2-Clause)
+│       ├── regcomp.c              # ERE/BRE compiler
+│       ├── regexec.c              # NFA executor
+│       ├── regerror.c             # Error code → string
+│       ├── tre.h                  # TRE internal definitions
+│       └── tre-mem.c              # TRE arena allocator
 ├── CMakeLists.txt         # Build system: libgoc static lib + test binary
 ├── libgoc.pc.in           # pkg-config template; expanded by CMake at configure time
 ├── README.md
@@ -149,9 +164,10 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 | `goc` | static library | All `src/*.c` modules; always built |
 | `test_p01_foundation` … `test_p11_http` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
+| `test_goc_schema` | executable | Component test for `goc_schema`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_stats` | executable | Component test for `goc_stats`; always compiled with `GOC_ENABLE_STATS` and `src/goc_stats.c` added directly, regardless of the `GOC_ENABLE_STATS` CMake option |
 
-A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, and (when `LIBGOC_SERVER` is ON) `vendor/picohttpparser/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_asan`, `goc_tsan`) are configured through this function.
+A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, `vendor/picohttpparser/`, and `vendor/regex/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_asan`, `goc_tsan`) are configured through this function. `vendor/regex/` is listed before the system include paths so the vendored `regex.h` is used on all platforms.
 
 When `-DLIBGOC_VMEM=ON` is passed, `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE` compile definition on the `goc` library target **and** on every per-phase test executable. This ensures that `src/internal.h`'s canary macros are disabled and that `test_p08_safety.c` detects the vmem build at compile time (P8.1 uses `#ifdef LIBGOC_VMEM_ENABLED` to skip the canary-abort test in vmem builds, where the canary is a no-op). By default (canary mode), `LIBGOC_VMEM_ENABLED` is **not** defined and canary protection is active.
 
@@ -173,6 +189,7 @@ Optional opt-in flags, each requiring a **separate build directory**:
 | `-DLIBGOC_COVERAGE=ON` | `coverage` target (if lcov/genhtml found) | Instruments `goc` with `--coverage`; runs ctest then produces `coverage_html/index.html`; mutually exclusive with ASAN and TSAN |
 | `-DGOC_ENABLE_STATS=ON` | *(none)* | Compiles `src/goc_stats.c` into the library and defines `GOC_ENABLE_STATS` on all targets; without this flag the telemetry macros are no-ops and `goc_stats.c` is excluded from `libgoc.a`. `test_goc_stats` always compiles `goc_stats.c` directly regardless of this flag. |
 | `-DLIBGOC_SERVER=OFF` | *(none)* | Excludes `src/goc_http.c` and `vendor/picohttpparser/picohttpparser.c` from the library. The HTTP server and client APIs are unavailable. Default is **ON**; this flag is an opt-out. |
+| `-DGOC_BENCH_ASSERTIONS=OFF` | *(none)* | Disables throughput-ratio assertions in P11.32 (the HTTP benchmark test). Default is **ON**. These assertions verify that a multi-worker pool outperforms a single-worker pool (`ratio2 > 1`, `ratio4 > ratio2`); they are disabled in CI because scheduler variance on shared runners makes the ratios unreliable. Pass `OFF` in any environment where timing results cannot be trusted. |
 
 ASAN and TSAN each compile a separate instrumented copy of the `goc` static library (`goc_asan` / `goc_tsan`) so that sanitizer flags propagate through all object files. When either sanitizer flag is active the per-phase test executables link against the instrumented variant instead of `goc`. Configuring ASAN and TSAN together, or either sanitizer with COVERAGE, in the same directory is a CMake fatal error.
 
@@ -1228,6 +1245,8 @@ No queue removal. Stale entries are skipped on dequeue.
 
 ## Public API
 
+> **Full API reference:** [GOC.md](./GOC.md)
+
 ```c
 /* Types */
 typedef enum {
@@ -1779,6 +1798,44 @@ Builds only the named test target (`cmake --build "$BUILD_DIR" --target "$test_n
 
 > **Windows portability:** Temporary file paths are constructed via `GetTempPathA` on Windows and `/tmp` on POSIX. All file-system operations use `UV_FS_O_*` flags (e.g. `UV_FS_O_RDONLY`, `UV_FS_O_WRONLY | UV_FS_O_CREAT`) which are portable across all libuv platforms. Phase 10 builds and runs on Windows.
 
+**Phase 11 — HTTP server and client**
+
+| Test | Description |
+|---|---|
+| P11.1 | Server lifecycle: `goc_http_server_make` → `listen` → `close` (no routes) |
+| P11.2 | Routing: exact path match (`GET /ping` → 200 `"pong"`) |
+| P11.3 | Routing: catch-all wildcard `/*` catches any path → 200 |
+| P11.4 | Routing: unmatched path → 404 |
+| P11.5 | `goc_http_server_header`: present header found |
+| P11.6 | `goc_http_server_header`: absent header returns NULL |
+| P11.7 | `goc_http_server_header`: case-insensitive lookup |
+| P11.8 | `goc_http_server_body_str`: POST body received correctly |
+| P11.9 | `goc_http_server_body_str`: empty body returns `""` |
+| P11.10 | `goc_http_server_respond`: status 200, body `"pong"` |
+| P11.11 | `goc_http_server_respond_buf`: status 201, binary body |
+| P11.12 | `goc_http_server_respond_error`: status 400, error body |
+| P11.13 | Middleware: chain runs in order; `user_data` propagates |
+| P11.14 | Middleware: `GOC_HTTP_ERR` short-circuits with 500 |
+| P11.15 | HTTP client: `goc_http_get` → 200 with body |
+| P11.16 | HTTP client: `goc_http_post` → echoed body |
+| P11.17 | HTTP client: parallel requests with `goc_take_all` |
+| P11.18 | HTTP client: timeout fires → status 408 |
+| P11.18a | HTTP client: keep-alive timeout cleans up inflight fiber |
+| P11.19 | Oversized request body rejected (> 8 MiB); server stays alive for subsequent requests |
+| P11.20 | Method mismatch: GET route hit with POST → 404 |
+| P11.21 | `ctx->path` and `ctx->method` populated correctly |
+| P11.22 | `ctx->query` parsed from URL query string |
+| P11.23 | `goc_http_response_t->body_len` matches `respond_buf` payload length |
+| P11.24 | Custom request headers via `opts->headers` received by server |
+| P11.25 | CRLF in header value blocked (header-injection prevention) |
+| P11.26 | Ping-pong: 500 round trips between two servers (keep-alive) |
+| P11.27 | Keep-alive: sequential requests succeed with persistent connection |
+| P11.28 | Regression: fire-and-forget ping-pong survives repeated immediate teardown |
+| P11.29 | Regression: fire-and-forget connect churn survives repeated teardown |
+| P11.30 | Regression: repeated listen/close under worker-pool startup race |
+| P11.31 | Strict affinity invariant: requests distributed across ≥ 2 workers; accept counts verified per listener |
+| P11.32 | Throughput comparison pool=1,2,4 (bench-style workload); ratio assertions enabled locally, disabled in CI via `GOC_BENCH_ASSERTIONS` |
+
 **goc_stats component** (`test_goc_stats`)
 
 `test_goc_stats` always compiles with `GOC_ENABLE_STATS` defined and links `src/goc_stats.c` directly, independent of the `GOC_ENABLE_STATS` CMake option. This lets the telemetry tests run in any build configuration.
@@ -1793,7 +1850,43 @@ Builds only the named test target (`cmake --build "$BUILD_DIR" --target "$test_n
 | S2.1 | `goc_go` emits `GOC_FIBER_CREATED`; completion emits `GOC_FIBER_COMPLETED` |
 | S2.2 | Worker transitions to `GOC_WORKER_IDLE` after fiber completes |
 | S2.3 | `goc_pool_make` emits `GOC_WORKER_CREATED` per thread |
-| S2.4 | Pool creation and destruction events |
+
+**goc_schema component** (`test_goc_schema`)
+
+`test_goc_schema` validates the `goc_schema` subsystem, including type checking, string/number/array/object constraints, recursive refs, conditional and composite schemas, and registry helpers.
+It also covers the full scalar-boxing alias matrix for signed/unsigned integer and byte-width boxed values.
+SC2 covers the global schema hierarchy API: direct and transitive `goc_schema_is_a` queries, reflexivity, non-relationships, NULL safety, and the built-in numeric tower plus `goc_schema_number` validation. SC25 covers the public hierarchy helper APIs: parents, ancestors, and descendants.
+SC4 covers `goc_schema_check` abort behavior for invalid values.
+
+| Test | Description |
+|---|---|
+| SC1 | schema registry add and get |
+| SC2 | schema hierarchy (derive / is_a) |
+| SC3 | scalar schema type checks |
+| SC4 | goc_schema_check abort behavior |
+| SC5 | boxed scalar alias matrix |
+| SC6 | scalar const schema checks |
+| SC7 | string length and pattern constraints |
+| SC8 | numeric constraint boundaries |
+| SC9 | complex number schema support |
+| SC10 | string format validation |
+| SC11 | array length constraint |
+| SC12 | homogeneous and bounded arrays |
+| SC13 | array unique value equality |
+| SC14 | array contains semantics |
+| SC15 | tuple schema behavior |
+| SC16 | object optionals and property count boundaries |
+| SC17 | object propertyNames and patternProps |
+| SC18 | object dependency schemas |
+| SC19 | object patternProps regex caching |
+| SC20 | object strict mode and required fields |
+| SC21 | conditional and composition schemas |
+| SC22 | ref and metadata behavior |
+| SC23 | error path construction and nested composite schemas |
+| SC24 | recursive schema reference |
+| SC25 | public schema hierarchy helpers |
+| SC26 | predicate schema
+| SC27 | global registry — built-in entries and user registration
 
 ### Running
 
@@ -1827,13 +1920,15 @@ Triggered on every push or pull request that touches `src/`, `include/`, `tests/
 
 Runs a build matrix across five configurations:
 
+All CI builds pass `-DGOC_BENCH_ASSERTIONS=OFF` to suppress throughput-ratio assertions in P11.32 that are unreliable on shared CI runners (see build flags table above).
+
 | Runner | `cmake_flags` | Tests |
 |---|---|---|
-| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `macos-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
-| `windows-latest` | *(none — canary build)* | P1–P7, P9–P11, `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
+| `ubuntu-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_schema`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `macos-latest` | *(none — canary build)* | All phases (P1–P11), `test_goc_array`, `test_goc_schema`, `test_goc_stats` via `ctest --timeout 60`; P8.1 exercises canary abort |
+| `windows-latest` | *(none — canary build)* | P1–P7, P9–P11, `test_goc_array`, `test_goc_schema`, `test_goc_stats` via `ctest --timeout 60`; P8 self-skips (no `fork`) |
 | `ubuntu-latest` | `-DGOC_HTTP_REUSEPORT=0` | Same as Ubuntu canary but forces the single-listener HTTP fallback path; exercises the non-`SO_REUSEPORT` code on Linux |
-| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P11), `test_goc_array`, `test_goc_stats` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
+| `ubuntu-latest` | `-DLIBGOC_VMEM=ON` (vmem build) | All phases (P1–P11), `test_goc_array`, `test_goc_schema`, `test_goc_stats` via `ctest --timeout 60`; P8.1 skipped (vmem build) |
 
 All four configurations run `RelWithDebInfo` builds. Dependencies per OS:
 

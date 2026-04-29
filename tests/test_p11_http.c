@@ -60,6 +60,9 @@
 #include <time.h>
 #include <stdatomic.h>
 #include <inttypes.h>
+#if !defined(_WIN32)
+#  include <unistd.h>
+#endif
 
 #include "test_harness.h"
 #include "goc.h"
@@ -112,7 +115,7 @@ typedef struct { goc_chan* done; int port; } p11_1_args_t;
 static void fiber_p11_1(void* arg)
 {
     p11_1_args_t* a   = (p11_1_args_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     int rc = goc_unbox(int, 
                     goc_take(
                         goc_http_server_listen(srv, "127.0.0.1", a->port))->val);
@@ -146,7 +149,7 @@ typedef struct {
 static void fiber_p11_2(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/ping", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -191,7 +194,7 @@ typedef struct { goc_chan* done; int port; int status; } p11_status_t;
 static void fiber_p11_3(void* arg)
 {
     p11_status_t* a   = (p11_status_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "*", "/*", handler_catch_all);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -223,7 +226,7 @@ done:;
 static void fiber_p11_4(void* arg)
 {
     p11_status_t* a   = (p11_status_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/exists", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -280,7 +283,7 @@ static void fiber_p11_hdrs(void* arg)
 {
     p11_hdr_t*    a   = (p11_hdr_t*)arg;
     atomic_store_explicit(&g_hdr, a, memory_order_release);
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "POST", "/hdr", handler_inspect_headers);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -372,11 +375,11 @@ static void fiber_p11_body(void* arg)
     p11_body_t*   a   = (p11_body_t*)arg;
     g_body = a;
 
-    goc_http_server_t* srv1 = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv1 = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv1, "POST", "/body", handler_body_check);
     goc_chan* ready1 = goc_http_server_listen(srv1, "127.0.0.1", a->port_body);
 
-    goc_http_server_t* srv2 = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv2 = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv2, "GET", "/empty", handler_body_empty);
     goc_chan* ready2 = goc_http_server_listen(srv2, "127.0.0.1", a->port_empty);
 
@@ -434,7 +437,7 @@ done:;
 static void fiber_p11_10(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/hello", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -479,7 +482,7 @@ static void handler_respond_buf(goc_http_ctx_t* ctx)
 static void fiber_p11_11(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/buf", handler_respond_buf);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -522,7 +525,7 @@ static void handler_respond_err(goc_http_ctx_t* ctx)
 static void fiber_p11_12(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/err", handler_respond_err);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -616,14 +619,14 @@ static void fiber_p11_mw(void* arg)
     opts_ok->middleware = goc_array_make(2);
     goc_array_push(opts_ok->middleware, (void*)(uintptr_t)mw1);
     goc_array_push(opts_ok->middleware, (void*)(uintptr_t)mw2);
-    goc_http_server_t* srv_ok = goc_http_server_make(opts_ok);
+    goc_http_server* srv_ok = goc_http_server_make(opts_ok);
     goc_http_server_route(srv_ok, "GET", "/mw", handler_mw_ok);
     goc_chan* ready_ok = goc_http_server_listen(srv_ok, "127.0.0.1", a->port_ok);
 
     goc_http_server_opts_t* opts_rej = goc_http_server_opts();
     opts_rej->middleware = goc_array_make(1);
     goc_array_push(opts_rej->middleware, (void*)(uintptr_t)mw_reject);
-    goc_http_server_t* srv_rej = goc_http_server_make(opts_rej);
+    goc_http_server* srv_rej = goc_http_server_make(opts_rej);
     goc_http_server_route(srv_rej, "GET", "/mw", handler_mw_never);
     goc_chan* ready_rej = goc_http_server_listen(srv_rej, "127.0.0.1", a->port_rej);
 
@@ -691,7 +694,7 @@ done:;
 static void fiber_p11_15(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/hi", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -735,7 +738,7 @@ static void handler_echo(goc_http_ctx_t* ctx)
 static void fiber_p11_16(void* arg)
 {
     p11_simple_t* a   = (p11_simple_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "POST", "/echo", handler_echo);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -791,7 +794,7 @@ typedef struct {
 static void fiber_p11_17(void* arg)
 {
     p11_par_t*    a   = (p11_par_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/a", handler_a_reply);
     goc_http_server_route(srv, "GET", "/b", handler_b_reply);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
@@ -843,7 +846,7 @@ static void handler_slow(goc_http_ctx_t* ctx)
 static void test_p11_18(void)
 {
     TEST_BEGIN("P11.18 HTTP client: timeout fires → status 408 (timeout)");
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     int port = next_port();
     goc_http_server_route(srv, "GET", "/slow", handler_slow);
     goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", port));
@@ -868,7 +871,7 @@ done:;
 static void test_p11_18a(void)
 {
     TEST_BEGIN("P11.18a HTTP client: keep-alive timeout cleans up inflight fiber");
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     int port = next_port();
     goc_http_server_route(srv, "GET", "/slow", handler_slow);
     goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", port));
@@ -923,7 +926,7 @@ typedef struct {
 static void fiber_p11_19(void* arg)
 {
     p11_oversize_t* a   = (p11_oversize_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "POST", "/ok", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -985,7 +988,7 @@ typedef struct { goc_chan* done; int port; int status; } p11_mismatch_t;
 static void fiber_p11_20(void* arg)
 {
     p11_mismatch_t* a   = (p11_mismatch_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/secret", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1036,7 +1039,7 @@ static void fiber_p11_21(void* arg)
 {
     p11_ctx_t* a = (p11_ctx_t*)arg;
     g_ctx = a;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/check-ctx", handler_inspect_ctx);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1089,7 +1092,7 @@ static void fiber_p11_22(void* arg)
 {
     p11_query_t* a = (p11_query_t*)arg;
     g_query = a;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/search", handler_inspect_query);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1134,7 +1137,7 @@ typedef struct { goc_chan* done; int port; size_t body_len; } p11_bodylen_t;
 static void fiber_p11_23(void* arg)
 {
     p11_bodylen_t* a   = (p11_bodylen_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/bin", handler_respond_binbuf2);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1185,7 +1188,7 @@ static void fiber_p11_24(void* arg)
 {
     p11_custom_hdr_t* a = (p11_custom_hdr_t*)arg;
     g_custom_hdr = a;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/echo-hdr", handler_custom_header);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1243,7 +1246,7 @@ static void fiber_p11_25(void* arg)
 {
     p11_inject_t* a = (p11_inject_t*)arg;
     g_inject = a;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/check-inject", handler_check_injection);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1333,8 +1336,8 @@ static void fiber_p11_26(void* arg)
     snprintf(g_pp_addr_b, sizeof(g_pp_addr_b),
              "http://127.0.0.1:%d/ping", a->port_b);
 
-    goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
-    goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv_a = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv_b = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv_a, "POST", "/ping", pp_handler_a);
     goc_http_server_route(srv_b, "POST", "/ping", pp_handler_b);
 
@@ -1385,7 +1388,7 @@ typedef struct {
 static void fiber_p11_27(void* arg)
 {
     p11_keepalive_t* a = (p11_keepalive_t*)arg;
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/ping", handler_ping);
     goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
 
@@ -1480,14 +1483,14 @@ static void test_p11_28(void)
         P11_28_DONE_CH = goc_chan_make(0);
 
         P11_28_PORT_A = next_port();
-        goc_http_server_t* srv_a = goc_http_server_make(goc_http_server_opts());
+        goc_http_server* srv_a = goc_http_server_make(goc_http_server_opts());
         goc_http_server_route(srv_a, "POST", "/ping", p11_28_handler_A);
         goc_chan* rc_ch_a = goc_http_server_listen(srv_a, "127.0.0.1", P11_28_PORT_A);
         int rc_a = goc_unbox(int, goc_take_sync(rc_ch_a)->val);
         ASSERT(rc_a == 0);
 
         P11_28_PORT_B = next_port();
-        goc_http_server_t* srv_b = goc_http_server_make(goc_http_server_opts());
+        goc_http_server* srv_b = goc_http_server_make(goc_http_server_opts());
         goc_http_server_route(srv_b, "POST", "/ping", p11_28_handler_B);
         goc_chan* rc_ch_b = goc_http_server_listen(srv_b, "127.0.0.1", P11_28_PORT_B);
         int rc_b = goc_unbox(int, goc_take_sync(rc_ch_b)->val);
@@ -1502,9 +1505,19 @@ static void test_p11_28(void)
             opts
         );
 
-        /* ensure all requests have completed */
-        goc_take_sync(P11_28_DONE_CH);
+        /* ensure all requests have completed, with a deadline in case the
+         * fire-and-forget chain breaks silently (observed on macOS). */
+        goc_chan* deadline = goc_timeout(10000);
+        goc_alt_op_t ops[2] = {
+            {P11_28_DONE_CH, GOC_ALT_TAKE, NULL},
+            {deadline,       GOC_ALT_TAKE, NULL},
+        };
+        goc_alts_result_t* r = goc_alts_sync(ops, 2);
         P11_28_DONE_CH = NULL;
+        if (r->ch == deadline) {
+            ASSERT(!"P11.28: ping-pong chain stalled — no done signal within 10s");
+            goto done;
+        }
 
         /* Intentional immediate teardown: this is the race window we guard. */
         goc_take_sync(goc_http_server_close(srv_a));
@@ -1530,7 +1543,7 @@ done:
 
 static void fiber_p11_29(void* _)
 {
-    goc_http_server_t* srv = NULL;
+    goc_http_server* srv = NULL;
     for (int iter = 0; iter < P11_29_ITERS; iter++) {
         goc_http_server_opts_t* srv_opts = goc_http_server_opts();
         srv = goc_http_server_make(srv_opts);
@@ -1588,7 +1601,7 @@ static void test_p11_30(void)
     goc_pool* pool = goc_pool_make(4);
     for (int iter = 0; iter < 32; iter++) {
         goc_http_server_opts_t* opts = goc_http_server_opts();
-        goc_http_server_t* srv = goc_http_server_make(opts);
+        goc_http_server* srv = goc_http_server_make(opts);
         goc_take_sync(goc_http_server_listen(srv, "127.0.0.1", next_port()));
         goc_take_sync(goc_http_server_close(srv));
     }
@@ -1613,14 +1626,14 @@ static void p11_31_server_handler(goc_http_ctx_t* ctx)
     goc_take(goc_http_server_respond(ctx, 200, "text/plain", goc_sprintf("%d", wid)));
 }
 
-static _Atomic(goc_http_server_t*) p11_31_srv = NULL;
+static _Atomic(goc_http_server*) p11_31_srv = NULL;
 
 static void p11_31_server_fiber(void* arg)
 {
     P11_31_PORT = next_port();
     goc_chan* comms_ch = (goc_chan*)arg;
 
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", P11_31_ROUTE, p11_31_server_handler);
 
     goc_chan* server_started_ch = goc_http_server_listen(srv, "127.0.0.1", P11_31_PORT);
@@ -1683,7 +1696,7 @@ static void test_p11_31(void)
         }
     }
 
-    goc_http_server_t* srv = atomic_load_explicit(&p11_31_srv,
+    goc_http_server* srv = atomic_load_explicit(&p11_31_srv,
                                                   memory_order_acquire);
     ASSERT(srv != NULL);
 
@@ -1729,6 +1742,8 @@ typedef struct {
     uint64_t* succ_out;
     uint64_t* err_out;
     const char* url;
+    goc_chan*   ready_ch;
+    goc_chan*   start_ch;
 } p11_32_worker_arg_t;
 
 static void p11_32_worker(void* arg)
@@ -1740,6 +1755,10 @@ static void p11_32_worker(void* arg)
     goc_http_request_opts_t* opts = goc_http_request_opts();
     opts->keep_alive = 1;
     opts->timeout_ms = 10000;
+
+    /* Signal readiness to the runner and wait for the benchmark start signal. */
+    goc_put_boxed(int, a->ready_ch, 1);
+    goc_take(a->start_ch);
 
     for (;;) {
         if (uv_hrtime() >= a->measure_end_ns)
@@ -1777,7 +1796,7 @@ static void fiber_p11_32_run(void* arg)
     a->elapsed_ns = 0;
     a->err = 0;
 
-    goc_http_server_t* srv = goc_http_server_make(goc_http_server_opts());
+    goc_http_server* srv = goc_http_server_make(goc_http_server_opts());
     goc_http_server_route(srv, "GET", "/plaintext", handler_ping);
 
     goc_val_t* listen_val = goc_take(goc_http_server_listen(srv, "127.0.0.1", a->port));
@@ -1791,10 +1810,6 @@ static void fiber_p11_32_run(void* arg)
     char url[256];
     snprintf(url, sizeof(url), "http://127.0.0.1:%d/plaintext", a->port);
 
-    uint64_t start_ns = uv_hrtime();
-    uint64_t warmup_end_ns = start_ns + (uint64_t)P11_32_WARMUP_MS * 1000000ULL;
-    uint64_t measure_end_ns = warmup_end_ns + (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
-
     uint64_t* succ = goc_new_n(uint64_t, P11_32_CONC);
     uint64_t* err  = goc_new_n(uint64_t, P11_32_CONC);
     goc_chan** joins = goc_new_n(goc_chan*, P11_32_CONC);
@@ -1804,12 +1819,27 @@ static void fiber_p11_32_run(void* arg)
     for (size_t i = 0; i < P11_32_CONC; i++) {
         succ[i] = 0;
         err[i] = 0;
-        args[i].warmup_end_ns  = warmup_end_ns;
-        args[i].measure_end_ns = measure_end_ns;
+        args[i].ready_ch = goc_chan_make(1);
+        args[i].start_ch = goc_chan_make(1);
         args[i].succ_out       = &succ[i];
         args[i].err_out        = &err[i];
         args[i].url            = url;
         joins[i] = goc_go(p11_32_worker, &args[i]);
+    }
+
+    /* Wait until every worker has created its request loop. */
+    for (size_t i = 0; i < P11_32_CONC; i++) {
+        goc_take(args[i].ready_ch);
+    }
+
+    uint64_t start_ns = uv_hrtime();
+    uint64_t warmup_end_ns = start_ns + (uint64_t)P11_32_WARMUP_MS * 1000000ULL;
+    uint64_t measure_end_ns = warmup_end_ns + (uint64_t)P11_32_MEASURE_MS * 1000000ULL;
+
+    for (size_t i = 0; i < P11_32_CONC; i++) {
+        args[i].warmup_end_ns  = warmup_end_ns;
+        args[i].measure_end_ns = measure_end_ns;
+        goc_put_boxed(int, args[i].start_ch, 1);
     }
 
     goc_take_all(joins, P11_32_CONC);
@@ -1857,6 +1887,13 @@ static int p11_32_mode_run(int pool_threads, uint64_t* elapsed_ns_out,
     int ok = run.nreq > 0;
 
     goc_shutdown();
+
+    /* On macOS, kqueue teardown and socket TIME_WAIT cleanup can lag behind
+     * goc_shutdown().  Give the OS a moment before the next goc_init(). */
+#if defined(__APPLE__) || !defined(_WIN32)
+    usleep(150 * 1000);
+#endif
+
     return ok ? 0 : 1;
 }
 
@@ -1870,8 +1907,13 @@ static void test_p11_32(void)
     uint64_t err1 = 0, err2 = 0, err4 = 0;
 
     p11_32_mode_run(1, &ns1, &req1, &err1);
+    if (req1 == 0) p11_32_mode_run(1, &ns1, &req1, &err1);
+
     p11_32_mode_run(2, &ns2, &req2, &err2);
+    if (req2 == 0) p11_32_mode_run(2, &ns2, &req2, &err2);
+
     p11_32_mode_run(4, &ns4, &req4, &err4);
+    if (req4 == 0) p11_32_mode_run(4, &ns4, &req4, &err4);
 
     double sec1 = (double)ns1 / 1e9;
     double sec2 = (double)ns2 / 1e9;
@@ -1913,9 +1955,10 @@ static void test_p11_32(void)
     ASSERT(ns4 == bench_dur_ns);
 
     ASSERT(rps1 > 0.0 && rps2 > 0.0 && rps4 > 0.0);
-    /* Flaky in CI */
-    // ASSERT(ratio2 > 1);
-    // ASSERT(ratio4 > ratio2);
+#if defined(GOC_BENCH_ASSERTIONS)
+    ASSERT(ratio2 > 1);
+    ASSERT(ratio4 > ratio2);
+#endif
 
     TEST_PASS();
 done:;

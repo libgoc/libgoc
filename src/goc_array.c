@@ -44,17 +44,6 @@
 #define GOC_ARRAY_INIT_CAP 8
 
 /* ---------------------------------------------------------------------------
- * Internal struct definition
- * ---------------------------------------------------------------------------*/
-
-struct goc_array {
-    void** data;  /* GC-managed backing buffer of void* slots              */
-    size_t head;  /* index of the first live element in data               */
-    size_t len;   /* number of live elements                               */
-    size_t cap;   /* total allocated capacity (number of void* slots)      */
-};
-
-/* ---------------------------------------------------------------------------
  * Internal helpers
  * ---------------------------------------------------------------------------*/
 
@@ -142,18 +131,17 @@ goc_array* goc_array_copy(const goc_array* arr)
     return goc_array_from(buf, arr->len);
 }
 
-/**
- * Internal helper for goc_array_of_boxed.
- */
 goc_array* _goc_array_of_boxed_impl(const void* elems,
-                                       size_t elem_size,
-                                       size_t n)
+                                     size_t elem_size,
+                                     goc_boxed_type_t boxed_type,
+                                     size_t n)
 {
     goc_array* arr = goc_array_make(n);
     for (size_t i = 0; i < n; i++) {
         goc_array_push(arr,
                        _goc_box_impl((const char*)elems + i * elem_size,
-                                     elem_size));
+                                     elem_size,
+                                     boxed_type));
     }
     return arr;
 }

@@ -16,6 +16,7 @@ option(LIBGOC_ASAN        "Build an instrumented copy of goc with AddressSanitiz
 option(LIBGOC_TSAN        "Build an instrumented copy of goc with ThreadSanitizer" OFF)
 option(LIBGOC_COVERAGE    "Instrument goc and tests for code coverage" OFF)
 option(LIBGOC_STATIC_DEPENDENCIES "Link libuv and bdwgc statically" ON)
+option(GOC_BENCH_ASSERTIONS "Enable throughput-ratio assertions in benchmark tests (disable in CI)" ON)
 option(LIBGOC_SERVER      "Build the goc_http HTTP/1.1 library" ON)
 option(GOC_ENABLE_STATS   "Enable telemetry / statistics collection (goc_stats)" OFF)
 option(LIBGOC_DEBUG       "Enable compile-time GOC_DBG diagnostic logging" OFF)
@@ -130,7 +131,8 @@ if(LIBGOC_STATIC_DEPENDENCIES)
     separate_arguments(BDWGC_STATIC_LINK_FLAGS UNIX_COMMAND "${BDWGC_STATIC_LINK_FLAGS_TMP}")
 endif()
 
-# picohttpparser is vendored under vendor/picohttpparser — no external package needed.
+# picohttpparser is vendored under vendor/picohttpparser
+# regex (POSIX ERE) is vendored under vendor/regex
 
 # ---------------------------------------------------------------------------
 # Source lists
@@ -148,6 +150,7 @@ set(GOC_SOURCES
     src/wsdq.c
     src/goc_array.c
     src/goc_dict.c
+    src/goc_schema.c
     src/goc_io.c
     src/goc_debug.c
 )
@@ -163,6 +166,16 @@ if(LIBGOC_SERVER)
     )
 endif()
 
+# POSIX regex (musl/TRE) is vendored for consistency across all platforms.
+# vendor/regex/regex.h takes precedence over any system regex.h because
+# vendor/regex is listed before system include directories.
+set(GOC_SOURCES ${GOC_SOURCES}
+    vendor/regex/regcomp.c
+    vendor/regex/regexec.c
+    vendor/regex/regerror.c
+    vendor/regex/tre-mem.c
+)
+
 # ---------------------------------------------------------------------------
 # Helper: apply common compile options to a goc library target
 # ---------------------------------------------------------------------------
@@ -172,6 +185,7 @@ function(goc_configure_target target_name)
         PRIVATE src
                 vendor/minicoro
                 vendor/picohttpparser
+                vendor/regex
     )
     # GC_THREADS: enable bdwgc multi-thread support on all platforms.
     # GC_PTHREADS: on POSIX this activates gc_pthread_redirects.h so that
@@ -195,6 +209,10 @@ function(goc_configure_target target_name)
                 PkgConfig::LIBUV
                 PkgConfig::BDWGC
         )
+    endif()
+
+    if(UNIX)
+        target_link_libraries(${target_name} PUBLIC m)
     endif()
 endfunction()
 
@@ -344,7 +362,7 @@ foreach(test_src IN LISTS TEST_SOURCES)
 
     add_executable(${test_name} ${test_src} tests/test_harness.c)
 
-    target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro)
+    target_include_directories(${test_name} PRIVATE include src tests vendor/minicoro vendor/regex)
 
     if(LIBGOC_STATIC_DEPENDENCIES)
         target_link_libraries(${test_name} PRIVATE ${GOC_LINK_TARGET})
@@ -366,6 +384,9 @@ foreach(test_src IN LISTS TEST_SOURCES)
     target_compile_definitions(${test_name} PRIVATE LIBGOC_STACK_SIZE=${LIBGOC_STACK_SIZE})
     if(LIBGOC_DEBUG)
         target_compile_definitions(${test_name} PRIVATE LIBGOC_DEBUG)
+    endif()
+    if(GOC_BENCH_ASSERTIONS)
+        target_compile_definitions(${test_name} PRIVATE GOC_BENCH_ASSERTIONS)
     endif()
 
     add_test(NAME ${test_name} COMMAND ${test_name})
@@ -414,7 +435,7 @@ include(GNUInstallDirs)
 install(TARGETS goc
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
-install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_dict.h include/goc_stats.h
+install(FILES include/goc.h include/goc_io.h include/goc_array.h include/goc_dict.h include/goc_stats.h include/goc_schema.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 if(LIBGOC_SERVER)

@@ -46,7 +46,41 @@
 #include <uv.h>
 
 #if !defined(_WIN32)
+#  include <sys/wait.h>
 #  include <unistd.h>
+#  include <stdbool.h>
+#endif
+
+#if !defined(_WIN32)
+typedef void (*child_fn_t)(void* arg);
+
+extern void goc_init(void);
+
+static inline bool fork_expect_sigabrt(child_fn_t child_fn, void* arg) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        return false;
+    }
+
+    if (pid == 0) {
+        struct sigaction sa_dfl = { .sa_handler = SIG_DFL };
+        sigemptyset(&sa_dfl.sa_mask);
+        sigaction(SIGABRT, &sa_dfl, NULL);
+
+        setenv("GOC_POOL_THREADS", "1", 1);
+
+        goc_init();
+        child_fn(arg);
+        _exit(2);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) {
+        return false;
+    }
+
+    return WIFSIGNALED(status) && (WTERMSIG(status) == SIGABRT);
+}
 #endif
 
 #if defined(__has_include)
