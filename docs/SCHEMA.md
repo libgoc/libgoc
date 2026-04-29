@@ -2,7 +2,7 @@
 
 A schema library for **libgoc** that describes the shape of structured data independently of any particular serialisation format.
 
-Schemas are orthogonal to JSON — they operate on plain libgoc types (`goc_dict*`, `goc_array*`, `char*`, boxed scalars). The JSON library uses schemas to validate parsed input and to drive serialisation; other consumers can use schemas for any structured data.
+Schemas operate on plain libgoc types (`goc_dict*`, `goc_array*`, `char*`, boxed scalars).
 
 ---
 
@@ -18,9 +18,11 @@ Schemas are orthogonal to JSON — they operate on plain libgoc types (`goc_dict
    - [Compound Schemas](#compound-schemas)
    - [Conditional Schemas](#conditional-schemas)
    - [Composition Schemas](#composition-schemas)
+   - [Predicate Schemas](#predicate-schemas)
    - [Recursive Schemas](#recursive-schemas)
    - [Named Schemas / Registry](#named-schemas--registry)
    - [Global Registry](#global-registry)
+   - [Schema Hierarchy](#schema-hierarchy)
    - [Annotations](#annotations)
    - [Validation](#validation)
 5. [JSON Schema Compatibility](#json-schema-compatibility)
@@ -188,8 +190,6 @@ goc_schema* scored_user_schema = goc_schema_all_of(
 );
 
 /* --- validate ------------------------------------------------------ */
-goc_dict* user = goc_json_parse(json_str);
-
 goc_schema_error* err = goc_schema_validate(scored_user_schema, user);
 if (err)
     fprintf(stderr, "validation failed at %s: %s\n",
@@ -488,6 +488,45 @@ For `goc_schema_one_of`, validation collects all matching sub-schemas and fails 
 
 ---
 
+### Predicate Schemas
+
+```c
+goc_schema* goc_schema_predicate(bool (*fn)(void* val), const char* name);
+```
+
+Valid iff `fn(val)` returns `true`. `fn` receives the raw boxed value and must not be `NULL`. `name` is used in error messages (`"value failed <name>"`); pass `NULL` to fall back to `"predicate"`.
+
+Use `goc_schema_is_valid` inside `fn` to perform type guards before inspecting the value:
+
+```c
+static bool is_prime(void* val) {
+    if (!goc_schema_is_valid(goc_schema_int(), val)) return false;
+    int64_t n = goc_unbox(int64_t, val);
+    if (n < 2) return false;
+    for (int64_t i = 2; i * i <= n; i++)
+        if (n % i == 0) return false;
+    return true;
+}
+
+goc_schema* prime = goc_schema_predicate(is_prime, "prime");
+```
+
+Predicate schemas compose with all other schema types:
+
+```c
+/* positive prime: type check via all_of */
+goc_schema* pos_prime = goc_schema_all_of(
+    goc_schema_int_min(2),
+    goc_schema_predicate(is_prime, "prime")
+);
+
+/* place in the type hierarchy */
+goc_schema_derive(prime, goc_schema_int());
+assert(goc_schema_is_a(prime, goc_schema_int()));
+```
+
+---
+
 ### Recursive Schemas
 
 A `goc_schema_ref` is an indirection cell that can be pointed at any `goc_schema*` after construction. Pass it anywhere a `goc_schema*` is expected.
@@ -774,7 +813,6 @@ goc_schema* cfg_schema = goc_schema_dict_of(
     {"timeout", goc_schema_int_min(0), .optional = true}
 );
 
-goc_dict* cfg = goc_json_parse(json_str);
 goc_schema_error* err = goc_schema_validate(cfg_schema, cfg);
 if (err) {
     fprintf(stderr, "config error at %s: %s\n",
