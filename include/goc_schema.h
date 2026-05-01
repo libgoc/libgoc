@@ -25,11 +25,36 @@ extern "C" {
 #endif
 
 typedef struct goc_schema          goc_schema;
-/* goc_schema_ref embeds goc_schema as its first member. Casting a reference
- * cell to goc_schema* is valid in the implementation, but schema references
- * are treated as opaque by consumers. */
+/** Recursive schema reference type used for self-referential schemas. */
 typedef struct goc_schema_ref      goc_schema_ref;
-typedef struct goc_schema_registry goc_schema_registry;
+
+/**
+ * goc_schema_kind_t — identifies the abstract kind of a schema.
+ *
+ * The enum values classify schemas by their runtime structure and are used
+ * by validation and serialization logic.
+ */
+typedef enum {
+    GOC_SCHEMA_ANY,
+    GOC_SCHEMA_NULL,
+    GOC_SCHEMA_BOOL,
+    GOC_SCHEMA_INT,
+    GOC_SCHEMA_UINT,
+    GOC_SCHEMA_BYTE,
+    GOC_SCHEMA_UBYTE,
+    GOC_SCHEMA_REAL,
+    GOC_SCHEMA_NUMBER,
+    GOC_SCHEMA_COMPLEX,
+    GOC_SCHEMA_STR,
+    GOC_SCHEMA_ARR,
+    GOC_SCHEMA_TUPLE,
+    GOC_SCHEMA_DICT,
+    GOC_SCHEMA_CONST,
+    GOC_SCHEMA_CONSTRAINED,
+    GOC_SCHEMA_COMPOSITION,
+    GOC_SCHEMA_PREDICATE,
+    GOC_SCHEMA_REF,
+} goc_schema_kind_t;
 
 /**
  * goc_schema_field_t — descriptor for a named field in goc_schema_dict().
@@ -212,17 +237,17 @@ goc_schema* goc_schema_int_range(int64_t min, int64_t max);
 goc_schema* goc_schema_int_enum(goc_array* vals);
 
 /** Create a real minimum schema. */
-goc_schema* goc_schema_real_min(double min);
+goc_schema* goc_schema_real_min(long double min);
 /** Create a real maximum schema. */
-goc_schema* goc_schema_real_max(double max);
+goc_schema* goc_schema_real_max(long double max);
 /** Create a real range schema. */
-goc_schema* goc_schema_real_range(double min, double max);
+goc_schema* goc_schema_real_range(long double min, long double max);
 /** Create an exclusive real minimum schema. */
-goc_schema* goc_schema_real_ex_min(double min);
+goc_schema* goc_schema_real_ex_min(long double min);
 /** Create an exclusive real maximum schema. */
-goc_schema* goc_schema_real_ex_max(double max);
+goc_schema* goc_schema_real_ex_max(long double max);
 /** Create a real multiple-of schema. */
-goc_schema* goc_schema_real_multiple(double factor);
+goc_schema* goc_schema_real_multiple(long double factor);
 
 /** Create a string minimum length schema. */
 goc_schema* goc_schema_str_min_len(size_t min);
@@ -276,50 +301,91 @@ goc_schema* goc_schema_dict(goc_array* fields, goc_schema_dict_opts_t opts);
 /**
  * goc_schema_if() — conditional schema (if/then/else).
  *
+ * super : parent schema for the conditional schema.
  * cond  : the condition schema applied first.
  * then_ : applied when cond passes; NULL = no additional constraint on pass.
  * else_ : applied when cond fails; NULL = no additional constraint on fail.
  */
-goc_schema* goc_schema_if(goc_schema* cond,
+goc_schema* goc_schema_if(goc_schema* super,
+                           goc_schema* cond,
                            goc_schema* then_,
                            goc_schema* else_);
 /** Create a not schema. */
-goc_schema* goc_schema_not(goc_schema* schema);
+goc_schema* goc_schema_not(goc_schema* super, goc_schema* schema);
 /**
  * Create a predicate schema — valid iff fn(val) returns true.
+ * @param super parent schema for this predicate.
  * @param fn   callback receiving the boxed value; must not be NULL.
  * @param name human-readable name used in error messages (may be NULL).
  */
-goc_schema* goc_schema_predicate(bool (*fn)(void* val), const char* name);
-goc_schema* _goc_schema_any_of_impl(goc_array* schemas);
-goc_schema* _goc_schema_one_of_impl(goc_array* schemas);
-goc_schema* _goc_schema_all_of_impl(goc_array* schemas);
+goc_schema* goc_schema_predicate(goc_schema* super, bool (*fn)(void* val), const char* name);
+/** Internal helper: create an any_of composition schema from a schema array. */
+goc_schema* _goc_schema_any_of_impl(goc_schema* super, goc_array* schemas);
+/** Internal helper: create a one_of composition schema from a schema array. */
+goc_schema* _goc_schema_one_of_impl(goc_schema* super, goc_array* schemas);
+/** Internal helper: create an all_of composition schema from a schema array. */
+goc_schema* _goc_schema_all_of_impl(goc_schema* super, goc_array* schemas);
 
 /* Ref */
 /** Allocate a recursive schema reference cell. */
 goc_schema_ref* goc_schema_ref_make(void);
+goc_schema_ref* goc_schema_ref_make_of(goc_schema* super);
 /** Set the target of a recursive schema reference. */
 void            goc_schema_ref_set(goc_schema_ref*, goc_schema*);
 /** Get the target of a recursive schema reference. */
 goc_schema*     goc_schema_ref_get(goc_schema_ref*);
 
 /* Registry */
-/** Create a named schema registry. */
-/**
- * Process-wide shared registry. All built-in scalar schemas are pre-registered
- * under "goc/<name>" (e.g. "goc/int", "goc/real", "goc/str"). User code may
- * register additional schemas here for cross-module lookup.
- */
-goc_schema_registry* goc_schema_global_registry(void);
+/** Register a schema under a unique name. Aborts if name is already taken. */
+goc_schema* goc_schema_named(const char* name, goc_schema* schema);
+/** Look up a registered schema by name. Returns NULL if missing. */
+goc_schema* goc_schema_lookup(const char* name);
+/** Return the name the schema was registered under, or NULL if unnamed. */
+const char* goc_schema_name(const goc_schema* schema);
 
-goc_schema_registry* goc_schema_registry_make(void);
-/** Add or overwrite a named schema in the registry. */
-void                 goc_schema_registry_add(goc_schema_registry*,
-                                             const char* name,
-                                             goc_schema* schema);
-/** Get a named schema from the registry. */
-goc_schema*          goc_schema_registry_get(goc_schema_registry*,
-                                             const char* name);
+/**
+ * goc_schema_make_tagged() — create a tagged JSON object dict.
+ *
+ * Returns a goc_dict* with "goc_schema" set to the registered name of schema
+ * and "goc_value" set to val. schema must have been registered with
+ * goc_schema_named(); aborts if it has no name.
+ */
+goc_dict* goc_schema_make_tagged(goc_schema* schema, void* val);
+/** Return the schema used to encode tagged JSON objects. */
+goc_schema* goc_schema_tagged_schema(void);
+
+/* Schema methods */
+/** Register an untyped method pointer on a schema by name. */
+void  goc_schema_method_set(goc_schema* schema, const char* method_name, void* fn);
+/** Look up a registered method pointer on a schema by name. */
+void* goc_schema_method_get(const goc_schema* schema, const char* method_name);
+
+/**
+ * goc_schema_method(method_name, ret_type, ...)
+ *
+ * Defines a typed schema method wrapper for a method named by the generated
+ * function identifiers. The string key used for lookup is the stringified
+ * `method_name`.
+ *
+ * Example:
+ *   goc_schema_method(validate_str, bool, void* val, size_t len);
+ *
+ * Generates:
+ *   typedef bool (*validate_str_fn)(void* val, size_t len);
+ *   static inline void validate_str_set(goc_schema* s, validate_str_fn fn) { ... }
+ *   static inline validate_str_fn validate_str_get(const goc_schema* s) { ... }
+ *
+ * Limitation: if the parameter list contains a comma inside a type, such as a
+ * function-pointer parameter, typedef that type before invoking the macro.
+ */
+#define goc_schema_method(method_name, ret_type, ...) \
+    typedef ret_type (*method_name##_fn)(__VA_ARGS__); \
+    static inline void method_name##_set(goc_schema* schema, method_name##_fn fn) { \
+        goc_schema_method_set(schema, #method_name, (void*)fn); \
+    } \
+    static inline method_name##_fn method_name##_get(const goc_schema* schema) { \
+        return (method_name##_fn)goc_schema_method_get(schema, #method_name); \
+    }
 
 /* Annotations */
 /** Attach metadata to a schema. */
@@ -349,12 +415,13 @@ void goc_schema_derive(goc_schema* child, goc_schema* parent);
 bool goc_schema_is_a(goc_schema* child, goc_schema* parent);
 
 /**
- * goc_schema_parents() — return direct parents of schema in the hierarchy.
+ * goc_schema_parent() — return the direct parent schema in the hierarchy.
  *
- * Returns a GC-managed goc_array* containing the direct parent schemas.
- * If schema has no parents or schema is NULL, returns an empty array.
+ * Returns NULL if the schema has no parent or schema is NULL.
  */
-goc_array* goc_schema_parents(goc_schema* schema);
+goc_schema* goc_schema_parent(const goc_schema* schema);
+
+goc_schema_kind_t goc_schema_kind(const goc_schema* schema);
 
 /**
  * goc_schema_ancestors() — return all ancestor schemas reachable via parent edges.
@@ -388,7 +455,8 @@ bool goc_schema_is_valid(goc_schema* schema, void* val);
  */
 void goc_schema_check(goc_schema* schema, void* val);
 
-/** * goc_schema_validate() — validate val against schema.
+/**
+ * goc_schema_validate() — validate val against schema.
  *
  * Returns NULL when val satisfies all constraints, or a GC-managed
  * goc_schema_error* describing the first violation found.
@@ -412,12 +480,12 @@ goc_schema_error* goc_schema_validate(goc_schema*, void* val);
 #define goc_schema_tuple_of(add, ...) \
     goc_schema_tuple(goc_array_of_boxed(goc_schema_item_t, __VA_ARGS__), (add))
 
-/** goc_schema_any_of(schema, ...) — value must satisfy at least one of the given schemas. */
-#define goc_schema_any_of(...)  _goc_schema_any_of_impl(goc_array_of(__VA_ARGS__))
-/** goc_schema_one_of(schema, ...) — value must satisfy exactly one of the given schemas. */
-#define goc_schema_one_of(...)  _goc_schema_one_of_impl(goc_array_of(__VA_ARGS__))
-/** goc_schema_all_of(schema, ...) — value must satisfy all of the given schemas. */
-#define goc_schema_all_of(...)  _goc_schema_all_of_impl(goc_array_of(__VA_ARGS__))
+/** goc_schema_any_of(super, ...) — value must satisfy at least one of the given schemas. */
+#define goc_schema_any_of(super, ...)  _goc_schema_any_of_impl(super, goc_array_of(__VA_ARGS__))
+/** goc_schema_one_of(super, ...) — value must satisfy exactly one of the given schemas. */
+#define goc_schema_one_of(super, ...)  _goc_schema_one_of_impl(super, goc_array_of(__VA_ARGS__))
+/** goc_schema_all_of(super, ...) — value must satisfy all of the given schemas. */
+#define goc_schema_all_of(super, ...)  _goc_schema_all_of_impl(super, goc_array_of(__VA_ARGS__))
 
 #ifdef __cplusplus
 }

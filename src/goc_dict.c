@@ -14,6 +14,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include "internal.h"
 #include "../include/goc_dict.h"
@@ -183,6 +184,44 @@ void* goc_dict_get(const goc_dict* d, const char* key, void* not_found)
         return not_found;
     }
     return d->table[slot];
+}
+
+void* goc_dict_get_in(const goc_dict* d, const char* path, void* not_found)
+{
+    if (!d || !path) return not_found;
+
+    void* cur = (void*)d;
+    const char* p = path;
+
+    while (*p) {
+        if (*p != '.') return not_found;
+        p++;
+
+        if (*p == '\0') return not_found;
+        if (!cur) return not_found;
+
+        if (*p == '[') {
+            char* end;
+            size_t idx = (size_t)strtoul(p + 1, &end, 10);
+            if (end == p + 1 || *end != ']') return not_found;
+            p = end + 1;
+
+            goc_array* arr = (goc_array*)cur;
+            if (idx >= goc_array_len(arr)) return not_found;
+            cur = goc_array_get(arr, idx);
+        } else {
+            const char* end = p;
+            while (*end && *end != '.') end++;
+            if (end == p) return not_found;
+
+            char* key = goc_sprintf("%.*s", (int)(end - p), p);
+            p = end;
+            cur = goc_dict_get((goc_dict*)cur, key, not_found);
+            if (cur == not_found) return not_found;
+        }
+    }
+
+    return cur;
 }
 
 size_t goc_dict_len(const goc_dict* d)

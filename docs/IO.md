@@ -32,6 +32,7 @@
 - [9. Process](#9-process)
 - [10. Misc](#10-misc)
 - [11. GC handle lifetime management](#11-gc-handle-lifetime-management)
+- [12. Test Coverage](#test-coverage)
 
 ---
 
@@ -577,6 +578,25 @@ handle in a GC-visible root array for the duration of its libuv lifetime.
 | `goc_io_handle_close` | `goc_chan* goc_io_handle_close(uv_handle_t* handle)` | Dispatch `uv_close` to the loop thread, unregister the handle automatically on completion, and return a join channel that closes after the handle has finished closing. Safe from any context. Overwrites `handle->data` from the loop thread before calling `uv_close`. |
 
 **Example — TCP handle from fiber context**
+
+---
+
+## 12. Test Coverage
+
+| Test | Description |
+|---|---|
+| P10.1 | `goc_io_fs_open`: open a new file; file descriptor >= 0 |
+| P10.2 | `goc_io_fs_write`: write data to an open file; returns correct written byte count |
+| P10.3 | `goc_io_fs_read`: read back written data; content matches |
+| P10.4 | `goc_io_fs_stat`: stat the file; `st_size` equals written byte count |
+| P10.5 | `goc_io_fs_rename`: rename the file; old path stat fails, new path stat succeeds |
+| P10.6 | `goc_io_fs_unlink`: delete the file; subsequent stat fails |
+| P10.7 | `goc_io_fs_open` with non-existent path returns negative error code |
+| P10.8 | `goc_io_getaddrinfo` resolves "localhost"; `ok == GOC_IO_OK`, `res != NULL` |
+| P10.9 | `goc_io_getaddrinfo` with NULL node and service: no crash |
+| P10.10 | `goc_io_getaddrinfo` returns non-NULL channel |
+| P10.11 | `goc_io_fs_sendfile`: copy bytes between two file descriptors; content verified |
+| P10.12 | `goc_io_fs_open` integrates with `goc_alts` (select on I/O channel vs. dummy channel) |
 
 ```c
 #include "goc.h"

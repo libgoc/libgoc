@@ -24,21 +24,19 @@
 13. [MPSC Callback Queue](#mpsc-callback-queue)
 14. [`goc_timeout` — libuv Timer](#goc_timeout--libuv-timer)
 15. [`goc_alts`](#goc_alts)
-16. [Public API](#public-api)
-17. [Async I/O Wrappers (`goc_io`)](#async-io-wrappers-goc_io)
-18. [Telemetry (`goc_stats`)](#telemetry-goc_stats)
-19. [Initialization Sequence](#initialization-sequence)
-20. [Shutdown Sequence](#shutdown-sequence)
-21. [Testing](#testing)
-22. [CI/CD](#cicd)
-23. [HTTP Server (`goc_http`)](#http-server-goc_http)
+16. [Core API](#core-api)
+17. [Initialization Sequence](#initialization-sequence)
+18. [Shutdown Sequence](#shutdown-sequence)
+19. [Testing](#testing)
+20. [CI/CD](#cicd)
 
 > **Dynamic Array:** For `goc_array` design rationale and full API see [ARRAY.md](./ARRAY.md).
 > **Ordered Dictionary:** For `goc_dict` design rationale and full API see [DICT.md](./DICT.md).
-> **Value Schemas:** For `goc_schema` design rationale and full API see [SCHEMA.md](./SCHEMA.md).
-> **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
+> **Schemas:** For `goc_schema` design rationale and full API see [SCHEMA.md](./SCHEMA.md).
+> **JSON:** For `goc_json` design and API see [JSON.md](./JSON.md).
 > **HTTP Server:** For full `goc_http` design and API rationale see [HTTP.md](./HTTP.md).
 > **I/O Wrappers:** For full `goc_io` API reference see [IO.md](./IO.md).
+> **Telemetry:** For full `goc_stats` API and event reference see [TELEMETRY.md](./TELEMETRY.md).
 
 ---
 
@@ -50,7 +48,8 @@
 | `libuv` | event loop, timers, cross-thread signalling |
 | Boehm GC (bdw-gc) | garbage collection; **must be built with `--enable-threads`**; hard dependency, initialised by `goc_init`; thread pool workers and the uv loop thread are registered with the collector on creation and unregistered on exit |
 | `picohttpparser` | HTTP/1.1 request parser (vendored MIT, `vendor/picohttpparser/`); used by `goc_http`; compiled in by default; excluded with `-DLIBGOC_SERVER=OFF` |
-| musl/TRE regex | POSIX ERE regex engine (vendored BSD-2-Clause, `vendor/regex/`); used by `goc_schema` for `str_pattern`, `str_format`, and `patternProperties`; compiled in unconditionally for consistency across all platforms |
+| musl/TRE regex | POSIX ERE regex engine (vendored BSD-2-Clause, `vendor/regex/`); always compiled in; used by `goc_schema` |
+| `yyjson` | JSON reader/writer (vendored MIT, `vendor/yyjson/`); always compiled in; used by `goc_json` |
 
 ---
 
@@ -63,11 +62,12 @@ libgoc/
 ├── include/
 │   ├── goc.h              # Public API header
 │   ├── goc_io.h           # Async I/O wrappers public API (separate include)
+│   ├── goc_http.h         # HTTP server public API (separate include)
 │   ├── goc_array.h        # Dynamic array public API
 │   ├── goc_dict.h         # Ordered dictionary public API
 │   ├── goc_schema.h       # Schema validation public API
+│   ├── goc_json.h         # JSON serialization/parsing public API
 │   ├── goc_stats.h        # Telemetry public API (opt-in; requires GOC_ENABLE_STATS)
-│   └── goc_http.h       # HTTP server public API (separate include)
 ├── src/
 │   ├── alts.c             # goc_alts, goc_alts_sync
 │   ├── timeout.c          # goc_timeout
@@ -80,6 +80,7 @@ libgoc/
 │   ├── goc_array.c        # Dynamic array (goc_array)
 │   ├── goc_dict.c         # Ordered dictionary (goc_dict)
 │   ├── goc_schema.c       # Value schema validation and recursive refs
+│   ├── goc_json.c         # JSON serialization/parsing implementation
 │   ├── goc_io.c           # Async I/O wrappers (libuv; see goc_io.h)
 │   ├── goc_stats.c        # Telemetry implementation (compiled only when GOC_ENABLE_STATS is set)
 │   ├── goc_http.c       # HTTP/1.1 server and client (picohttpparser + goc_io; see goc_http.h)
@@ -95,6 +96,7 @@ libgoc/
 │   ├── test_goc_array.c             # Component — goc_array dynamic array
 │   ├── test_goc_dict.c              # Component — goc_dict ordered dictionary
 │   ├── test_goc_schema.c            # Component — goc_schema validation
+│   ├── test_goc_json.c              # Component — goc_json parser and serializer
 │   ├── test_goc_stats.c             # Component — goc_stats telemetry
 │   ├── test_p02_channels_fibers.c   # Phase 2  — Channels and fiber launch
 │   ├── test_p03_channel_io.c        # Phase 3  — Channel I/O
@@ -113,13 +115,14 @@ libgoc/
 │   └── README.md
 ├── docs/
 │   ├── DESIGN.md          # This document
-│   ├── GOC.md             # goc.h public API reference (channels, fibers, pools, select, mutexes)
-│   ├── ARRAY.md           # Dynamic array design and API reference
-│   ├── DICT.md            # Ordered dictionary design and API reference
-│   ├── SCHEMA.md          # Value schema library design and API reference (goc_schema)
-│   ├── TELEMETRY.md       # goc_stats async telemetry system
-│   ├── IO.md              # goc_io async I/O wrappers API reference
-│   ├── HTTP.md            # HTTP server API and design reference
+│   ├── GOC.md             # Core API reference (channels, fibers, pools, select, mutexes) (goc.h)
+│   ├── IO.md              # async I/O wrappers API reference (goc_io.h)
+│   ├── HTTP.md            # HTTP client / server API and design reference (goc_http.h)
+│   ├── ARRAY.md           # Dynamic array design and API reference (goc_array.h)
+│   ├── DICT.md            # Ordered dictionary design and API reference (goc_dict.h)
+│   ├── SCHEMA.md          # Value schema library design and API reference (goc_schema.h)
+│   ├── JSON.md            # JSON reader/writer design and API reference (goc_json.h)
+│   ├── TELEMETRY.md       # async telemetry system (goc_stats.h)
 |   └── OPTIMIZATION.md    # Prioritized optimization roadmap and benchmark signals
 ├── vendor/
 │   ├── minicoro/
@@ -127,13 +130,17 @@ libgoc/
 │   ├── picohttpparser/
 │   │   ├── picohttpparser.h       # Vendored header — fast HTTP/1.1 request parser (MIT)
 │   │   └── picohttpparser.c       # Vendored implementation
-│   └── regex/
-│       ├── regex.h                # Portable POSIX regex.h (musl/TRE, BSD-2-Clause)
-│       ├── regcomp.c              # ERE/BRE compiler
-│       ├── regexec.c              # NFA executor
-│       ├── regerror.c             # Error code → string
-│       ├── tre.h                  # TRE internal definitions
-│       └── tre-mem.c              # TRE arena allocator
+│   ├── regex/
+│   │   ├── regex.h                # Portable POSIX regex.h (musl/TRE, BSD-2-Clause)
+│   │   ├── regcomp.c              # ERE/BRE compiler
+│   │   ├── regexec.c              # NFA executor
+│   │   ├── regerror.c             # Error code → string
+│   │   ├── tre.h                  # TRE internal definitions
+│   │   └── tre-mem.c              # TRE arena allocator
+│   └── yyjson/
+│       ├── yyjson.h               # Vendored header — JSON reader/writer (MIT)
+│       ├── yyjson.c               # Vendored implementation
+│       └── LICENSE
 ├── CMakeLists.txt         # Build system: libgoc static lib + test binary
 ├── libgoc.pc.in           # pkg-config template; expanded by CMake at configure time
 ├── README.md
@@ -164,10 +171,12 @@ The project uses CMake (≥ 3.20). `CMakeLists.txt` defines the following primar
 | `goc` | static library | All `src/*.c` modules; always built |
 | `test_p01_foundation` … `test_p11_http` | executables | One per phase, discovered via `file(GLOB tests/test_p*.c)`; each linked against the active `goc` variant + libuv + Boehm GC |
 | `test_goc_array` | executable | Component test for `goc_array`; discovered via `file(GLOB tests/test_goc_*.c)` |
+| `test_goc_dict` | executable | Component test for `goc_dict`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_schema` | executable | Component test for `goc_schema`; discovered via `file(GLOB tests/test_goc_*.c)` |
+| `test_goc_json` | executable | Component test for `goc_json`; discovered via `file(GLOB tests/test_goc_*.c)` |
 | `test_goc_stats` | executable | Component test for `goc_stats`; always compiled with `GOC_ENABLE_STATS` and `src/goc_stats.c` added directly, regardless of the `GOC_ENABLE_STATS` CMake option |
 
-A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, `vendor/picohttpparser/`, and `vendor/regex/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_asan`, `goc_tsan`) are configured through this function. `vendor/regex/` is listed before the system include paths so the vendored `regex.h` is used on all platforms.
+A CMake function `goc_configure_target(<target>)` centralises the options shared by every library variant: `PUBLIC` include path `include/`, `PRIVATE` paths `src/`, `vendor/minicoro/`, `vendor/picohttpparser/`, `vendor/regex/`, and `vendor/yyjson/`, compile definition `GC_THREADS`, and link libraries `PkgConfig::LIBUV` and `PkgConfig::BDWGC`. All library targets (`goc`, `goc_asan`, `goc_tsan`) are configured through this function. `vendor/regex/` is listed before the system include paths so the vendored `regex.h` is used on all platforms.
 
 When `-DLIBGOC_VMEM=ON` is passed, `LIBGOC_VMEM_ENABLED` is added as a `PRIVATE` compile definition on the `goc` library target **and** on every per-phase test executable. This ensures that `src/internal.h`'s canary macros are disabled and that `test_p08_safety.c` detects the vmem build at compile time (P8.1 uses `#ifdef LIBGOC_VMEM_ENABLED` to skip the canary-abort test in vmem builds, where the canary is a no-op). By default (canary mode), `LIBGOC_VMEM_ENABLED` is **not** defined and canary protection is active.
 
@@ -301,7 +310,7 @@ Pool workers and the uv loop thread are created via `goc_thread_create` on all p
 
 `goc_malloc(n)` is the public allocator. It is a thin wrapper around `GC_malloc`. Memory is zero-initialised and collected automatically when no longer reachable — no `free` is required or permitted. `goc_malloc` aborts the process on allocation failure and never returns NULL.
 
-`goc_sprintf(fmt, ...)` is a GC-heap-aware `sprintf`. It calls `vsnprintf` twice (once to measure, once to fill) and returns a null-terminated string allocated via `goc_malloc`. The caller must not `free` the result.
+`goc_sprintf(fmt, ...)` is a GC-heap-aware `sprintf`. It calls `vsnprintf` twice (once to measure, once to fill) and returns a null-terminated string allocated via `goc_malloc`. The caller must not `free` the result. `goc_strdup(s)` is a macro that expands to `goc_sprintf("%s", s)` and duplicates a C string onto the GC heap.
 
 **libuv handles and internal context/dispatch structs are `goc_malloc`-allocated and pinned via `gc_handle_register`** — see [libuv Role](#libuv-role). The library uses plain `malloc` only for objects whose lifetime is explicitly managed and that do not need to participate in GC traversal (e.g. channel mutex internals, injector queue nodes).
 
@@ -1243,7 +1252,7 @@ No queue removal. Stale entries are skipped on dequeue.
 
 ---
 
-## Public API
+## Core API
 
 > **Full API reference:** [GOC.md](./GOC.md)
 
@@ -1276,6 +1285,7 @@ void          goc_shutdown(void);
 void*         goc_malloc(size_t n);
 void*         goc_realloc(void* ptr, size_t n);
 char*         goc_sprintf(const char* fmt, ...);
+/* goc_strdup(s)      — duplicate C string s onto the GC heap; expands to goc_sprintf("%s", s) */
 /* goc_new(T)       — allocate a single T on the GC heap; returns T* */
 /* goc_new_n(T, n)  — allocate an array of n T values on the GC heap; returns T* */
 
@@ -1374,91 +1384,6 @@ uv_tcp_init(goc_scheduler(), server);
 ```
 
 > **Do not call `uv_run` or `uv_loop_close` on the returned pointer.** The loop lifetime is managed entirely by `libgoc`.
-
----
-
-## Async I/O Wrappers (`goc_io`)
-
-libgoc provides channel-based wrappers for libuv I/O operations in a separate header (`goc_io.h`) and translation unit (`src/goc_io.c`). All public identifiers are prefixed `goc_io_`.
-
-**Include separately:**
-
-```c
-#include "goc.h"
-#include "goc_io.h"
-```
-
-**Single-form API.** Each operation is exposed as a single function that returns `goc_chan*`; the channel delivers the result when the I/O completes. Safe from any context; composable with `goc_alts()`.
-
-**Thread-safety bridge.** Stream and UDP operations (`uv_write`, `uv_read_start`, etc.) must run on the loop thread that owns the handle. All wrappers use `dispatch_on_handle_loop(handle->loop, fn, arg)`, which selects one of three paths:
-
-1. **Same-worker fast path** — if the calling fiber is on the worker that owns the handle's loop (`tl_worker->loop == handle->loop`), the dispatch function is called directly (zero cross-thread hops).
-2. **Cross-worker path** — if the handle's loop is a different worker's loop, the task is pushed onto that worker's MPSC `task_queue` via `post_on_handle_loop` and `uv_async_send` wakes that worker.
-3. **Global loop path** — if the handle lives on `g_loop` (handles initialised from outside a worker fiber, or FS-event/FS-poll handles), the existing `post_on_loop()` MPSC callback queue is used.
-
-Handle initialisation (`uv_tcp_init`, `uv_pipe_init`, etc.) uses a `worker_affine` flag: when called from a pool-worker fiber, the handle is initialised directly on the calling worker's own loop without dispatching; `goc_io_fs_event_init` and `goc_io_fs_poll_init` always dispatch to `g_loop`.
-
-File-system and DNS operations are submitted directly (libuv routes them through its internal thread pool).
-
-**GC safety.** All `goc_chan*` pointers passed to async context structs (which are `malloc`-allocated) are registered in the `live_uv_handles` array (see `gc.c`) for the duration of the pending I/O, preventing premature collection.
-
-> **Full API reference:** [IO.md](./IO.md)
-
----
-
-## HTTP Server (`goc_http`)
-
-libgoc includes a built-in HTTP/1.1 server and client built on top of `goc_io` TCP and the vendored [picohttpparser](https://github.com/h2o/picohttpparser) (MIT), integrated with the libgoc fiber scheduler.
-
-**Include separately:** consumers must include `<goc_http.h>` in addition to `<goc.h>`.
-
-```c
-#include "goc.h"
-#include "goc_http.h"
-```
-
-**Fiber-per-request model:** each HTTP request is dispatched into a new fiber via `goc_go()`, giving handlers the full co-operative concurrency model — blocking channel reads, `goc_sleep`, `goc_io` operations, and GC allocation all work transparently.
-
-**HTTP client:** outbound requests return a `goc_chan*` that delivers a `goc_http_response_t*` when the response arrives. The event loop is never blocked; other fibers continue to run while the request is in flight. Multiple requests can be issued and awaited with `goc_alts`.
-
-> **Planned:** WebSocket upgrades, HTTP/2, and TLS support are planned for a future release.
-
-> **Full API reference:** [HTTP.md](./HTTP.md)
-
----
-
-## Telemetry (`goc_stats`)
-
-libgoc provides an optional, **asynchronous** telemetry system via `include/goc_stats.h` and `src/goc_stats.c`. When enabled (`-DGOC_ENABLE_STATS=ON`), the runtime emits structured events at key lifecycle points: pool creation/destruction, worker state transitions (created → running → idle → stopped), fiber creation/completion, and channel open/close.
-
-**Delivery model.** Events are pushed by the emitting thread into a Vyukov-style MPSC queue (backed by `stats_node` elements linked through `g_sq_head` / `g_sq_tail`) and delivered to the user-supplied callback on a dedicated background **delivery loop thread** started by `goc_stats_init`. This means the callback is never invoked on the emitting thread; it always runs on the delivery thread. A default callback that prints all events to stdout is installed by `goc_stats_init`. Register a custom callback with `goc_stats_set_callback`.
-
-**`goc_stats_flush`.** `goc_stats_flush()` blocks the calling thread until the delivery loop has drained all in-flight events from the internal queue. It must be called before inspecting or resetting test buffers to avoid a race with the async delivery thread. Example use case: in tests, call `goc_stats_flush()` after the operation under test and before asserting on the captured events.
-
-```c
-void goc_stats_flush(void);   /* Block until all queued events have been delivered */
-```
-
-**Accessor functions** (available when `GOC_ENABLE_STATS` is defined):
-
-```c
-void   goc_timeout_get_stats(uint64_t *allocations, uint64_t *expirations);
-size_t goc_cb_queue_get_hwm(void);
-void   goc_pool_get_steal_stats(uint64_t *attempts, uint64_t *successes,
-                                uint64_t *misses,   uint64_t *idle_wakeups);
-```
-
-- `goc_timeout_get_stats` — returns cumulative timeout allocation and expiration counts.
-- `goc_cb_queue_get_hwm` — returns the high-water mark of the callback queue depth.
-- `goc_pool_get_steal_stats` — returns pool-wide steal counters (aggregates across all workers via the `g_steal_attempts` / `g_steal_successes` / `g_steal_misses` / `g_idle_wakeups` globals in `pool.c`):
-  - `attempts` — total `wsdq_steal_top` calls (hint-path + randomised scan).
-  - `successes` — attempts that returned a non-NULL entry.
-  - `misses` — attempts that returned NULL; equals `attempts − successes`.
-  - `idle_wakeups` — number of times a worker returned from `uv_run(UV_RUN_ONCE)` (one per sleep/wake cycle). High values relative to `successes` indicate steal thrashing or spurious wakeups.
-
-When `GOC_ENABLE_STATS` is not defined, all emission macros (`GOC_STATS_POOL_STATUS`, `GOC_STATS_WORKER_STATUS`, `GOC_STATS_FIBER_STATUS`, `GOC_STATS_CHANNEL_STATUS`) expand to `((void)0)` and have zero runtime cost.
-
-> **Full API reference, event schema, and examples:** [TELEMETRY.md](./TELEMETRY.md)
 
 ---
 
@@ -1725,168 +1650,11 @@ Builds only the named test target (`cmake --build "$BUILD_DIR" --target "$test_n
 | P9.4 | Writer preference: once a writer is queued, subsequent readers queue behind it |
 | P9.5 | Fiber parking path: reader fiber blocks behind writer and resumes after writer release |
 
-**goc_array component**
-
-| Test | Description |
-|---|---|
-| `test_array_make` | `goc_array_make(0)` returns non-NULL; `goc_array_len` returns 0 |
-| `test_array_push_get` | `goc_array_push` appends elements; `goc_array_get` retrieves them in order |
-| `test_array_set` | `goc_array_set` overwrites an element; adjacent elements are not disturbed |
-| `test_array_pop` | `goc_array_pop` removes and returns the tail element |
-| `test_array_push_pop_head` | `goc_array_push_head` / `goc_array_pop_head` operate on the front; order correct after mixed head+tail pushes |
-| `test_array_grow` | Array doubles capacity when full; all values survive across the realloc |
-| `test_array_concat` | `goc_array_concat` produces a new array with all elements from both inputs in order |
-| `test_array_slice` | `goc_array_slice` returns a view sharing the backing buffer; O(1) |
-| `test_array_c_interop` | `goc_array_to_c` + `goc_array_from` round-trip: pointer into live region is valid; reconstructed array matches original |
-| `test_array_with` | `goc_array_of(...)` produces an array of the given pointers in order |
-| `test_array_with_boxed` | `goc_array_of_boxed(int, 1, 2, 3)` boxes each int; `goc_array_get_unboxed(int, arr, i)` returns correct values |
-| `test_array_copy` | `goc_array_copy` returns an independent array; push to copy does not affect original |
-| `test_array_to_c_empty` | `goc_array_to_c` on an empty array returns non-NULL and does not crash |
-| `test_array_empty_ops` | Pop/pop_head/slice/concat on empty arrays return NULL / zero-length array without crashing |
-| `test_array_from_empty` | `goc_array_from(NULL, 0)` returns a valid empty array |
-| `test_array_str_roundtrip` | `goc_array_from_str` then `goc_array_to_str` round-trips an ASCII string |
-| `test_array_from_str_null` | `goc_array_from_str(NULL)` returns a valid empty array |
-| `test_array_to_str_empty` | `goc_array_to_str` on an empty array returns "" |
-| `test_array_str_binary` | String interop correctly handles bytes with value 0x00 embedded mid-array |
-| `test_array_push_boxed` | `goc_array_push_boxed(int, arr, 42)` appends a boxed int; `goc_array_get_unboxed(int, arr, 0)` returns `42` |
-| `test_array_push_head_boxed` | `goc_array_push_head_boxed(int, arr, 7)` prepends; `goc_array_get_unboxed(int, arr, 0)` returns `7` |
-| `test_array_set_boxed` | `goc_array_set_boxed(int, arr, i, 99)` overwrites; adjacent elements unchanged; `goc_array_get_unboxed` retrieves `99` |
-| `test_array_pop_unboxed` | `goc_array_pop_unboxed(int, arr)` returns correct scalar; array length decrements |
-| `test_array_pop_head_unboxed` | `goc_array_pop_head_unboxed(int, arr)` returns correct scalar from head; array length decrements |
-
-**goc_dict component**
-
-| Test | Description |
-|---|---|
-| `test_dict_make` | `goc_dict_make()` returns non-NULL empty dict; no membership for missing keys |
-| `test_dict_set_get` | `goc_dict_set` stores boxed values; `goc_dict_get` retrieves them; missing keys return not-found default |
-| `test_dict_contains` | `goc_dict_contains` reports membership correctly for present and absent keys |
-| `test_dict_overwrite` | `goc_dict_set` overwrites existing keys without changing dictionary length |
-| `test_dict_pop` | `goc_dict_pop` removes entries and returns boxed values; missing keys return default |
-| `test_dict_len` | `goc_dict_len` tracks live entries after insert and pop operations |
-| `test_dict_insertion_order` | `goc_dict_entries` preserves insertion order for live entries |
-| `test_dict_keys` | `goc_dict_keys` returns live keys in insertion order, skipping popped entries |
-| `test_dict_vals` | `goc_dict_vals` returns live values in insertion order of keys |
-| `test_dict_to_from_array` | `goc_dict_entries` and `goc_dict_from_entries` round-trip preserves contents |
-| `test_dict_copy` | `goc_dict_copy` returns an independent dict with shared value pointers |
-| `test_dict_merge` | `goc_dict_merge` merges dicts left-to-right, later entries win for duplicates |
-| `test_dict_merge_many` | `goc_dict_merge` handles multiple dictionaries with duplicate overriding semantics |
-| `test_dict_merge_empty` | `goc_dict_merge()` with zero arguments returns an empty dict |
-| `test_dict_select` | `goc_dict_select` preserves requested key order in the resulting dict |
-| `test_dict_zip` | `goc_dict_zip` builds a dict from parallel goc_array key/value arrays |
-| `test_dict_zip_c` | `goc_dict_zip_c` builds a dict from parallel C arrays of keys and values |
-| `test_dict_boxed_macros` | boxed macros round-trip scalar values correctly through set/get/pop |
-| `test_dict_tombstone_probe` | popped entries leave tombstones; reinserting through tombstone slots works |
-| `test_dict_resize` | dict resizes under load and preserves all entries across rehashes |
-
-**Phase 10 — Async I/O wrappers**
-
-| Test | Description |
-|---|---|
-| P10.1 | `goc_io_fs_open`: open a new file; file descriptor >= 0 |
-| P10.2 | `goc_io_fs_write`: write data to an open file; returns correct written byte count |
-| P10.3 | `goc_io_fs_read`: read back written data; content matches |
-| P10.4 | `goc_io_fs_stat`: stat the file; `st_size` equals written byte count |
-| P10.5 | `goc_io_fs_rename`: rename the file; old path stat fails, new path stat succeeds |
-| P10.6 | `goc_io_fs_unlink`: delete the file; subsequent stat fails |
-| P10.7 | `goc_io_fs_open` with non-existent path returns negative error code |
-| P10.8 | `goc_io_getaddrinfo` resolves "localhost"; `ok == GOC_IO_OK`, `res != NULL` |
-| P10.9 | `goc_io_getaddrinfo` with NULL node and service: no crash |
-| P10.10 | `goc_io_getaddrinfo` returns non-NULL channel |
-| P10.11 | `goc_io_fs_sendfile`: copy bytes between two file descriptors; content verified |
-| P10.12 | `goc_io_fs_open` integrates with `goc_alts` (select on I/O channel vs. dummy channel) |
+**Phase 10 — Async I/O wrappers** — see [IO.md § Test Coverage](./IO.md#test-coverage)
 
 > **Windows portability:** Temporary file paths are constructed via `GetTempPathA` on Windows and `/tmp` on POSIX. All file-system operations use `UV_FS_O_*` flags (e.g. `UV_FS_O_RDONLY`, `UV_FS_O_WRONLY | UV_FS_O_CREAT`) which are portable across all libuv platforms. Phase 10 builds and runs on Windows.
 
-**Phase 11 — HTTP server and client**
-
-| Test | Description |
-|---|---|
-| P11.1 | Server lifecycle: `goc_http_server_make` → `listen` → `close` (no routes) |
-| P11.2 | Routing: exact path match (`GET /ping` → 200 `"pong"`) |
-| P11.3 | Routing: catch-all wildcard `/*` catches any path → 200 |
-| P11.4 | Routing: unmatched path → 404 |
-| P11.5 | `goc_http_server_header`: present header found |
-| P11.6 | `goc_http_server_header`: absent header returns NULL |
-| P11.7 | `goc_http_server_header`: case-insensitive lookup |
-| P11.8 | `goc_http_server_body_str`: POST body received correctly |
-| P11.9 | `goc_http_server_body_str`: empty body returns `""` |
-| P11.10 | `goc_http_server_respond`: status 200, body `"pong"` |
-| P11.11 | `goc_http_server_respond_buf`: status 201, binary body |
-| P11.12 | `goc_http_server_respond_error`: status 400, error body |
-| P11.13 | Middleware: chain runs in order; `user_data` propagates |
-| P11.14 | Middleware: `GOC_HTTP_ERR` short-circuits with 500 |
-| P11.15 | HTTP client: `goc_http_get` → 200 with body |
-| P11.16 | HTTP client: `goc_http_post` → echoed body |
-| P11.17 | HTTP client: parallel requests with `goc_take_all` |
-| P11.18 | HTTP client: timeout fires → status 408 |
-| P11.18a | HTTP client: keep-alive timeout cleans up inflight fiber |
-| P11.19 | Oversized request body rejected (> 8 MiB); server stays alive for subsequent requests |
-| P11.20 | Method mismatch: GET route hit with POST → 404 |
-| P11.21 | `ctx->path` and `ctx->method` populated correctly |
-| P11.22 | `ctx->query` parsed from URL query string |
-| P11.23 | `goc_http_response_t->body_len` matches `respond_buf` payload length |
-| P11.24 | Custom request headers via `opts->headers` received by server |
-| P11.25 | CRLF in header value blocked (header-injection prevention) |
-| P11.26 | Ping-pong: 500 round trips between two servers (keep-alive) |
-| P11.27 | Keep-alive: sequential requests succeed with persistent connection |
-| P11.28 | Regression: fire-and-forget ping-pong survives repeated immediate teardown |
-| P11.29 | Regression: fire-and-forget connect churn survives repeated teardown |
-| P11.30 | Regression: repeated listen/close under worker-pool startup race |
-| P11.31 | Strict affinity invariant: requests distributed across ≥ 2 workers; accept counts verified per listener |
-| P11.32 | Throughput comparison pool=1,2,4 (bench-style workload); ratio assertions enabled locally, disabled in CI via `GOC_BENCH_ASSERTIONS` |
-
-**goc_stats component** (`test_goc_stats`)
-
-`test_goc_stats` always compiles with `GOC_ENABLE_STATS` defined and links `src/goc_stats.c` directly, independent of the `GOC_ENABLE_STATS` CMake option. This lets the telemetry tests run in any build configuration.
-
-| Test | Description |
-|---|---|
-| S1.1 | `goc_stats_init` / `goc_stats_shutdown` complete without error |
-| S1.2 | `goc_stats_is_enabled()` returns `true` after `goc_stats_init` |
-| S1.3 | Worker event round-trips with correct `id`, `status`, and `pending_jobs` fields |
-| S1.4 | Fiber event round-trips with correct `id`, `last_worker_id`, and `status` fields |
-| S1.5 | Channel event round-trips with correct `id`, `status`, `buf_size`, and `item_count` fields |
-| S2.1 | `goc_go` emits `GOC_FIBER_CREATED`; completion emits `GOC_FIBER_COMPLETED` |
-| S2.2 | Worker transitions to `GOC_WORKER_IDLE` after fiber completes |
-| S2.3 | `goc_pool_make` emits `GOC_WORKER_CREATED` per thread |
-
-**goc_schema component** (`test_goc_schema`)
-
-`test_goc_schema` validates the `goc_schema` subsystem, including type checking, string/number/array/object constraints, recursive refs, conditional and composite schemas, and registry helpers.
-It also covers the full scalar-boxing alias matrix for signed/unsigned integer and byte-width boxed values.
-SC2 covers the global schema hierarchy API: direct and transitive `goc_schema_is_a` queries, reflexivity, non-relationships, NULL safety, and the built-in numeric tower plus `goc_schema_number` validation. SC25 covers the public hierarchy helper APIs: parents, ancestors, and descendants.
-SC4 covers `goc_schema_check` abort behavior for invalid values.
-
-| Test | Description |
-|---|---|
-| SC1 | schema registry add and get |
-| SC2 | schema hierarchy (derive / is_a) |
-| SC3 | scalar schema type checks |
-| SC4 | goc_schema_check abort behavior |
-| SC5 | boxed scalar alias matrix |
-| SC6 | scalar const schema checks |
-| SC7 | string length and pattern constraints |
-| SC8 | numeric constraint boundaries |
-| SC9 | complex number schema support |
-| SC10 | string format validation |
-| SC11 | array length constraint |
-| SC12 | homogeneous and bounded arrays |
-| SC13 | array unique value equality |
-| SC14 | array contains semantics |
-| SC15 | tuple schema behavior |
-| SC16 | object optionals and property count boundaries |
-| SC17 | object propertyNames and patternProps |
-| SC18 | object dependency schemas |
-| SC19 | object patternProps regex caching |
-| SC20 | object strict mode and required fields |
-| SC21 | conditional and composition schemas |
-| SC22 | ref and metadata behavior |
-| SC23 | error path construction and nested composite schemas |
-| SC24 | recursive schema reference |
-| SC25 | public schema hierarchy helpers |
-| SC26 | predicate schema
-| SC27 | global registry — built-in entries and user registration
+**Phase 11 — HTTP server and client** — see [HTTP.md § Test Coverage](./HTTP.md#test-coverage)
 
 ### Running
 

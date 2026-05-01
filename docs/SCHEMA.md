@@ -1,8 +1,16 @@
 # `goc_schema` — Value Schemas
 
-A schema library for **libgoc** that describes the shape of structured data independently of any particular serialisation format.
+A runtime types library for **libgoc** for:
+- describing shape of structured data
+- defining type hierarchies
+- runtime type checking
+- runtime polymorphism
 
-Schemas operate on plain libgoc types (`goc_dict*`, `goc_array*`, `char*`, boxed scalars).
+Schemas operate on plain libgoc types: `goc_dict*`, `goc_array*`, `char*`, boxed scalars.
+
+Compatible with [JSON Schema](#json-schema-compatibility).
+
+All features are exercized by the [JSON library](./JSON.md).
 
 ---
 
@@ -20,14 +28,16 @@ Schemas operate on plain libgoc types (`goc_dict*`, `goc_array*`, `char*`, boxed
    - [Composition Schemas](#composition-schemas)
    - [Predicate Schemas](#predicate-schemas)
    - [Recursive Schemas](#recursive-schemas)
-   - [Named Schemas / Registry](#named-schemas--registry)
-   - [Global Registry](#global-registry)
+   - [Schema Names](#schema-names)
    - [Schema Hierarchy](#schema-hierarchy)
    - [Annotations](#annotations)
+   - [Schema Kind](#schema-kind)
+   - [Schema Methods](#schema-methods)
    - [Validation](#validation)
 5. [JSON Schema Compatibility](#json-schema-compatibility)
 6. [Thread Safety](#thread-safety)
 7. [Examples](#examples)
+8. [Test Coverage](#test-coverage)
 
 ---
 
@@ -92,6 +102,7 @@ goc_schema* address_schema = goc_schema_dict(
 
 /* --- id: accept either a positive integer or a UUID string --------- */
 goc_schema* id_schema = goc_schema_any_of(
+    goc_schema_any(),
     goc_schema_int_min(1),
     goc_schema_str_format("uuid")
 );
@@ -115,8 +126,9 @@ static bool is_round(void* val) {
     return fmod(v * 100.0, 1.0) == 0.0;   /* at most two decimal places */
 }
 goc_schema* score_schema = goc_schema_all_of(
+    goc_schema_real(),
     goc_schema_real_range(0.0, 1.0),
-    goc_schema_predicate(is_round, "round(2dp)")
+    goc_schema_predicate(goc_schema_real(), is_round, "round(2dp)")
 );
 
 /* --- user: top-level object ---------------------------------------- */
@@ -181,11 +193,13 @@ user_schema = goc_schema_with_meta(user_schema, (goc_schema_meta_t){
 
 /* --- conditional: if score present, label is required -------------- */
 goc_schema* scored_user_schema = goc_schema_all_of(
+    goc_schema_any(),
     user_schema,
     goc_schema_if(
+        goc_schema_any(),
         goc_schema_dict_of({"score", goc_schema_real()}),   /* if score is present */
         goc_schema_dict_of({"label", goc_schema_str()}),    /* then label required */
-        NULL                                              /* else: no constraint */
+        NULL                                                /* else: no constraint */
     )
 );
 
@@ -222,19 +236,19 @@ Const schemas (`goc_schema_str_const`, etc.) match exactly one value. Constraine
 
 ### Conditional schemas
 
-`goc_schema_if(cond, then_, else_)` applies `then_` when the value is valid against `cond`, and `else_` when it is not. `then_` and `else_` may be `NULL`. The `if` branch is never itself a validation error.
+`goc_schema_if(super, cond, then_, else_)` applies `then_` when the value is valid against `cond`, and `else_` when it is not. `then_` and `else_` may be `NULL`. The `if` branch is never itself a validation error.
 
 ### Composition schemas
 
-`goc_schema_any_of`, `goc_schema_one_of`, `goc_schema_all_of`, and `goc_schema_not` implement boolean logic combinators.
+`goc_schema_any_of`, `goc_schema_one_of`, `goc_schema_all_of`, and `goc_schema_not` implement boolean logic combinators. All of these macros take an explicit `super` schema as their first argument.
 
 ### Recursive schemas
 
 A `goc_schema_ref` is a mutable indirection cell resolved after construction. Only the ref cell is mutable; concrete schemas remain immutable.
 
-### Named schemas / registry
+### Schema names
 
-A `goc_schema_registry` maps string names to schemas, implementing `$defs` / `$ref` from JSON Schema. A process-wide shared registry is accessible via `goc_schema_global_registry()`; all built-in scalars are pre-registered there under `"goc/<name>"`.
+`goc_schema_named` and `goc_schema_lookup` provide a process-wide registry for named schemas. Only schemas explicitly registered with `goc_schema_named` are included; anonymous inline schemas are not automatically named.
 
 ### Annotations
 
@@ -247,23 +261,22 @@ A `goc_schema_meta_t` carries non-validating metadata — title, description, de
 ### Scalar Schemas
 
 ```c
-goc_schema* goc_schema_any();      /* matches any value                       */
-goc_schema* goc_schema_arr_any();  /* expects any goc_array* (any element type) */
+goc_schema* goc_schema_any();      /* matches any value                          */
+goc_schema* goc_schema_arr_any();  /* expects any goc_array* (any element type)  */
 goc_schema* goc_schema_dict_any(); /* expects any goc_dict* (any field contents) */
-goc_schema* goc_schema_null();    /* expects NULL                            */
-goc_schema* goc_schema_str();     /* expects char*                           */
+goc_schema* goc_schema_tagged_schema(); /* expects tagged JSON objects created by goc_schema_make_tagged() */
+goc_schema* goc_schema_null();     /* expects NULL                               */
+goc_schema* goc_schema_str();      /* expects char*                              */
 
-goc_schema* goc_schema_number();  /* expects any boxed numeric value         */
-goc_schema* goc_schema_complex(); /* expects any complex float value         */
-goc_schema* goc_schema_real();    /* expects float/double/long double        */
-goc_schema* goc_schema_int();     /* expects signed boxed integers           */
-goc_schema* goc_schema_uint();    /* expects unsigned boxed integers         */
-goc_schema* goc_schema_byte();    /* expects goc_box(char, …) / signed byte  */
-goc_schema* goc_schema_ubyte();   /* expects goc_box(unsigned char, …)       */
-goc_schema* goc_schema_bool();    /* expects goc_box(bool, …)                */
+goc_schema* goc_schema_number();   /* expects any boxed numeric value            */
+goc_schema* goc_schema_complex();  /* expects any complex float value            */
+goc_schema* goc_schema_real();     /* expects float/double/long double           */
+goc_schema* goc_schema_int();      /* expects signed boxed integers              */
+goc_schema* goc_schema_uint();     /* expects unsigned boxed integers            */
+goc_schema* goc_schema_byte();     /* expects goc_box(char, …) / signed byte     */
+goc_schema* goc_schema_ubyte();    /* expects goc_box(unsigned char, …)          */
+goc_schema* goc_schema_bool();     /* expects goc_box(bool, …)                   */
 ```
-
-Lazily-initialised singletons — use directly, do not free.
 
 Note: plain `char` and `signed char` values are boxed as signed bytes and are accepted by `goc_schema_byte()` and `goc_schema_int()`. `unsigned char` values are boxed as `UBYTE` and are accepted by `goc_schema_ubyte()` and `goc_schema_uint()`.
 
@@ -306,12 +319,12 @@ goc_schema* goc_schema_int_enum  (goc_array* vals);             /* goc_array of 
 #### Number (real) constraints
 
 ```c
-goc_schema* goc_schema_real_min      (double min);
-goc_schema* goc_schema_real_max      (double max);
-goc_schema* goc_schema_real_range    (double min, double max);
-goc_schema* goc_schema_real_ex_min   (double min);              /* exclusive */
-goc_schema* goc_schema_real_ex_max   (double max);              /* exclusive */
-goc_schema* goc_schema_real_multiple (double factor);
+goc_schema* goc_schema_real_min      (long double min);
+goc_schema* goc_schema_real_max      (long double max);
+goc_schema* goc_schema_real_range    (long double min, long double max);
+goc_schema* goc_schema_real_ex_min   (long double min);              /* exclusive */
+goc_schema* goc_schema_real_ex_max   (long double max);              /* exclusive */
+goc_schema* goc_schema_real_multiple (long double factor);
 ```
 
 #### String constraints
@@ -376,8 +389,9 @@ Each element is wrapped in `{…}` because `goc_schema_item_t` is a struct — t
 ```c
 typedef struct {
     const char*   key;
-    goc_schema* schema;
+    goc_schema*   schema;
     bool          optional;      /* default false — field is required */
+
     /* annotations (nullable; do not affect validation) */
     const char*   title;
     const char*   description;
@@ -401,7 +415,8 @@ typedef struct {
 
 typedef struct {
     const char*   pattern;       /* POSIX ERE — matched against key strings */
-    goc_schema* schema;
+    goc_schema*   schema;
+    regex_t*      regex;         /* compiled lazily by the validator — leave NULL at construction */
 } goc_schema_pattern_prop_t;
 
 typedef struct {
@@ -445,7 +460,8 @@ goc_schema* s = goc_schema_dict_of(
 ### Conditional Schemas
 
 ```c
-goc_schema* goc_schema_if(goc_schema* cond,
+goc_schema* goc_schema_if(goc_schema* super,
+                             goc_schema* cond,
                              goc_schema* then_,   /* NULL = no constraint on match    */
                              goc_schema* else_);  /* NULL = no constraint on mismatch */
 ```
@@ -454,8 +470,9 @@ Validates `cond` in test mode (failure is not an error). If the value passes `co
 
 ```c
 goc_schema* s = goc_schema_all_of(
+    goc_schema_any(),
     base_schema,
-    goc_schema_if(cond, then_, else_)
+    goc_schema_if(goc_schema_any(), cond, then_, else_)
 );
 ```
 
@@ -465,23 +482,23 @@ goc_schema* s = goc_schema_all_of(
 
 ```c
 /* public macros — preferred interface */
-#define goc_schema_any_of(...)   /* valid against >= 1 */
-#define goc_schema_one_of(...)   /* valid against == 1 */
-#define goc_schema_all_of(...)   /* valid against all  */
+#define goc_schema_any_of(super, ...)   /* valid against >= 1 */
+#define goc_schema_one_of(super, ...)   /* valid against == 1 */
+#define goc_schema_all_of(super, ...)   /* valid against all  */
 
-goc_schema* goc_schema_not(goc_schema* schema);    /* must not be valid  */
+goc_schema* goc_schema_not(goc_schema* super, goc_schema* schema);    /* must not be valid  */
 
 /* internal — do not call directly */
-goc_schema* _goc_schema_any_of_impl(goc_array* schemas);
-goc_schema* _goc_schema_one_of_impl(goc_array* schemas);
-goc_schema* _goc_schema_all_of_impl(goc_array* schemas);
+goc_schema* _goc_schema_any_of_impl(goc_schema* super, goc_array* schemas);
+goc_schema* _goc_schema_one_of_impl(goc_schema* super, goc_array* schemas);
+goc_schema* _goc_schema_all_of_impl(goc_schema* super, goc_array* schemas);
 ```
 
 The macros build a `goc_array*` of `goc_schema*` from their arguments and call the corresponding `_impl` function. `schemas` elements are `goc_schema*` — not boxed, since schema pointers are already GC-managed.
 
 ```c
 /* example — accept int or string */
-goc_schema* int_or_str = goc_schema_any_of(goc_schema_int(), goc_schema_str());
+goc_schema* int_or_str = goc_schema_any_of(goc_schema_any(), goc_schema_int(), goc_schema_str());
 ```
 
 For `goc_schema_one_of`, validation collects all matching sub-schemas and fails if the count is not exactly 1. The error message names which schemas matched.
@@ -491,7 +508,7 @@ For `goc_schema_one_of`, validation collects all matching sub-schemas and fails 
 ### Predicate Schemas
 
 ```c
-goc_schema* goc_schema_predicate(bool (*fn)(void* val), const char* name);
+goc_schema* goc_schema_predicate(goc_schema* super, bool (*fn)(void* val), const char* name);
 ```
 
 Valid iff `fn(val)` returns `true`. `fn` receives the raw boxed value and must not be `NULL`. `name` is used in error messages (`"value failed <name>"`); pass `NULL` to fall back to `"predicate"`.
@@ -508,7 +525,7 @@ static bool is_prime(void* val) {
     return true;
 }
 
-goc_schema* prime = goc_schema_predicate(is_prime, "prime");
+goc_schema* prime = goc_schema_predicate(goc_schema_int(), is_prime, "prime");
 ```
 
 Predicate schemas compose with all other schema types:
@@ -516,8 +533,9 @@ Predicate schemas compose with all other schema types:
 ```c
 /* positive prime: type check via all_of */
 goc_schema* pos_prime = goc_schema_all_of(
+    goc_schema_int(),
     goc_schema_int_min(2),
-    goc_schema_predicate(is_prime, "prime")
+    goc_schema_predicate(goc_schema_int(), is_prime, "prime")
 );
 
 /* place in the type hierarchy */
@@ -531,8 +549,11 @@ assert(goc_schema_is_a(prime, goc_schema_int()));
 
 A `goc_schema_ref` is an indirection cell that can be pointed at any `goc_schema*` after construction. Pass it anywhere a `goc_schema*` is expected.
 
+Use `goc_schema_ref_make_of(super)` to create a typed reference whose effective parent is `super`.
+
 ```c
 goc_schema_ref* goc_schema_ref_make(void);
+goc_schema_ref* goc_schema_ref_make_of(goc_schema* super);
 void            goc_schema_ref_set (goc_schema_ref*, goc_schema*);
 goc_schema*     goc_schema_ref_get (goc_schema_ref*);
 ```
@@ -541,7 +562,7 @@ goc_schema*     goc_schema_ref_get (goc_schema_ref*);
 
 ```c
 /* example — tree node */
-goc_schema_ref* node_ref    = goc_schema_ref_make();
+goc_schema_ref* node_ref    = goc_schema_ref_make_of(goc_schema_dict_any());
 goc_schema*     node_schema = goc_schema_dict_of(
     {"value",    goc_schema_int()},
     {"children", goc_schema_arr((goc_schema*)node_ref)}
@@ -551,72 +572,37 @@ goc_schema_ref_set(node_ref, node_schema);
 
 ---
 
-### Named Schemas / Registry
+### Schema Names
+
+`goc_schema_named` and `goc_schema_lookup` provide a process-wide name registry for schemas. Only schemas explicitly registered with `goc_schema_named` are included; anonymous generated schemas are not automatically named.
 
 ```c
-goc_schema_registry* goc_schema_registry_make(void);
-void                 goc_schema_registry_add(goc_schema_registry*, const char* name, goc_schema* schema);
-goc_schema*          goc_schema_registry_get(goc_schema_registry*, const char* name);
+goc_schema* goc_schema_named(const char* name, goc_schema* schema);
+goc_schema* goc_schema_lookup(const char* name);
 ```
 
-`goc_schema_registry_get` returns `NULL` if the name is not registered. The registry is GC-managed.
+`goc_schema_named` aborts if the name is already taken or if the schema already has a name. `goc_schema_lookup` returns `NULL` if the name is not registered.
 
 ```c
-goc_schema_registry* reg      = goc_schema_registry_make();
-goc_schema_ref*      addr_ref = goc_schema_ref_make();
-goc_schema_registry_add(reg, "Address", (goc_schema*)addr_ref);
-
-goc_schema* addr = goc_schema_dict_of(
-    {"street", goc_schema_str()},
-    {"city",   goc_schema_str()}
+goc_schema* user_schema = goc_schema_dict_of(
+    {"id", goc_schema_int()},
+    {"name", goc_schema_str()}
 );
-goc_schema_ref_set(addr_ref, addr);
+
+goc_schema_named("myapp/user", user_schema);
+assert(goc_schema_lookup("myapp/user") == user_schema);
 ```
 
----
+### Tagged JSON helpers
 
-### Schema Hierarchy
-
-A global derivation graph records declared subtype relationships between schemas. No object needs to be allocated — the graph is process-wide.
+`goc_schema_make_tagged()` and `goc_schema_tagged_schema()` support custom JSON serialization for tagged objects. Use `goc_schema_make_tagged()` inside a custom `to_json` callback to create a tagged value with a registered schema name, and use `goc_schema_tagged_schema()` as the schema passed to `goc_json_stringify()` when serializing that tagged value.
 
 ```c
-void goc_schema_derive(goc_schema* child, goc_schema* parent);
-bool goc_schema_is_a(goc_schema* child, goc_schema* parent);
+goc_dict*   goc_schema_make_tagged(goc_schema* schema, void* val);
+goc_schema* goc_schema_tagged_schema(void);
 ```
 
-`goc_schema_is_a` is reflexive (`goc_schema_is_a(s, s)` is always `true`) and transitive (declaring `A→B` and `B→C` is sufficient for `goc_schema_is_a(A, C)` to return `true`).
-
-Both functions are thread-safe.
-
-Example — numeric tower:
-
-```c
-goc_schema_derive(goc_schema_number(),  goc_schema_any());
-goc_schema_derive(goc_schema_complex(), goc_schema_number());
-goc_schema_derive(goc_schema_real(),    goc_schema_complex());
-goc_schema_derive(goc_schema_int(),     goc_schema_real());
-goc_schema_derive(goc_schema_uint(),    goc_schema_int());
-goc_schema_derive(goc_schema_byte(),    goc_schema_int());
-goc_schema_derive(goc_schema_ubyte(),   goc_schema_byte());
-goc_schema_derive(goc_schema_bool(),    goc_schema_byte());
-
-assert(goc_schema_is_a(goc_schema_byte(),  goc_schema_int()));     /* true  — direct     */
-assert(goc_schema_is_a(goc_schema_byte(),  goc_schema_number()));  /* true  — transitive */
-assert(goc_schema_is_a(goc_schema_real(),  goc_schema_complex())); /* true  — direct     */
-assert(goc_schema_is_a(goc_schema_int(),   goc_schema_int()));     /* true  — reflexive  */
-```
-
----
-
-### Global Registry
-
-A process-wide shared `goc_schema_registry` is initialised alongside the scalar singletons.
-
-```c
-goc_schema_registry* goc_schema_global_registry(void);
-```
-
-All built-in scalar schemas are pre-registered under `"goc/<name>"`:
+Built-in schemas are pre-registered at initialization under the `goc/` prefix:
 
 | Name | Schema |
 |------|--------|
@@ -631,21 +617,54 @@ All built-in scalar schemas are pre-registered under `"goc/<name>"`:
 | `"goc/real"`    | `goc_schema_real()`    |
 | `"goc/complex"` | `goc_schema_complex()` |
 | `"goc/str"`     | `goc_schema_str()`     |
-| `"goc/arr"`     | `goc_schema_arr_any()` — any `goc_array*` |
-| `"goc/dict"`    | `goc_schema_dict_any()` — any `goc_dict*` |
-
-User code may register additional schemas here for cross-module lookup:
-
-```c
-goc_schema_registry_add(goc_schema_global_registry(), "myapp/user", user_schema);
-
-/* elsewhere */
-goc_schema* s = goc_schema_registry_get(goc_schema_global_registry(), "myapp/user");
+| `"goc/arr_any"` | `goc_schema_arr_any()` |
+| `"goc/dict_any"`| `goc_schema_dict_any()` |
 ```
 
-The global registry is not thread-safe for concurrent writes. Register all schemas during application initialisation before sharing them across threads.
+---
+
+### Schema Hierarchy
+
+A global derivation graph records declared subtype relationships between schemas. No object needs to be allocated — the graph is process-wide.
+
+```c
+void        goc_schema_derive     (goc_schema* child, goc_schema* parent);
+bool        goc_schema_is_a       (goc_schema* child, goc_schema* parent);
+goc_schema* goc_schema_parent     (const goc_schema* schema);
+goc_array*  goc_schema_ancestors  (goc_schema* schema);
+goc_array*  goc_schema_descendants(goc_schema* schema);
+```
+
+`goc_schema_parent` returns the direct parent schema declared via `goc_schema_derive`, or `NULL` if none was declared (including `goc_schema_any()` itself).
+
+`goc_schema_is_a` is reflexive (`goc_schema_is_a(s, s)` is always `true`) and transitive (declaring `A→B` and `B→C` is sufficient for `goc_schema_is_a(A, C)` to return `true`).
+
+`goc_schema_ancestors` returns a `goc_array*` of every transitive parent schema reachable from `schema` via parent edges, excluding `schema` itself. No duplicates.
+
+`goc_schema_descendants` returns a `goc_array*` of every schema that transitively derives from `schema` (i.e., every schema for which `goc_schema_is_a(s, schema)` would be `true`), excluding `schema` itself. No duplicates.
+
+All four functions are thread-safe.
+
+Example — numeric tower:
+
+```c
+goc_schema_derive(goc_schema_number(),  goc_schema_any());
+goc_schema_derive(goc_schema_complex(), goc_schema_number());
+goc_schema_derive(goc_schema_real(),    goc_schema_complex());
+goc_schema_derive(goc_schema_int(),     goc_schema_number());
+goc_schema_derive(goc_schema_uint(),    goc_schema_number());
+goc_schema_derive(goc_schema_byte(),    goc_schema_int());
+goc_schema_derive(goc_schema_ubyte(),   goc_schema_uint());
+goc_schema_derive(goc_schema_bool(),    goc_schema_ubyte());
+
+assert(goc_schema_is_a(goc_schema_byte(),  goc_schema_int()));     /* true  — direct     */
+assert(goc_schema_is_a(goc_schema_byte(),  goc_schema_number()));  /* true  — transitive */
+assert(goc_schema_is_a(goc_schema_real(),  goc_schema_complex())); /* true  — direct     */
+assert(goc_schema_is_a(goc_schema_int(),   goc_schema_int()));     /* true  — reflexive  */
+```
 
 ---
+
 
 ### Annotations
 
@@ -665,6 +684,68 @@ typedef struct {
 goc_schema*      goc_schema_with_meta(goc_schema* schema, goc_schema_meta_t meta);
 goc_schema_meta_t* goc_schema_meta     (goc_schema* schema);  /* NULL if none attached */
 ```
+
+### Schema Kind
+
+The schema kind identifies the general category of a schema.
+
+```c
+goc_schema_kind_t goc_schema_kind(const goc_schema* schema);
+```
+
+The returned kind may be one of:
+- `GOC_SCHEMA_ANY`
+- `GOC_SCHEMA_NULL`
+- `GOC_SCHEMA_BOOL`
+- `GOC_SCHEMA_INT`
+- `GOC_SCHEMA_UINT`
+- `GOC_SCHEMA_BYTE`
+- `GOC_SCHEMA_UBYTE`
+- `GOC_SCHEMA_REAL`
+- `GOC_SCHEMA_NUMBER`
+- `GOC_SCHEMA_COMPLEX`
+- `GOC_SCHEMA_STR`
+- `GOC_SCHEMA_ARR`
+- `GOC_SCHEMA_TUPLE`
+- `GOC_SCHEMA_DICT`
+- `GOC_SCHEMA_CONST`
+- `GOC_SCHEMA_CONSTRAINED`
+- `GOC_SCHEMA_COMPOSITION`
+- `GOC_SCHEMA_PREDICATE`
+- `GOC_SCHEMA_REF`
+
+Constrained and const schemas return their abstract kind rather than their underlying base kind.
+
+The schema kind is also useful for library integrations: it identifies a schema's abstract runtime category for validation and inherited dispatch such as `goc_json` serialization.
+
+### Schema Methods
+
+Schemas may carry named function pointers for extensible behavior.
+
+```c
+void  goc_schema_method_set(goc_schema* schema, const char* method_name, void* fn);
+void* goc_schema_method_get(const goc_schema* schema, const char* method_name);
+```
+
+A typed helper macro is also provided for common method definition patterns:
+
+```c
+#define goc_schema_method(method_name, ret_type, ...)
+```
+
+It defines a function-pointer typedef and typed setter/getter helpers whose lookup key is the stringified `method_name`.
+The helper names and method lookup key are now derived from the same identifier.
+
+```c
+goc_schema_method(goc_json_to_json, char*, void* val);
+
+/* expands to: */
+/* typedef char* (*goc_json_to_json_fn)(void* val); */
+/* static inline void goc_json_to_json_set(goc_schema* s, goc_json_to_json_fn fn) { ... } */
+/* static inline goc_json_to_json_fn goc_json_to_json_get(const goc_schema* s) { ... } */
+```
+
+`goc_schema_method_get` walks the parent chain: if the schema does not define `method_name`, the parent is checked, then the parent's parent, and so on up to `any()`.
 
 ---
 
@@ -760,7 +841,7 @@ void goc_schema_check(goc_schema* schema, void* val);
 | `goc_schema_real_range(min, max)` | `{"type": "number", "minimum": min, "maximum": max}` |
 | `goc_schema_real_ex_min(min)` | `{"type": "number", "exclusiveMinimum": min}` |
 | `goc_schema_real_ex_max(max)` | `{"type": "number", "exclusiveMaximum": max}` |
-| `goc_schema_real_multiple(f)` | `{"type": "number", "multipleOf": f}` |
+| `goc_schema_real_multiple(f)` | `{"type": "number", "multipleOf": f}` (precision limited to `double` in JSON output) |
 | `goc_schema_str_min_len(min)` | `{"type": "string", "minLength": min}` |
 | `goc_schema_str_max_len(max)` | `{"type": "string", "maxLength": max}` |
 | `goc_schema_str_len(min, max)` | `{"type": "string", "minLength": min, "maxLength": max}` |
@@ -768,16 +849,15 @@ void goc_schema_check(goc_schema* schema, void* val);
 | `goc_schema_str_format(f)` | `{"type": "string", "format": f}` |
 | `goc_schema_str_enum(vals)` | `{"enum": […]}` |
 | `goc_schema_int_enum(vals)` | `{"enum": […]}` |
-| `goc_schema_if(c, t, e)` | `{"if": c, "then": t, "else": e}` |
-| `goc_schema_any_of(…)` | `{"anyOf": […]}` |
-| `goc_schema_one_of(…)` | `{"oneOf": […]}` |
-| `goc_schema_all_of(…)` | `{"allOf": […]}` |
-| `goc_schema_not(schema)` | `{"not": schema}` |
-| `goc_schema_ref*` | `{"$ref": "#/$defs/Name"}` |
-| `goc_schema_registry` | `"$defs"` object |
+| `goc_schema_if(super, c, t, e)` | `{"if": c, "then": t, "else": e}` |
+| `goc_schema_any_of(super, …)` | `{"anyOf": […]}` |
+| `goc_schema_one_of(super, …)` | `{"oneOf": […]}` |
+| `goc_schema_all_of(super, …)` | `{"allOf": […]}` |
+| `goc_schema_not(super, schema)` | `{"not": schema}` |
+| `goc_schema_ref_make_of(super)` | `{"$ref": "#/$defs/Name"}` |
+| `goc_schema_named(name, schema)` / `goc_schema_lookup(name)` | named schema registry |
 | `goc_schema_derive` / `goc_schema_is_a` | no JSON Schema equivalent |
-| `goc_schema_global_registry()` | no JSON Schema equivalent |
-| `goc_schema_predicate(fn, name)` | no JSON Schema equivalent |
+| `goc_schema_predicate(super, fn, name)` | no JSON Schema equivalent |
 | `goc_schema_with_meta(s, {.title=…})` | `"title"` on the schema |
 | `goc_schema_with_meta(s, {.description=…})` | `"description"` |
 | `goc_schema_with_meta(s, {.default_val=…})` | `"default"` |
@@ -888,6 +968,7 @@ goc_schema* shape_schema = goc_schema_all_of(
         {"vertices", goc_schema_arr(goc_schema_real()), .optional = true}
     ),
     goc_schema_if(
+        goc_schema_any(),
         goc_schema_dict_of({"type", goc_schema_str_const("polygon")}),
         goc_schema_dict_of({"vertices", goc_schema_arr(goc_schema_real())}),
         NULL
@@ -949,16 +1030,17 @@ goc_schema* strict_point = goc_schema_dict(
 
 ```c
 /* anyOf — accept int or string id */
-goc_schema* id = goc_schema_any_of(goc_schema_int(), goc_schema_str());
+goc_schema* id = goc_schema_any_of(goc_schema_any(), goc_schema_int(), goc_schema_str());
 
 /* oneOf — exactly one of two mutually exclusive shapes */
 goc_schema* point_or_circle = goc_schema_one_of(
+    goc_schema_any(),
     goc_schema_dict_of({"x", goc_schema_real()}, {"y", goc_schema_real()}),
     goc_schema_dict_of({"cx", goc_schema_real()}, {"r", goc_schema_real_min(0.0)})
 );
 
 /* not — reject null values */
-goc_schema* non_null = goc_schema_not(goc_schema_null());
+goc_schema* non_null = goc_schema_not(goc_schema_any(), goc_schema_null());
 ```
 
 ### Array length bounds and uniqueness
@@ -1011,23 +1093,18 @@ goc_schema*     node_schema = goc_schema_dict_of(
 goc_schema_ref_set(node_ref, node_schema);
 ```
 
-### Named schemas with a registry
+### Named schemas
 
 ```c
-goc_schema_registry* reg      = goc_schema_registry_make();
-goc_schema_ref*      addr_ref = goc_schema_ref_make();
-goc_schema_registry_add(reg, "Address", (goc_schema*)addr_ref);
-
-goc_schema* addr = goc_schema_dict_of(
+goc_schema* reg_schema = goc_schema_dict_of(
     {"street", goc_schema_str()},
     {"city",   goc_schema_str()}
 );
-goc_schema_ref_set(addr_ref, addr);
 
-goc_schema* user = goc_schema_dict_of(
-    {"name",    goc_schema_str()},
-    {"address", goc_schema_registry_get(reg, "Address")}
-);
+goc_schema_named("myapp/address", reg_schema);
+
+goc_schema* looked_up = goc_schema_lookup("myapp/address");
+assert(looked_up == reg_schema);
 ```
 
 ### Annotations
@@ -1045,3 +1122,39 @@ goc_schema* point_schema = goc_schema_with_meta(
     }
 );
 ```
+
+---
+
+## Test Coverage
+
+The `test_goc_schema` suite validates the `goc_schema` subsystem, including type checking, string/number/array/object constraints, recursive refs, conditional and composite schemas, and registry helpers. It also covers the full scalar-boxing alias matrix for signed/unsigned integer and byte-width boxed values. SC2 covers the global schema hierarchy API: direct and transitive `goc_schema_is_a` queries, reflexivity, non-relationships, NULL safety, and the built-in numeric tower plus `goc_schema_number` validation. SC25 covers the public hierarchy helper APIs: parents, ancestors, and descendants. SC4 covers `goc_schema_check` abort behavior for invalid values.
+
+| Test | Description |
+|---|---|
+| SC1 | schema registry add and get |
+| SC2 | schema hierarchy (derive / is_a) |
+| SC3 | scalar schema type checks |
+| SC4 | goc_schema_check abort behavior |
+| SC5 | boxed scalar alias matrix |
+| SC6 | scalar const schema checks |
+| SC7 | string length and pattern constraints |
+| SC8 | numeric constraint boundaries |
+| SC9 | complex number schema support |
+| SC10 | string format validation |
+| SC11 | array length constraint |
+| SC12 | homogeneous and bounded arrays |
+| SC13 | array unique value equality |
+| SC14 | array contains semantics |
+| SC15 | tuple schema behavior |
+| SC16 | object optionals and property count boundaries |
+| SC17 | object propertyNames and patternProps |
+| SC18 | object dependency schemas |
+| SC19 | object patternProps regex caching |
+| SC20 | object strict mode and required fields |
+| SC21 | conditional and composition schemas |
+| SC22 | ref and metadata behavior |
+| SC23 | error path construction and nested composite schemas |
+| SC24 | recursive schema reference |
+| SC25 | public schema hierarchy helpers |
+| SC26 | predicate schema |
+| SC27 | global registry — built-in entries and user registration |

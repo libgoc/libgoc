@@ -1,0 +1,3 @@
+version: snapshot
+commit: 18e1ec838e3db4cc62286f554dabbad7cb8d1e76
+upstream: https://github.com/h2o/picohttpparser

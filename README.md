@@ -24,6 +24,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | Boehm GC | garbage collection |
 | `picohttpparser` | HTTP/1.1 request parser (vendored MIT); used by `goc_http`; disable with `-DLIBGOC_SERVER=OFF` |
 | musl/TRE regex | POSIX ERE regex (vendored BSD-2-Clause); used by `goc_schema` |
+| `yyjson` | JSON reader/writer (vendored MIT); used by `goc_json` |
 
 **Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases):
 - Linux (x86-64)
@@ -37,6 +38,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [Dynamic Arrays](./docs/ARRAY.md)
 - [Dictionaries](./docs/DICT.md)
 - [Schemas](./docs/SCHEMA.md)
+- [JSON](./docs/JSON.md)
 - [Telemetry](./docs/TELEMETRY.md)
 
 **Also see:**
@@ -51,6 +53,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
   - [1. Ping-pong](#1-ping-pong)
   - [2. Custom thread pool with `goc_go_on`](#2-custom-thread-pool-with-goc_go_on)
   - [3. Using goc_malloc](#3-using-goc_malloc)
+  - [4. JSON greeting over HTTP](#4-json-greeting-over-http)
 - [Best Practices](#best-practices)
 - [Building and Testing](#building-and-testing)
   - [Prerequisites](#prerequisites)
@@ -128,11 +131,16 @@ int main(void) {
 - `goc_chan_make(0)` — unbuffered channels enforce a synchronous rendezvous:
   each `goc_put` blocks until the other fiber calls `goc_take`, and vice versa.
 - `goc_go` — spawns both player fibers on the current pool (or default pool
-    when called outside fiber context) and returns a join
-  channel that is closed automatically when the fiber returns.
+  when called outside fiber context) and returns a join channel that is closed
+  automatically when the fiber returns.
 - `goc_close` — when the round limit is reached the active fiber closes the
   forward channel, causing the partner's next `goc_take` to return
   `GOC_CLOSED` and exit its loop cleanly.
+- `goc_dict_of(...)` — constructs a GC-managed key-value dict used here to pass
+  multiple named arguments to a fiber in a single `void*`.
+- `goc_put_boxed(T, ch, val)` / `goc_unbox(T, ptr)` — channels carry `void*`;
+  boxing heap-allocates a scalar so it can be sent, unboxing dereferences it
+  back to the original type on the receiving end.
 
 ---
 
@@ -141,74 +149,31 @@ int main(void) {
 Use `goc_pool_make` when you need workloads isolated from the default pool —
 for example, CPU-bound tasks that should not starve I/O fibers.
 
-This example fans out several independent jobs onto a dedicated pool, then
-collects all results from main using `goc_take_sync`.
-
 ```c
 #include "goc.h"
-#include "goc_dict.h"
 #include <stdio.h>
-#include <stdlib.h>
 
-/* -------------------------------------------------------------------------
- * Worker fiber: sum integers in [lo, hi) and send the result back.
- * In a real program this would be image processing, compression, etc.
- * ------------------------------------------------------------------------- */
-static void sum_range(void* arg) {
-    goc_dict* d        = arg;
-    long      lo       = goc_dict_get_unboxed(long, d, "lo", 0);
-    long      hi       = goc_dict_get_unboxed(long, d, "hi", 0);
-    goc_chan* result_ch = goc_dict_get(d, "result_ch", NULL);
-    long acc = 0;
-    for (long i = lo; i < hi; i++)
-        acc += i;
-    goc_put_boxed(int, result_ch, acc);
-}
-
-/* =========================================================================
- * main
- * ========================================================================= */
 #define N_WORKERS 4
-#define RANGE     1000000L
+
+static void worker(void* arg) {
+    int id = goc_unbox(int, arg);
+    printf("worker %d done\n", id);
+}
 
 int main(void) {
     goc_init();
 
-    /*
-     * A dedicated pool for CPU-bound work. The default pool (started by
-     * goc_init) is left free for I/O fibers and other goc_go calls.
-     */
-    goc_pool* cpu_pool = goc_pool_make(N_WORKERS);
+    goc_pool* pool = goc_pool_make(N_WORKERS);
 
-    goc_chan* result_ch = goc_chan_make(0);
-    long      chunk     = RANGE / N_WORKERS;
-
-    /* Fan out: spawn each worker on the CPU pool with goc_go_on. */
-    for (int i = 0; i < N_WORKERS; i++) {
-        long lo = i * chunk;
-        long hi = (i == N_WORKERS - 1) ? RANGE : (i + 1) * chunk;
-        goc_go_on(cpu_pool, sum_range, goc_dict_of(
-            {"lo",        goc_box(long, lo)},
-            {"hi",        goc_box(long, hi)},
-            {"result_ch", result_ch}
-        ));
-    }
-
-    /* Fan in: collect results from the main thread with goc_take_sync. */
-    long total = 0;
-    for (int i = 0; i < N_WORKERS; i++) {
-        goc_val_t* v = goc_take_sync(result_ch);
-        if (v->ok == GOC_OK) total += (long)goc_unbox(int, v->val);
-    }
-
-    printf("sum [0, %ld) = %ld\n", RANGE, total);
+    for (int i = 0; i < N_WORKERS; i++)
+        goc_go_on(pool, worker, goc_box(int, i));
 
     /*
-     * Destroy the CPU pool. 
+     * Destroy the CPU pool.
      * Optional, shown here for completeness.
      * All undestroyed pools are automatically cleaned up by goc_shutdown().
      */
-    goc_pool_destroy(cpu_pool);
+    goc_pool_destroy(pool);
 
     goc_shutdown();
     return 0;
@@ -219,11 +184,8 @@ int main(void) {
 
 - `goc_pool_make` / `goc_pool_destroy` — creates and tears down a dedicated
   pool, isolated from the default pool started by `goc_init`.
-- `goc_go_on` — pins each worker fiber to the CPU pool.
-- Fan-out / fan-in over a shared result channel — no explicit synchronisation
-  primitives beyond channels.
-- `goc_pool_destroy` blocks till all the fibers running on the pool finish, then frees resources.
-  `goc_shutdown` tears down the rest of the runtime.
+- `goc_go_on` — pins each worker fiber to the pool.
+- `goc_pool_destroy` blocks until all fibers on the pool finish, then frees resources.
 
 ---
 
@@ -246,11 +208,16 @@ typedef struct {
 int main(void) {
     goc_init();
 
+    /* create a new Point object */
     Point* p = goc_new(Point);
     p->x = 1.5;
     p->y = 2.7;
 
     printf("Point(%f, %f)", p->x, p->y);
+
+    /* create an array of Points */
+    Point* ps = goc_new_n(Point, 5);
+    Point* p0 = ps[0];
 
     goc_shutdown();
     return 0;
@@ -262,7 +229,88 @@ int main(void) {
 - `goc_malloc` is a thin wrapper around `GC_malloc`. Memory is zero-initialised.
 - `goc_new(T)` allocates a single `T` on the GC heap and returns a `T*`.
 - `goc_new_n(T, n)` allocates an array of `n` values of type `T` on the GC heap and returns a `T*`.
-- `goc_box(T, val)` allocates a heap copy of scalar `val` and returns a `T*`.
+
+---
+
+### 4. JSON greeting over HTTP
+
+A minimal HTTP example that demonstrates P11-style JSON request parsing and response serialisation. The client sends `{ "name": "Arjun" }`, and the server responds with `{ "response": "Hi, Arjun!" }`.
+
+```c
+#include "goc.h"
+#include "goc_http.h"
+#include "goc_json.h"
+#include "goc_schema.h"
+#include <stdio.h>
+
+static goc_schema* request_schema;
+static goc_schema* response_schema;
+
+/* HTTP request handler */
+static void greet_handler(goc_http_ctx_t* ctx) {
+    goc_json_result req_r = goc_json_parse(goc_http_server_body_str(ctx));
+    goc_dict* req = req_r.res;
+
+    const char* name = goc_dict_get(req, "name", NULL);
+    goc_dict* resp = goc_dict_of(
+        {"response", goc_sprintf("Hi, %s!", name)}
+    );
+
+    goc_json_result out_r = goc_json_stringify(response_schema, resp);
+    goc_http_server_respond(ctx, 200, "application/json", out_r.res);
+}
+
+static void main_fiber(void* _) {
+    /* define schemas */
+    request_schema = goc_schema_dict_of(
+        {"name", goc_schema_str()}
+    );
+    response_schema = goc_schema_dict_of(
+        {"response", goc_schema_str()}
+    );
+
+    /* make server */
+    goc_http_server_opts_t* opts = goc_http_server_opts();
+    goc_http_server* srv = goc_http_server_make(opts);
+    goc_http_server_route(srv, "POST", "/greet", greet_handler);
+    goc_chan* ready = goc_http_server_listen(srv, "127.0.0.1", 8080);
+    goc_take(ready);
+
+    /* send request */
+    goc_dict* req_obj = goc_dict_of(
+        {"name", "Arjun"}
+    );
+    goc_json_result req_json_r = goc_json_stringify(request_schema, req_obj);
+    goc_chan* resp_ch = goc_http_post(
+        "http://127.0.0.1:8080/greet",
+        "application/json",
+        req_json_r.res,
+        goc_http_request_opts()
+    );
+
+    /* handle response */
+    goc_http_response_t* resp = goc_take(resp_ch)->val;
+    printf("server replied: %s\n", resp->body);
+
+    /* shutdown server */
+    goc_chan* close_ch = goc_http_server_close(srv);
+    goc_take(close_ch);
+}
+
+int main(void) {
+    goc_init();
+    goc_go(main_fiber, NULL);
+    goc_shutdown();
+    return 0;
+}
+```
+
+**What this example demonstrates:**
+
+- `goc_json_parse` — parse an inbound JSON request body into a `goc_dict*`.
+- `goc_json_stringify` — serialize a response object using a schema.
+- `goc_http_server_route` and `goc_http_post` — wire a request/response roundtrip over HTTP.
+- `goc_http_server_respond(..., "application/json", ...)` — send a JSON response with the correct MIME type.
 
 ---
 
@@ -276,16 +324,18 @@ A typical program's main function should be like this:
 
 ```c
 static void main_fiber(void* _) {
-    // User code comes here.
-    // Since this is a fiber context,
-    // async channel ops work here
-    // and in all code reachable from here
+    /* 
+     * User code comes here.
+     * Since this is a fiber context,
+     * async channel ops work here
+     * and in all code reachable from here.
+     */
 }
 
 int main(void) {
     goc_init();
 
-    // reify main thread as main fiber
+    /* reify main thread as main fiber */
     goc_go(main_fiber, NULL);
 
     goc_shutdown();

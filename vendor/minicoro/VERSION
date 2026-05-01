@@ -1,0 +1,3 @@
+version: 0.2.0
+commit: ff5321d93fe2a3fb067a8dd97a37dd623337b9c0
+upstream: https://github.com/edubart/minicoro
