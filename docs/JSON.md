@@ -2,6 +2,8 @@
 
 A JSON parser and serializer for **libgoc**, wrapping [yyjson](https://github.com/ibireme/yyjson).
 
+[JSON Schema compatible](./SCHEMA.md#json-schema-compatibility).
+
 All memory is managed by the Boehm GC — no `free()` is required or permitted.
 
 ---
@@ -26,6 +28,7 @@ All memory is managed by the Boehm GC — no `free()` is required or permitted.
 #include "goc_schema.h"
 #include "goc_json.h"
 #include <stdio.h>
+#include <stdint.h>
 
 /* Parse JSON string */
 goc_json_result r = goc_json_parse("{\"host\": \"localhost\", \"port\": 8080}");
@@ -35,7 +38,7 @@ if (r.err)
 /* Use the parsed object */
 goc_dict*   cfg  = r.res;
 const char* host = goc_dict_get(cfg, "host", NULL);
-int64_t     port = goc_dict_get_unboxed(int64_t, cfg, "port", 0);
+int64_t     port = goc_dict_g5et_unboxed(int64_t, cfg, "port", 0);
 
 /* Modify it */
 goc_dict_set_boxed(int64_t, cfg, "port", 1337);
@@ -70,6 +73,8 @@ if (out_r.err) {
 ### Parse path
 
 `goc_json_parse` converts JSON directly into native libgoc types. The caller gets back a `goc_dict*`, `goc_array*`, `char*`, boxed scalar, or `NULL` — no wrapper type to unwrap.
+
+Parsed numeric JSON values are boxed using canonical widest scalar types (`int64_t`, `uint64_t`, `double`). Do not unbox parsed JSON integer values as a narrower scalar type such as `int` unless you explicitly convert from the canonical boxed type.
 
 ### Stringify path
 

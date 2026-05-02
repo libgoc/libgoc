@@ -4,16 +4,20 @@
 ![libgoc](assets/logo.png)
 
 # libgoc
-> A Go-style CSP concurrency runtime for C: threadpools, stackful coroutines, channels, select, async I/O, and garbage collection in one coherent API.
 
-**libgoc** is a runtime library for C programs that want Go-style CSP concurrency backed by a managed memory environment. It is written in plain C for maximum reach and portability.
+> Go-style CSP concurrency for plain C: fibers, channels, select, async I/O, and GC in one runtime 🚀
 
-The library provides stackful coroutines ("fibers"), channels, a select primitive (`goc_alts`), timeout channels, a managed thread pool, and optional runtime telemetry (`goc_stats`). Boehm GC is a required dependency and is linked automatically.
+`libgoc` gives C programs:
+- ✅ stackful coroutines (`fibers`)
+- ✅ Go-like channels + `goc_alts` select
+- ✅ timeout channels + thread-pool scheduling
+- ⚡ async I/O and HTTP support
+- ♻️ GC-managed memory via Boehm GC
 
-**libgoc is built for:**
-
-- **C developers** who want a Go-style concurrency runtime without switching to Go.
-- **Language implementors** targeting C/C++ as a compilation target, or writing multithreaded interpreters.
+Use libgoc when you want Go-style concurrency without leaving C:
+- 👩‍💻 C programmers building concurrent systems
+- 🛠 language implementors targeting C/C++
+- 🌐 runtime authors who need async I/O + channel-style coordination
 
 **Dependencies:**
 
@@ -26,12 +30,14 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 | musl/TRE regex | POSIX ERE regex (vendored BSD-2-Clause); used by `goc_schema` |
 | `yyjson` | JSON reader/writer (vendored MIT); used by `goc_json` |
 
-**Pre-built static libraries** are available on the [Releases page](https://github.com/divs1210/libgoc/releases):
+🚧 **Pre-built static libraries**
+
+Available on the [Releases page](https://github.com/divs1210/libgoc/releases)
 - Linux (x86-64)
 - macOS (arm64)
 - Windows (x86-64)
 
-**API reference:**
+📚 **API reference**
 - [Core API](./docs/GOC.md)
 - [Async I/O](./docs/IO.md)
 - [Async HTTP Client/Server](./docs/HTTP.md)
@@ -41,7 +47,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 - [JSON](./docs/JSON.md)
 - [Telemetry](./docs/TELEMETRY.md)
 
-**Also see:**
+🔗 **Also see**
 - [Design Doc](./docs/DESIGN.md)
 - [Benchmarks](/bench/README.md)
 
@@ -51,9 +57,7 @@ The library provides stackful coroutines ("fibers"), channels, a select primitiv
 
 - [Examples](#examples)
   - [1. Ping-pong](#1-ping-pong)
-  - [2. Custom thread pool with `goc_go_on`](#2-custom-thread-pool-with-goc_go_on)
-  - [3. Using goc_malloc](#3-using-goc_malloc)
-  - [4. JSON greeting over HTTP](#4-json-greeting-over-http)
+  - [2. JSON greeting over HTTP](#2-json-greeting-over-http)
 - [Best Practices](#best-practices)
 - [Building and Testing](#building-and-testing)
   - [Prerequisites](#prerequisites)
@@ -144,100 +148,13 @@ int main(void) {
 
 ---
 
-### 2. Custom thread pool with `goc_go_on`
-
-Use `goc_pool_make` when you need workloads isolated from the default pool —
-for example, CPU-bound tasks that should not starve I/O fibers.
-
-```c
-#include "goc.h"
-#include <stdio.h>
-
-#define N_WORKERS 4
-
-static void worker(void* arg) {
-    int id = goc_unbox(int, arg);
-    printf("worker %d done\n", id);
-}
-
-int main(void) {
-    goc_init();
-
-    goc_pool* pool = goc_pool_make(N_WORKERS);
-
-    for (int i = 0; i < N_WORKERS; i++)
-        goc_go_on(pool, worker, goc_box(int, i));
-
-    /*
-     * Destroy the CPU pool.
-     * Optional, shown here for completeness.
-     * All undestroyed pools are automatically cleaned up by goc_shutdown().
-     */
-    goc_pool_destroy(pool);
-
-    goc_shutdown();
-    return 0;
-}
-```
-
-**What this example demonstrates:**
-
-- `goc_pool_make` / `goc_pool_destroy` — creates and tears down a dedicated
-  pool, isolated from the default pool started by `goc_init`.
-- `goc_go_on` — pins each worker fiber to the pool.
-- `goc_pool_destroy` blocks until all fibers on the pool finish, then frees resources.
-
----
-
-### 3. Using goc_malloc
-
-`goc_malloc` allocates memory on the Boehm GC heap. Allocations are collected
-automatically when no longer reachable — no `free` is needed. Prefer the helper
-macros `goc_new(T)` and `goc_new_n(T, n)` instead of
-calling `goc_malloc(sizeof(T))` or `goc_malloc(n * sizeof(T))` directly.
-
-```c
-#include "goc.h"
-#include <stdio.h>
-
-typedef struct {
-    double x;
-    double y;
-} Point;
-
-int main(void) {
-    goc_init();
-
-    /* create a new Point object */
-    Point* p = goc_new(Point);
-    p->x = 1.5;
-    p->y = 2.7;
-
-    printf("Point(%f, %f)", p->x, p->y);
-
-    /* create an array of Points */
-    Point* ps = goc_new_n(Point, 5);
-    Point* p0 = ps[0];
-
-    goc_shutdown();
-    return 0;
-}
-```
-
-**A few things to keep in mind:**
-
-- `goc_malloc` is a thin wrapper around `GC_malloc`. Memory is zero-initialised.
-- `goc_new(T)` allocates a single `T` on the GC heap and returns a `T*`.
-- `goc_new_n(T, n)` allocates an array of `n` values of type `T` on the GC heap and returns a `T*`.
-
----
-
-### 4. JSON greeting over HTTP
+### 2. JSON greeting over HTTP
 
 A minimal HTTP example that demonstrates P11-style JSON request parsing and response serialisation. The client sends `{ "name": "Arjun" }`, and the server responds with `{ "response": "Hi, Arjun!" }`.
 
 ```c
 #include "goc.h"
+#include "goc_dict.h"
 #include "goc_http.h"
 #include "goc_json.h"
 #include "goc_schema.h"

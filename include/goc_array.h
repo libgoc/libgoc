@@ -139,6 +139,9 @@ void* goc_array_get(const goc_array* arr, size_t i);
 /**
  * goc_array_get_unboxed(T, arr, i) — Retrieve and unbox the element at index i.
  * Equivalent to goc_unbox(T, goc_array_get(arr, i)).  O(1).
+ *
+ * The type parameter T must match the type used when the value was boxed.
+ * Unboxing with a different scalar type is undefined behavior.
  */
 #define goc_array_get_unboxed(T, arr, i) \
     goc_unbox(T, goc_array_get((arr), (i)))
@@ -186,6 +189,9 @@ void* goc_array_pop(goc_array* arr);
 /**
  * goc_array_pop_unboxed(T, arr) — Remove the tail element and unbox it.
  * Equivalent to goc_unbox(T, goc_array_pop(arr)).  O(1).
+ *
+ * The type parameter T must match the type used when the value was boxed.
+ * Unboxing with a different scalar type is undefined behavior.
  */
 #define goc_array_pop_unboxed(T, arr) \
     goc_unbox(T, goc_array_pop(arr))

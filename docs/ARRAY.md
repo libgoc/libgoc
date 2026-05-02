@@ -158,6 +158,8 @@ void   goc_array_set(goc_array* arr, size_t i, void* val);
 
 `goc_array_get_unboxed(T, arr, i)` retrieves the element at index `i` and unboxes it in one step. `goc_array_set_boxed(T, arr, i, val)` stores a scalar value boxed as `void*`. Both preserve the same O(1) complexity.
 
+The type parameter `T` must match the type originally used when the value was boxed. Unboxing with a different scalar type is undefined behavior.
+
 ### Tail Push / Pop
 
 ```c

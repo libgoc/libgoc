@@ -119,6 +119,8 @@ size_t goc_dict_len(const goc_dict* d);
 
 `goc_dict_get_unboxed(T, d, key, not_found)` retrieves the value for `key` and unboxes it as type `T` in one step, returning `not_found` if absent.
 
+The type parameter `T` must match the type originally used when the stored value was boxed. Unboxing with a different scalar type is undefined behavior.
+
 ## Deep lookup
 
 ### `goc_dict_get_in(d, path, not_found)`

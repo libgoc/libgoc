@@ -53,7 +53,49 @@ my_obj_t** objs = goc_new_n(my_obj_t, 8);
 int* boxed = goc_box(int, 42);
 int value = goc_unbox(int, boxed);
 // obj, objs, and boxed are all GC-managed and automatically reclaimed.
+
+// The type parameter `T` passed to `goc_unbox(T, x)` must match the type
+// originally used with `goc_box(T, val)`. Unboxing with a different scalar
+// type is undefined behavior.
 ```
+
+---
+
+### Example: using `goc_malloc`, `goc_new`, and `goc_new_n`
+
+```c
+#include "goc.h"
+#include <stdio.h>
+
+typedef struct {
+    double x;
+    double y;
+} Point;
+
+int main(void) {
+    goc_init();
+
+    /* create a new Point object */
+    Point* p = goc_new(Point);
+    p->x = 1.5;
+    p->y = 2.7;
+
+    printf("Point(%f, %f)\n", p->x, p->y);
+
+    /* create an array of Points */
+    Point* ps = goc_new_n(Point, 5);
+    Point* p0 = &ps[0];
+
+    goc_shutdown();
+    return 0;
+}
+```
+
+**A few things to keep in mind:**
+
+- `goc_malloc` is a thin wrapper around `GC_malloc`. Memory is zero-initialised.
+- `goc_new(T)` allocates a single `T` on the GC heap and returns a `T*`.
+- `goc_new_n(T, n)` allocates an array of `n` values of type `T` on the GC heap and returns a `T*`.
 
 ---
 
@@ -372,6 +414,47 @@ if (goc_pool_destroy_timeout(io_pool, 2000) == GOC_DRAIN_TIMEOUT) {
     goc_pool_destroy(io_pool);
 }
 ```
+
+---
+
+### Example: custom thread pool with `goc_go_on`
+
+```c
+#include "goc.h"
+#include <stdio.h>
+
+#define N_WORKERS 4
+
+static void worker(void* arg) {
+    int id = goc_unbox(int, arg);
+    printf("worker %d done\n", id);
+}
+
+int main(void) {
+    goc_init();
+
+    goc_pool* pool = goc_pool_make(N_WORKERS);
+
+    for (int i = 0; i < N_WORKERS; i++)
+        goc_go_on(pool, worker, goc_box(int, i));
+
+    /*
+     * Destroy the CPU pool.
+     * Optional, shown here for completeness.
+     * All undestroyed pools are automatically cleaned up by goc_shutdown().
+     */
+    goc_pool_destroy(pool);
+
+    goc_shutdown();
+    return 0;
+}
+```
+
+**What this example demonstrates:**
+
+- `goc_pool_make` / `goc_pool_destroy` — creates and tears down a dedicated pool, isolated from the default pool started by `goc_init`.
+- `goc_go_on` — pins each worker fiber to the pool.
+- `goc_pool_destroy` blocks until all fibers on the pool finish, then frees resources.
 
 ---
 

@@ -245,6 +245,9 @@ goc_dict* goc_dict_from_entries(const goc_array* entries);
  *
  * The not_found value is auto-boxed as type T. If the key is absent, the
  * boxed not_found is returned and then unboxed.
+ *
+ * The type parameter T must match the type used when the stored value was
+ * boxed. Unboxing with a different scalar type is undefined behavior.
  */
 #define goc_dict_get_unboxed(T, d, key, not_found) \
     goc_unbox(T, goc_dict_get((d), (key), goc_box(T, (not_found))))
@@ -268,6 +271,9 @@ goc_dict* goc_dict_from_entries(const goc_array* entries);
  *
  * The not_found value is auto-boxed as type T. If the key is absent, the
  * boxed not_found is returned and then unboxed.
+ *
+ * The type parameter T must match the type used when the stored value was
+ * boxed. Unboxing with a different scalar type is undefined behavior.
  */
 #define goc_dict_pop_unboxed(T, d, key, not_found) \
     goc_unbox(T, goc_dict_pop((d), (key), goc_box(T, (not_found))))

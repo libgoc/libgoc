@@ -5,6 +5,7 @@ A runtime types library for **libgoc** for:
 - defining type hierarchies
 - runtime type checking
 - runtime polymorphism
+- runtime reflection
 
 Schemas operate on plain libgoc types: `goc_dict*`, `goc_array*`, `char*`, boxed scalars.
 
@@ -281,6 +282,8 @@ goc_schema* goc_schema_bool();     /* expects goc_box(bool, …)                
 Note: plain `char` and `signed char` values are boxed as signed bytes and are accepted by `goc_schema_byte()` and `goc_schema_int()`. `unsigned char` values are boxed as `UBYTE` and are accepted by `goc_schema_ubyte()` and `goc_schema_uint()`.
 
 `goc_schema_number()` accepts any boxed numeric value: signed integers, unsigned integers, bytes, ubytes, reals, and complex numbers. Use it as the broad numeric supertype when the signed/unsigned, integer/real, or real/complex distinctions are not important.
+
+Because `goc_box` preserves the boxed scalar type, schema validation depends on that type tag. For example, values parsed from JSON are boxed as `int64_t` or `uint64_t`; unboxing them as a narrower scalar type such as `int` is not safe even if the numeric value itself fits in `int`.
 
 `stdint.h` aliases (`int8_t`, `int16_t`, `int32_t`, `int64_t`, `uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`, `size_t`, `intptr_t`, etc.) and the portability typedefs (`uchar`, `ushort`, `uint`, `ulong`) are transparent to `goc_box` — they resolve to the underlying base type and receive the correct tag automatically. No explicit arms are needed.
 
@@ -619,7 +622,6 @@ Built-in schemas are pre-registered at initialization under the `goc/` prefix:
 | `"goc/str"`     | `goc_schema_str()`     |
 | `"goc/arr_any"` | `goc_schema_arr_any()` |
 | `"goc/dict_any"`| `goc_schema_dict_any()` |
-```
 
 ---
 
