@@ -50,9 +50,11 @@ jobs:
 
       - name: Install apt dependencies
         run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || \
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list 2>/dev/null || true
           sudo apt-get update -q
           sudo apt-get install -y libuv1-dev pkg-config build-essential \
-            libatomic-ops-dev
+            libatomic-ops-dev ccache
 
       - name: Cache Boehm GC
         id: cache-bdwgc
@@ -60,6 +62,13 @@ jobs:
         with:
           path: ${{ env.BDWGC_PREFIX }}
           key: bdwgc-${{ env.BDWGC_VERSION }}-ubuntu-latest
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-linux-${{ hashFiles('src/**', 'vendor/**', 'CMakeLists.txt') }}
+          restore-keys: ccache-linux-
 
       - name: Build or validate Boehm GC from source
         run: |
@@ -102,7 +111,8 @@ jobs:
 
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build --target goc --parallel $(nproc)
         env:
           PKG_CONFIG_PATH: ${{ env.BDWGC_PREFIX }}/lib/pkgconfig
@@ -136,7 +146,14 @@ jobs:
           node-version: 24
 
       - name: Install Homebrew dependencies
-        run: brew install cmake libuv bdw-gc pkg-config
+        run: brew install cmake libuv bdw-gc pkg-config ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-macos-${{ hashFiles('src/**', 'vendor/**', 'CMakeLists.txt') }}
+          restore-keys: ccache-macos-
 
       - name: Set up bdw-gc-threaded pkg-config alias
         run: |
@@ -154,7 +171,8 @@ jobs:
 
       - name: Build libgoc
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build --target goc --parallel $(sysctl -n hw.ncpu)
         env:
           PKG_CONFIG_ALL_STATIC: 1
@@ -197,6 +215,14 @@ jobs:
             mingw-w64-ucrt-x86_64-libuv
             mingw-w64-ucrt-x86_64-gc
             mingw-w64-ucrt-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\.ccache
+          key: ccache-windows-${{ hashFiles('src/**', 'vendor/**', 'CMakeLists.txt') }}
+          restore-keys: ccache-windows-
 
       - name: Set up bdw-gc-threaded pkg-config alias
         shell: msys2 {0}
@@ -215,7 +241,8 @@ jobs:
       - name: Build libgoc
         shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DLIBGOC_STATIC_DEPENDENCIES=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache
           cmake --build build --target goc --parallel $(nproc)
         timeout-minutes: 10
         env:

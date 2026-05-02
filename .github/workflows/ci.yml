@@ -54,6 +54,8 @@ jobs:
       - name: Install apt dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || \
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list 2>/dev/null || true
           sudo apt-get update -q
           sudo apt-get install -y libuv1-dev pkg-config build-essential \
             libatomic-ops-dev
